@@ -1,0 +1,86 @@
+[project]
+name = "swan-wetland-change"
+version = "0.1.0"
+description = "Scheduled incremental NDWI and NDVI change detection for Swan Coastal Plain Ramsar wetlands from Earth Search Sentinel-2 COGs"
+requires-python = ">=3.12"
+dependencies = [
+    "duckdb>=2.0",
+    "geopandas>=1.2",
+    "numpy>=2.0",
+    "pyarrow>=26",
+    "pydantic>=2.0,<3",
+    "pyogrio>=0.10",
+    "pyproj>=3.8",
+    "pystac>=1.15",
+    "pystac-client>=0.9",
+    "rasterio>=1.5",
+    "requests>=2.32",
+    "shapely>=2.2",
+    "stac-geoparquet>=0.8",
+    "typer>=0.12",
+    "urllib3>=2.0",
+]
+
+[project.scripts]
+wetland-change = "wetland_change.cli:app"
+
+[dependency-groups]
+dev = [
+    "geoparquet-validator>=0.2",
+    "mypy>=1.10",
+    "planetary-computer>=1.0",
+    "pytest>=8.0",
+    "ruff>=0.6",
+    "spyndex>=0.12",
+    "types-requests>=2.32",
+]
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/wetland_change"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+xfail_strict = true
+addopts = "-q -m 'not live'"
+markers = [
+    "live: hits a network service; run with -m live",
+]
+
+[tool.ruff]
+line-length = 88
+src = ["src", "tests", "scripts"]
+extend-exclude = ["notebooks", "scratch"]
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "B", "UP"]
+
+[tool.ruff.lint.flake8-bugbear]
+extend-immutable-calls = ["pathlib.Path"]
+
+[tool.mypy]
+strict = true
+files = ["src", "scripts"]
+exclude = ["notebooks", "scratch"]
+
+[[tool.mypy.overrides]]
+module = [
+    "affine", "affine.*",
+    "duckdb", "duckdb.*",
+    "geopandas", "geopandas.*",
+    "pandas", "pandas.*",
+    "planetary_computer", "planetary_computer.*",
+    "pyarrow", "pyarrow.*",
+    "pyogrio", "pyogrio.*",
+    "pyproj", "pyproj.*",
+    "pystac", "pystac.*",
+    "pystac_client", "pystac_client.*",
+    "rasterio", "rasterio.*",
+    "shapely", "shapely.*",
+    "spyndex", "spyndex.*",
+    "stac_geoparquet", "stac_geoparquet.*",
+]
+ignore_missing_imports = true

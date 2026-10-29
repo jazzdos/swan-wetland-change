@@ -1,0 +1,5 @@
+{"type":"FeatureCollection","crs":{"type":"name","properties":{"name":"EPSG:4326"}},"features":[
+{"type":"Feature","properties":{"objectid":52,"ram_ramsarname":"Forrestdale & Thomsons Lakes"},"geometry":{"type":"Polygon","coordinates":[[[115.817,-32.162],[115.842,-32.162],[115.842,-32.138],[115.817,-32.138],[115.817,-32.162]]]}},
+{"type":"Feature","properties":{"objectid":56,"ram_ramsarname":"Forrestdale & Thomsons Lakes"},"geometry":{"type":"Polygon","coordinates":[[[115.928,-32.168],[115.946,-32.168],[115.946,-32.150],[115.928,-32.150],[115.928,-32.168]]]}},
+{"type":"Feature","properties":{"objectid":5,"ram_ramsarname":"Lake Warden System"},"geometry":{"type":"Polygon","coordinates":[[[121.98,-33.80],[122.00,-33.80],[122.00,-33.79],[121.98,-33.79],[121.98,-33.80]]]}}
+]}

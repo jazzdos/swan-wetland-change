@@ -1,8 +1,10 @@
 .worktrees/
 .env
 MACHINES.md
-data/
+data/*
+!data/SOURCES.md
 outputs/
+scratch/
 *.log
 .venv/
 __pycache__/

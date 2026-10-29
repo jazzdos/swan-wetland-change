@@ -1,0 +1,25 @@
+[stac]
+endpoint = "https://earth-search.aws.element84.com/v1"
+collection = "sentinel-2-c1-l2a"
+cloud_cover_max = 20.0
+watermark_overlap_days = 1
+required_assets = ["green", "red", "nir", "swir16", "scl", "product_metadata"]
+
+[aoi]
+ramsar_path = "data/external/dbca_010_ramsar_sites.geojson"
+waterbodies_path = "data/external/dea_waterbodies_v3_swan.geojson"
+site_prefixes = [
+    "Forrestdale & Thomsons Lakes",
+    "Peel-Yalgorup System",
+    "Becher Point Wetlands",
+    "Ellen Brook",
+]
+operation_epsg = 32750
+
+[water]
+method = "mndwi"
+threshold = -0.1
+min_valid_fraction = 0.8
+
+[output]
+root = "outputs"
