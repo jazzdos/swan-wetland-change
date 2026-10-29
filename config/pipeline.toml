@@ -23,3 +23,6 @@ min_valid_fraction = 0.8
 
 [output]
 root = "outputs"
+
+[catalogue]
+base_url = "https://example.invalid/swan-wetland-change"

@@ -15,6 +15,7 @@ from typing import Literal
 from pydantic import BaseModel, Field, field_validator
 
 ALLOWED_COLLECTION = "sentinel-2-c1-l2a"
+DEFAULT_CATALOGUE_BASE_URL = "https://example.invalid/swan-wetland-change"
 
 
 class StacConfig(BaseModel):
@@ -61,11 +62,25 @@ class OutputConfig(BaseModel):
     root: str
 
 
+class CatalogueConfig(BaseModel):
+    base_url: str
+
+    @field_validator("base_url")
+    @classmethod
+    def _https_no_trailing_slash(cls, value: str) -> str:
+        if not value.startswith("https://"):
+            raise ValueError(f"base_url must start with 'https://'; got {value!r}")
+        return value.rstrip("/")
+
+
 class PipelineConfig(BaseModel):
     stac: StacConfig
     aoi: AoiConfig
     water: WaterConfig
     output: OutputConfig
+    catalogue: CatalogueConfig = Field(
+        default_factory=lambda: CatalogueConfig(base_url=DEFAULT_CATALOGUE_BASE_URL)
+    )
 
 
 def load_config(path: Path) -> PipelineConfig:

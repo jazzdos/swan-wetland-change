@@ -11,7 +11,7 @@ dependencies = [
     "pydantic>=2.0,<3",
     "pyogrio>=0.10",
     "pyproj>=3.8",
-    "pystac>=1.15",
+    "pystac[validation]>=1.15",
     "pystac-client>=0.9",
     "rasterio>=1.5",
     "requests>=2.32",
@@ -32,6 +32,7 @@ dev = [
     "pytest>=8.0",
     "ruff>=0.6",
     "spyndex>=0.12",
+    "stac-check==1.14.0",
     "types-requests>=2.32",
 ]
 
