@@ -1,0 +1,23 @@
+rows:
+- aoi_layer: ramsar
+  cloud_fraction: 0.0
+  datetime: '2026-10-27T02:26:39.012000+00:00'
+  dea_wo_agreement: null
+  geometry_wkt: POLYGON ((115.831846 -32.151444, 115.831896 -32.147476, 115.827232
+    -32.147432, 115.827181 -32.151401, 115.831846 -32.151444))
+  item_id: S2C_T50HLK_20261027T022351_L2A
+  mndwi_median: 0.545214
+  n_clear: 1936
+  n_pixels: 1936
+  ndvi_median: -0.045049
+  ndwi_median: 0.08703
+  polygon_id: ramsar-52
+  processing_baseline: '05.13'
+  product_uri: S2C_MSIL2A_20261027T021211_N0513_R060_T50HLK_20261027T071801.SAFE
+  run_id: 20261029T100000Z
+  scene_coverage: 1.0
+  site: Forrestdale & Thomsons Lakes
+  tile: 50HLK
+  valid_fraction: 1.0
+  water_ha_index: 11.25
+  water_ha_scl: 19.36
