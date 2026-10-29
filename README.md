@@ -13,4 +13,5 @@ known-good reference. Design and verification matrix:
 uv sync
 uv run python scripts/fetch_aoi.py
 uv run wetland-change discover --config config/pipeline.toml
+uv run wetland-change score --start 2022-01-01 --end 2026-10-29  # after a backfill
 ```

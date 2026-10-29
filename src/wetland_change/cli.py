@@ -1,4 +1,4 @@
-"""Command line: discover, run, backfill, verify."""
+"""Command line: discover, run, backfill, score, verify."""
 
 from __future__ import annotations
 
@@ -20,7 +20,7 @@ from wetland_change.ledger import (
     seen_keys,
     watermark,
 )
-from wetland_change.pipeline import backfill_once, run_once
+from wetland_change.pipeline import backfill_once, run_once, score_once
 from wetland_change.raster.read import RasterioReader
 from wetland_change.store import OutputStore
 
@@ -158,6 +158,50 @@ def backfill(
     typer.echo(manifest.to_json())
     if manifest.failed:
         raise typer.Exit(code=2)
+
+
+@app.command()
+def score(
+    start: Annotated[
+        datetime,
+        typer.Option(
+            "--start",
+            formats=["%Y-%m-%d"],
+            help="First acquisition date, UTC, inclusive",
+        ),
+    ],
+    end: Annotated[
+        datetime,
+        typer.Option(
+            "--end", formats=["%Y-%m-%d"], help="Last acquisition date, UTC, inclusive"
+        ),
+    ],
+    config: ConfigOption = Path("config/pipeline.toml"),
+    output_root: OutputRootOption = None,
+    now: Annotated[datetime | None, typer.Option(help="Run time, UTC")] = None,
+) -> None:
+    """Score stored observations from --start to --end against the seasonal
+    baseline and write change rows. Use after a backfill.
+    """
+    if end < start:
+        raise typer.BadParameter("--end is before --start")
+    first = start.replace(tzinfo=UTC)
+    last = end.replace(tzinfo=UTC) + timedelta(days=1) - timedelta(microseconds=1)
+    cfg = load_config(config)
+    when = (now or datetime.now(UTC)).astimezone(UTC)
+    try:
+        manifest = score_once(
+            cfg,
+            start=first,
+            end=last,
+            store=_store(cfg, output_root),
+            now=when,
+            config_path=config,
+            output_root_override=output_root,
+        )
+    except ValueError as exc:
+        raise typer.BadParameter(str(exc)) from exc
+    typer.echo(manifest.to_json())
 
 
 @app.command()

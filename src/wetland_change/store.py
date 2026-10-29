@@ -40,6 +40,13 @@ class OutputStore:
         info = self.fs.get_file_info(self._full(relpath))
         return bool(info.type != pafs.FileType.NotFound)
 
+    def delete(self, relpath: str) -> bool:
+        """Delete the file if present; returns whether it existed."""
+        if not self.exists(relpath):
+            return False
+        self.fs.delete_file(self._full(relpath))
+        return True
+
     def list_files(self, prefix: str) -> list[str]:
         """Relative paths of every file under `prefix`, sorted."""
         selector = pafs.FileSelector(

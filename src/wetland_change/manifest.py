@@ -11,6 +11,8 @@ from typing import Any
 
 from wetland_change.store import OutputStore
 
+KIND_SCORE = "score"
+
 
 def new_run_id(now: datetime) -> str:
     return now.strftime("%Y%m%dT%H%M%SZ")
@@ -47,6 +49,9 @@ class RunManifest:
     datetime_start: datetime | None = None
     datetime_end: datetime | None = None
     output_root_override: str | None = None
+    change_rows: int = 0
+    change_files: list[str] = field(default_factory=list)
+    change_files_removed: list[str] = field(default_factory=list)
 
     def to_json(self) -> str:
         def _default(value: Any) -> str:

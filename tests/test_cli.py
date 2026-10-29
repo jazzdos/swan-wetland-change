@@ -41,7 +41,7 @@ def _only_manifest(root: Path) -> dict[str, Any]:
 def test_help_lists_commands() -> None:
     result = runner.invoke(app, ["--help"])
     assert result.exit_code == 0
-    for command in ("discover", "run", "backfill", "verify"):
+    for command in ("discover", "run", "backfill", "score", "verify"):
         assert command in result.output
 
 
@@ -58,7 +58,7 @@ def test_backfill_help_lists_range_and_output_root() -> None:
         assert option in result.output
 
 
-@pytest.mark.parametrize("command", ["run", "verify", "discover"])
+@pytest.mark.parametrize("command", ["run", "verify", "discover", "score"])
 def test_output_root_listed_on_every_command(command: str) -> None:
     result = runner.invoke(app, [command, "--help"])
     assert result.exit_code == 0
