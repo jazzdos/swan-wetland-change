@@ -6,12 +6,16 @@ import logging
 from datetime import datetime, timedelta
 from pathlib import Path
 
+import pyarrow as pa
+
 from wetland_change import __version__
 from wetland_change.aoi import AoiPolygon, union_bbox_4326
 from wetland_change.catalogue.item import SceneItem
-from wetland_change.catalogue.search import StacClient, discover
+from wetland_change.catalogue.search import Discovery, StacClient, discover
 from wetland_change.config import PipelineConfig, WaterConfig
 from wetland_change.ledger import (
+    RUN_KIND_BACKFILL,
+    RUN_KIND_RUN,
     LedgerEntry,
     attempts_so_far,
     entry_for,
@@ -26,6 +30,7 @@ from wetland_change.ledger import (
 from wetland_change.manifest import (
     RunManifest,
     config_sha256,
+    manifest_path,
     new_run_id,
     write_manifest,
 )
@@ -74,6 +79,103 @@ def process_scene(
     return rows
 
 
+def _new_manifest(
+    cfg: PipelineConfig,
+    *,
+    run_id: str,
+    now: datetime,
+    config_path: Path,
+    before: datetime | None,
+    discovery: Discovery,
+    kind: str,
+    output_root_override: str | None,
+    datetime_start: datetime | None = None,
+    datetime_end: datetime | None = None,
+) -> RunManifest:
+    return RunManifest(
+        run_id=run_id,
+        started_at=now,
+        finished_at=None,
+        package_version=__version__,
+        config_sha256=config_sha256(config_path),
+        endpoint=cfg.stac.endpoint,
+        collection=cfg.stac.collection,
+        watermark_before=before,
+        watermark_after=before,
+        discovered=len(discovery.scenes),
+        rejected=len(discovery.rejected),
+        skipped_seen=discovery.skipped_seen,
+        skipped_filter=discovery.skipped_filter,
+        kind=kind,
+        datetime_start=datetime_start,
+        datetime_end=datetime_end,
+        output_root_override=output_root_override,
+    )
+
+
+def _process_one(
+    scene: SceneItem,
+    *,
+    ledger: pa.Table,
+    cfg: PipelineConfig,
+    reader: RasterReader,
+    store: OutputStore,
+    polygons: list[AoiPolygon],
+    run_id: str,
+    now: datetime,
+    run_kind: str,
+) -> tuple[LedgerEntry, str | None]:
+    """Process one scene to a ledger entry and the observation file it wrote.
+    Any Exception becomes a failed entry."""
+    attempts = attempts_so_far(ledger, scene.item_id) + 1
+    try:
+        rows = process_scene(
+            scene,
+            polygons,
+            reader=reader,
+            water=cfg.water,
+            operation_epsg=cfg.aoi.operation_epsg,
+            run_id=run_id,
+        )
+        path = write_observations(rows, store) if rows else None
+    except Exception as exc:
+        logger.exception("scene %s failed (attempt %d)", scene.item_id, attempts)
+        return (
+            entry_for(
+                scene,
+                status="failed",
+                attempts=attempts,
+                run_id=run_id,
+                processed_at=now,
+                error=f"{type(exc).__name__}: {exc}",
+                run_kind=run_kind,
+            ),
+            None,
+        )
+    return (
+        entry_for(
+            scene,
+            status="succeeded",
+            attempts=attempts,
+            run_id=run_id,
+            processed_at=now,
+            n_rows=len(rows),
+            observation_path=path,
+            run_kind=run_kind,
+        ),
+        path,
+    )
+
+
+def _tally(manifest: RunManifest, entry: LedgerEntry, path: str | None) -> None:
+    if entry.status == "failed":
+        manifest.failed += 1
+        return
+    manifest.processed += 1
+    if path:
+        manifest.observation_files.append(path)
+
+
 def run_once(
     cfg: PipelineConfig,
     *,
@@ -83,6 +185,7 @@ def run_once(
     polygons: list[AoiPolygon],
     now: datetime,
     config_path: Path,
+    output_root_override: str | None = None,
 ) -> RunManifest:
     """Process everything new since the ledger watermark. Never aborts on a
     single scene; failures go to the ledger and are retried next run."""
@@ -101,65 +204,147 @@ def run_once(
         seen=seen_keys(ledger) | exhausted_keys(ledger),
         retry_ids=retry_ids(ledger),
     )
-    manifest = RunManifest(
+    manifest = _new_manifest(
+        cfg,
         run_id=run_id,
-        started_at=now,
-        finished_at=None,
-        package_version=__version__,
-        config_sha256=config_sha256(config_path),
-        endpoint=cfg.stac.endpoint,
-        collection=cfg.stac.collection,
-        watermark_before=before,
-        watermark_after=before,
-        discovered=len(discovery.scenes),
-        rejected=len(discovery.rejected),
-        skipped_seen=discovery.skipped_seen,
-        skipped_filter=discovery.skipped_filter,
+        now=now,
+        config_path=config_path,
+        before=before,
+        discovery=discovery,
+        kind=RUN_KIND_RUN,
+        output_root_override=output_root_override,
     )
     entries: list[LedgerEntry] = []
     for scene in discovery.scenes:
-        attempts = attempts_so_far(ledger, scene.item_id) + 1
-        try:
-            rows = process_scene(
-                scene,
-                polygons,
-                reader=reader,
-                water=cfg.water,
-                operation_epsg=cfg.aoi.operation_epsg,
-                run_id=run_id,
-            )
-            path = write_observations(rows, store) if rows else None
-        except Exception as exc:
-            logger.exception("scene %s failed (attempt %d)", scene.item_id, attempts)
-            entries.append(
-                entry_for(
-                    scene,
-                    status="failed",
-                    attempts=attempts,
-                    run_id=run_id,
-                    processed_at=now,
-                    error=f"{type(exc).__name__}: {exc}",
-                )
-            )
-            manifest.failed += 1
-            continue
+        entry, path = _process_one(
+            scene,
+            ledger=ledger,
+            cfg=cfg,
+            reader=reader,
+            store=store,
+            polygons=polygons,
+            run_id=run_id,
+            now=now,
+            run_kind=RUN_KIND_RUN,
+        )
+        entries.append(entry)
+        _tally(manifest, entry, path)
+    for item_id, reason in discovery.rejected:
         entries.append(
-            entry_for(
-                scene,
-                status="succeeded",
-                attempts=attempts,
+            rejected_entry(
+                item_id,
+                reason,
                 run_id=run_id,
                 processed_at=now,
-                n_rows=len(rows),
-                observation_path=path,
+                run_kind=RUN_KIND_RUN,
             )
         )
-        manifest.processed += 1
-        if path:
-            manifest.observation_files.append(path)
-    for item_id, reason in discovery.rejected:
-        entries.append(rejected_entry(item_id, reason, run_id=run_id, processed_at=now))
     manifest.ledger_files = write_ledger(entries, store, run_id=run_id)
+    manifest.watermark_after = watermark(read_ledger(store))
+    manifest.finished_at = now
+    write_manifest(manifest, store)
+    return manifest
+
+
+def _refuse_reused_run_id(store: OutputStore, run_id: str) -> None:
+    """Part numbering restarts at 0, so a run id already on disk would have its
+    manifest or ledger parts overwritten, losing the interrupted run's rows.
+    """
+    prefix = f"ledger_{run_id}_"
+    reused = store.exists(manifest_path(run_id)) or any(
+        Path(p).name.startswith(prefix) for p in store.list_files("ledger")
+    )
+    if reused:
+        raise ValueError(
+            f"run id {run_id} already has a manifest or ledger parts in the output "
+            "root; rerun with a later --now so the earlier rows are not overwritten"
+        )
+
+
+def backfill_once(
+    cfg: PipelineConfig,
+    *,
+    start: datetime,
+    end: datetime,
+    client: StacClient,
+    reader: RasterReader,
+    store: OutputStore,
+    polygons: list[AoiPolygon],
+    now: datetime,
+    config_path: Path,
+    output_root_override: str | None = None,
+) -> RunManifest:
+    """Run stages 1 to 6 for items acquired in the closed interval [start, end].
+
+    Items already in the ledger (by id and `updated`) are skipped, so a repeat
+    writes nothing new. The ledger is checkpointed after every scene, so an
+    interrupted backfill resumes where it stopped. Rows are tagged backfill,
+    so the daily watermark ignores them. Failed items under the attempt cap
+    are retried on rerun.
+    """
+    if start.tzinfo is None or end.tzinfo is None:
+        raise ValueError("backfill start and end must be timezone-aware")
+    if start > end:
+        raise ValueError(f"backfill start {start} is after end {end}")
+    run_id = new_run_id(now)
+    _refuse_reused_run_id(store, run_id)
+    ledger = read_ledger(store)
+    before = watermark(ledger)
+    discovery = discover(
+        client,
+        cfg.stac,
+        bbox=union_bbox_4326(polygons),
+        polygons_4326=[p.geometry_4326 for p in polygons],
+        created_from=None,
+        seen=seen_keys(ledger) | exhausted_keys(ledger),
+        retry_ids=(),
+        datetime_range=(start, end),
+    )
+    manifest = _new_manifest(
+        cfg,
+        run_id=run_id,
+        now=now,
+        config_path=config_path,
+        before=before,
+        discovery=discovery,
+        kind=RUN_KIND_BACKFILL,
+        output_root_override=output_root_override,
+        datetime_start=start,
+        datetime_end=end,
+    )
+    next_part = 0
+    if discovery.rejected:
+        rejected = [
+            rejected_entry(
+                item_id,
+                reason,
+                run_id=run_id,
+                processed_at=now,
+                run_kind=RUN_KIND_BACKFILL,
+            )
+            for item_id, reason in discovery.rejected
+        ]
+        manifest.ledger_files += write_ledger(
+            rejected, store, run_id=run_id, part=next_part
+        )
+        next_part += 1
+    for scene in discovery.scenes:
+        entry, path = _process_one(
+            scene,
+            ledger=ledger,
+            cfg=cfg,
+            reader=reader,
+            store=store,
+            polygons=polygons,
+            run_id=run_id,
+            now=now,
+            run_kind=RUN_KIND_BACKFILL,
+        )
+        _tally(manifest, entry, path)
+        manifest.ledger_files += write_ledger(
+            [entry], store, run_id=run_id, part=next_part
+        )
+        next_part += 1
     manifest.watermark_after = watermark(read_ledger(store))
     manifest.finished_at = now
     write_manifest(manifest, store)

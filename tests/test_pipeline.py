@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import copy
+import hashlib
+import json
 from collections.abc import Iterator
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
@@ -182,3 +184,48 @@ def test_rejected_items_are_ledgered(
     assert (manifest.rejected, manifest.processed) == (1, 0)
     ledger = read_ledger(OutputStore(str(tmp_path / "out"))).to_pandas()
     assert ledger["status"].tolist() == ["rejected"]
+
+
+def test_run_once_tags_rows_and_manifest_as_run(
+    fixture_item: dict[str, Any], fixture_polygon: BaseGeometry, tmp_path: Path
+) -> None:
+    manifest = _run(
+        tmp_path, FakeClient([fixture_item]), _polygons(fixture_polygon), NOW
+    )
+    ledger = read_ledger(OutputStore(str(tmp_path / "out"))).to_pandas()
+    assert ledger["run_kind"].tolist() == ["run"]
+    assert manifest.kind == "run"
+    assert manifest.output_root_override is None
+    assert manifest.datetime_start is None
+    assert manifest.ledger_files == [
+        f"ledger/year=2026/ledger_{manifest.run_id}.parquet"
+    ]
+
+
+def test_run_once_records_output_root_override(
+    fixture_item: dict[str, Any], fixture_polygon: BaseGeometry, tmp_path: Path
+) -> None:
+    cfg = _config(tmp_path)
+    config_path = tmp_path / "pipeline.toml"
+    config_path.write_text("# test\n")
+    override = str(tmp_path / "out")
+    manifest = run_once(
+        cfg,
+        client=FakeClient([fixture_item]),
+        reader=RasterioReader(),
+        store=OutputStore(cfg.output.root),
+        polygons=_polygons(fixture_polygon),
+        now=NOW,
+        config_path=config_path,
+        output_root_override=override,
+    )
+    assert manifest.output_root_override == override
+    recorded = json.loads(
+        (tmp_path / "out" / "runs" / f"{manifest.run_id}.json").read_text()
+    )
+    assert recorded["output_root_override"] == override
+    assert recorded["kind"] == "run"
+    assert (
+        recorded["config_sha256"]
+        == hashlib.sha256(config_path.read_bytes()).hexdigest()
+    )

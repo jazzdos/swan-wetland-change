@@ -3,6 +3,12 @@
 Fixed schema so files union cleanly, plus the full source item as JSON so
 the catalogue can be rebuilt from the ledger alone. The latest entry per
 item wins; a failed item is retried on the next runs until MAX_ATTEMPTS.
+
+Every row carries `run_kind` ("run" for the daily run, "backfill" for a
+backfill). The daily watermark ignores backfill rows, since backfilled items
+can carry recent `created` values that would otherwise make the daily search
+skip items it has never processed. Files written before a column existed
+read it as null; a null `run_kind` counts as a daily row.
 """
 
 from __future__ import annotations
@@ -23,6 +29,8 @@ from wetland_change.catalogue.item import SceneItem
 from wetland_change.store import OutputStore
 
 MAX_ATTEMPTS = 3
+RUN_KIND_RUN = "run"
+RUN_KIND_BACKFILL = "backfill"
 _TS = pa.timestamp("us", tz="UTC")
 LEDGER_SCHEMA = pa.schema(
     [
@@ -42,6 +50,7 @@ LEDGER_SCHEMA = pa.schema(
         ("n_rows", pa.int32()),
         ("observation_path", pa.string()),
         ("source_item", pa.string()),
+        ("run_kind", pa.string()),
     ]
 )
 
@@ -64,6 +73,7 @@ class LedgerEntry:
     n_rows: int
     observation_path: str | None
     source_item: str | None
+    run_kind: str = RUN_KIND_RUN
 
 
 def entry_for(
@@ -76,6 +86,7 @@ def entry_for(
     n_rows: int = 0,
     observation_path: str | None = None,
     error: str | None = None,
+    run_kind: str = RUN_KIND_RUN,
 ) -> LedgerEntry:
     return LedgerEntry(
         item_id=scene.item_id,
@@ -94,11 +105,17 @@ def entry_for(
         n_rows=n_rows,
         observation_path=observation_path,
         source_item=json.dumps(scene.raw, sort_keys=True),
+        run_kind=run_kind,
     )
 
 
 def rejected_entry(
-    item_id: str, reason: str, *, run_id: str, processed_at: dt.datetime
+    item_id: str,
+    reason: str,
+    *,
+    run_id: str,
+    processed_at: dt.datetime,
+    run_kind: str = RUN_KIND_RUN,
 ) -> LedgerEntry:
     """An item the guard refused; never retried, re-logged while it is in range."""
     return LedgerEntry(
@@ -118,11 +135,13 @@ def rejected_entry(
         n_rows=0,
         observation_path=None,
         source_item=None,
+        run_kind=run_kind,
     )
 
 
-def ledger_path(run_id: str, year: int) -> str:
-    return f"ledger/year={year}/ledger_{run_id}.parquet"
+def ledger_path(run_id: str, year: int, part: int | None = None) -> str:
+    suffix = "" if part is None else f"_{part:05d}"
+    return f"ledger/year={year}/ledger_{run_id}{suffix}.parquet"
 
 
 def entries_to_table(entries: Sequence[LedgerEntry]) -> pa.Table:
@@ -134,15 +153,29 @@ def entries_to_table(entries: Sequence[LedgerEntry]) -> pa.Table:
 
 
 def write_ledger(
-    entries: Sequence[LedgerEntry], store: OutputStore, *, run_id: str
+    entries: Sequence[LedgerEntry],
+    store: OutputStore,
+    *,
+    run_id: str,
+    part: int | None = None,
 ) -> list[str]:
-    """One file per run (partitioned by the run's year)."""
+    """One file per run, or per part of a run (partitioned by the run's year)."""
     if not entries:
         return []
     year = entries[0].processed_at.year
     buffer = BytesIO()
     pq.write_table(entries_to_table(entries), buffer)
-    return [store.write_bytes(ledger_path(run_id, year), buffer.getvalue())]
+    return [store.write_bytes(ledger_path(run_id, year, part), buffer.getvalue())]
+
+
+def _conform(table: pa.Table) -> pa.Table:
+    """Add any column the file predates (as nulls) and cast to LEDGER_SCHEMA."""
+    for field in LEDGER_SCHEMA:
+        if field.name not in table.schema.names:
+            table = table.append_column(
+                field, pa.nulls(table.num_rows, type=field.type)
+            )
+    return table.select(LEDGER_SCHEMA.names).cast(LEDGER_SCHEMA)
 
 
 def read_ledger(store: OutputStore) -> pa.Table:
@@ -150,17 +183,26 @@ def read_ledger(store: OutputStore) -> pa.Table:
     if not paths:
         return LEDGER_SCHEMA.empty_table()
     tables = [
-        pq.read_table(BytesIO(store.read_bytes(path))).cast(LEDGER_SCHEMA)
-        for path in paths
+        _conform(pq.read_table(BytesIO(store.read_bytes(path)))) for path in paths
     ]
     return pa.concat_tables(tables)
 
 
 def watermark(ledger: pa.Table) -> dt.datetime | None:
-    """Latest `created` seen, succeeded or failed."""
+    """Latest `created` seen in daily-run rows, succeeded or failed.
+
+    Backfill rows are excluded: backfill works by acquisition date and its
+    items can carry recent `created` values, which would push the watermark
+    past items the daily run has never processed. A null `run_kind` (a file
+    written before the column existed) counts as a daily row.
+    """
     if ledger.num_rows == 0:
         return None
-    value = pc.max(ledger["created"]).as_py()
+    mask = pc.fill_null(pc.not_equal(ledger["run_kind"], RUN_KIND_BACKFILL), True)
+    created = ledger["created"].filter(mask)
+    if len(created) == 0:
+        return None
+    value = pc.max(created).as_py()
     return value if isinstance(value, dt.datetime) else None
 
 
