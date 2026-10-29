@@ -11,7 +11,8 @@ from pathlib import Path
 from rasterio.windows import Window
 
 from wetland_change.aoi import AoiPolygon, union_bbox_4326
-from wetland_change.catalogue.item import SceneItem, parse_item
+from wetland_change.catalogue.item import SceneItem, parse_item, parse_timestamp
+from wetland_change.catalogue.search import StacClient, open_client
 from wetland_change.config import PipelineConfig
 from wetland_change.ledger import read_ledger
 from wetland_change.manifest import manifest_path
@@ -19,6 +20,12 @@ from wetland_change.raster.read import RasterioReader, RasterReader, read_stack
 from wetland_change.stats import rasterise
 from wetland_change.store import OutputStore
 from wetland_change.verify.checks import Check, write_report
+from wetland_change.verify.copernicus import (
+    CDSE_STAC,
+    CHECK_NAME,
+    discovery_checks,
+    run_window,
+)
 from wetland_change.verify.pixels import pixel_check
 from wetland_change.verify.scaling import scaling_check
 from wetland_change.verify.scl import scl_checks
@@ -188,10 +195,14 @@ def verify_run(
     wo_reader_factory: Callable[[], RasterReader] = dea_reader,
     pixel_checker: PixelChecker = pixel_check,
     docs_dir: Path | None = Path("docs/research"),
+    es_client: StacClient | None = None,
+    cdse_client: StacClient | None = None,
+    clock: Callable[[], datetime] = lambda: datetime.now(UTC),
 ) -> list[Check]:
     reader = reader or RasterioReader()
     checks: list[Check] = []
-    for scene in scenes_for_run(cfg, store, run_id):
+    scenes = scenes_for_run(cfg, store, run_id)
+    for scene in scenes:
         checks.extend(
             _verify_scene(
                 cfg,
@@ -203,11 +214,30 @@ def verify_run(
                 pixel_checker,
             )
         )
+    listed_at = clock()
+    if scenes:
+
+        def _discovery() -> list[Check]:
+            manifest = json.loads(store.read_bytes(manifest_path(run_id)))
+            started_at = parse_timestamp(manifest["started_at"])
+            start, end = run_window([s.datetime for s in scenes], started_at)
+            return discovery_checks(
+                es_client or open_client(cfg.stac.endpoint),
+                cdse_client or open_client(CDSE_STAC),
+                cfg.stac,
+                bbox=union_bbox_4326(polygons),
+                polygons_4326=[p.geometry_4326 for p in polygons],
+                start=start,
+                end=end,
+                now=listed_at,
+            )
+
+        checks.extend(_guard(CHECK_NAME, _discovery, run_id=run_id))
     write_report(
         checks,
         store=store,
         run_id=run_id,
         docs_dir=docs_dir,
-        generated_at=datetime.now(UTC),
+        generated_at=listed_at,
     )
     return checks
