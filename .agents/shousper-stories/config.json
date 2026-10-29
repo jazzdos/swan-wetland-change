@@ -1,0 +1,27 @@
+{
+  "version": 1,
+  "storiesDir": "stories",
+  "merge": "local",
+  "gates": {
+    "test": {
+      "kind": "command",
+      "run": "uv run pytest"
+    }
+  },
+  "defaults": {
+    "feature": [
+      "test"
+    ],
+    "bug": [
+      "test"
+    ],
+    "chore": [
+      "test"
+    ]
+  },
+  "gateLock": true,
+  "budgets": {
+    "maxStalls": 3,
+    "maxFixRoundsPerStory": 3
+  }
+}
