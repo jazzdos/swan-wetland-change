@@ -10,6 +10,7 @@ from pathlib import Path
 from typing import Any
 from urllib.parse import urlparse
 
+import duckdb
 import pystac
 import pystac.validation
 import pystac.validation.local_validator
@@ -26,6 +27,7 @@ from wetland_change.ledger import (
     rejected_entry,
     write_ledger,
 )
+from wetland_change.outputs.changes import change_path
 from wetland_change.outputs.geoparquet import observation_path
 from wetland_change.stac import (
     StoreStacIO,
@@ -36,6 +38,7 @@ from wetland_change.stac import (
 )
 from wetland_change.stac.catalogue import processed_entries
 from wetland_change.store import OutputStore
+from wetland_change.verify.checks import write_report
 
 BASE_URL = "https://catalogue.test.invalid/wetlands"
 T0 = datetime(2026, 10, 28, 10, 0, tzinfo=UTC)
@@ -129,6 +132,7 @@ def test_written_files_are_exactly_the_succeeded_items(store: OutputStore) -> No
     expected = [
         "stac/catalog.json",
         "stac/swan-wetland-change/collection.json",
+        "stac/swan-wetland-change/items.parquet",
         *(f"stac/swan-wetland-change/{i}/{i}.json" for i in SUCCEEDED_IDS),
     ]
     assert written == sorted(expected)
@@ -148,8 +152,57 @@ def test_observation_asset_href(store: OutputStore) -> None:
         assert asset["href"] == f"{BASE_URL}/{ledger[item_id]}"
         assert asset["type"] == "application/vnd.apache.parquet"
         assert asset["roles"] == ["data"]
-        assert set(item["assets"]) == {"observations"}
+        assert set(item["assets"]) == {"observations"}  # no change/report files yet
         assert item["stac_extensions"] == []
+
+
+def _item_json(store: OutputStore, item_id: str) -> dict[str, Any]:
+    return _json(store, f"stac/swan-wetland-change/{item_id}/{item_id}.json")
+
+
+def test_changes_asset_only_for_items_with_change_file(store: OutputStore) -> None:
+    target = SUCCEEDED_IDS[0]
+    entry = next(
+        e for e in processed_entries(read_ledger(store)) if e["item_id"] == target
+    )
+    path = change_path(entry["datetime"].astimezone(UTC).year, entry["tile"], target)
+    store.write_bytes(path, b"x")
+    build_and_write(store, base_url=BASE_URL)
+    asset = _item_json(store, target)["assets"]["changes"]
+    assert asset["href"] == f"{BASE_URL}/{path}"
+    assert asset["type"] == "application/vnd.apache.parquet"
+    assert asset["roles"] == ["data"]
+    for other in SUCCEEDED_IDS[1:]:
+        assert "changes" not in _item_json(store, other)["assets"]
+
+
+def test_verification_asset_points_at_run_report(store: OutputStore) -> None:
+    write_report([], store=store, run_id="r2", docs_dir=None)
+    build_and_write(store, base_url=BASE_URL)
+    run_ids = {e["item_id"]: e["run_id"] for e in processed_entries(read_ledger(store))}
+    assert set(run_ids.values()) == {"r1", "r2"}
+    for item_id, run_id in run_ids.items():
+        assets = _item_json(store, item_id)["assets"]
+        if run_id == "r2":
+            assert assets["verification"]["href"] == f"{BASE_URL}/verification/r2.json"
+            assert assets["verification"]["type"] == "application/json"
+            assert assets["verification"]["roles"] == ["metadata"]
+        else:
+            assert "verification" not in assets
+
+
+def test_items_parquet_written_and_readable_by_duckdb(
+    store: OutputStore, tmp_path: Path
+) -> None:
+    key = "stac/swan-wetland-change/items.parquet"
+    written = build_and_write(store, base_url=BASE_URL)
+    assert key in written
+    local = tmp_path / "items.parquet"
+    local.write_bytes(store.read_bytes(key))
+    rows = duckdb.sql(f"SELECT count(*) FROM read_parquet('{local}')").fetchall()
+    assert rows[0][0] == len(SUCCEEDED_IDS)
+    collection = _json(store, "stac/swan-wetland-change/collection.json")
+    assert collection["assets"]["items"]["href"] == f"{BASE_URL}/{key}"
 
 
 def test_item_derived_from_and_properties(store: OutputStore) -> None:
@@ -220,6 +273,8 @@ def test_stac_check_reports_no_errors(
 def test_all_hrefs_are_absolute_https(store: OutputStore) -> None:
     build_and_write(store, base_url=BASE_URL)
     for relpath in _stac_files(store):
+        if not relpath.endswith(".json"):
+            continue
         doc = _json(store, relpath)
         hrefs = [link["href"] for link in doc["links"]]
         hrefs += [asset["href"] for asset in doc.get("assets", {}).values()]

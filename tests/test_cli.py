@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import shutil
 from pathlib import Path
 from typing import Any
 
@@ -9,7 +10,7 @@ import pytest
 from shapely.geometry.base import BaseGeometry
 from typer.testing import CliRunner
 
-from tests.test_pipeline import FakeClient, _config, _polygons
+from tests.test_pipeline import NOW, FakeClient, _config, _polygons, _run
 from wetland_change import cli
 from wetland_change.cli import app
 from wetland_change.store import OutputStore
@@ -41,7 +42,14 @@ def _only_manifest(root: Path) -> dict[str, Any]:
 def test_help_lists_commands() -> None:
     result = runner.invoke(app, ["--help"])
     assert result.exit_code == 0
-    for command in ("discover", "run", "backfill", "score", "verify"):
+    for command in (
+        "discover",
+        "run",
+        "backfill",
+        "score",
+        "verify",
+        "build-catalogue",
+    ):
         assert command in result.output
 
 
@@ -51,6 +59,11 @@ def test_run_help_mentions_config() -> None:
     assert "--config" in result.output
 
 
+def test_build_catalogue_help_exits_zero() -> None:
+    result = runner.invoke(app, ["build-catalogue", "--help"])
+    assert result.exit_code == 0
+
+
 def test_backfill_help_lists_range_and_output_root() -> None:
     result = runner.invoke(app, ["backfill", "--help"])
     assert result.exit_code == 0
@@ -58,7 +71,9 @@ def test_backfill_help_lists_range_and_output_root() -> None:
         assert option in result.output
 
 
-@pytest.mark.parametrize("command", ["run", "verify", "discover", "score"])
+@pytest.mark.parametrize(
+    "command", ["run", "verify", "discover", "score", "build-catalogue"]
+)
 def test_output_root_listed_on_every_command(command: str) -> None:
     result = runner.invoke(app, [command, "--help"])
     assert result.exit_code == 0
@@ -157,3 +172,27 @@ def test_verify_reads_the_override_root(
     )
     assert result.exit_code == 4, (result.output, result.exception)
     assert seen == [(OutputStore(str(override)).uri, "20261029T100000Z")]
+
+
+def test_build_catalogue_rebuilds_stac_in_output_root(
+    monkeypatch: pytest.MonkeyPatch,
+    fixture_item: dict[str, Any],
+    fixture_polygon: BaseGeometry,
+    tmp_path: Path,
+) -> None:
+    cfg = _config(tmp_path / "configured")
+    monkeypatch.setattr(cli, "load_config", lambda config: cfg)
+    root = tmp_path / "separate"
+    root.mkdir()
+    _run(root, FakeClient([fixture_item]), _polygons(fixture_polygon), NOW)
+    out = root / "out"
+    shutil.rmtree(out / "stac")
+    config_file = tmp_path / "pipeline.toml"
+    config_file.write_text("# test config\n")
+    result = runner.invoke(
+        app,
+        ["build-catalogue", "--config", str(config_file), "--output-root", str(out)],
+    )
+    assert result.exit_code == 0, result.output
+    assert (out / "stac" / "catalog.json").exists()
+    assert not (tmp_path / "configured").exists()

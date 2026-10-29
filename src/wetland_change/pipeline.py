@@ -43,6 +43,7 @@ from wetland_change.outputs.changes import change_path, write_changes
 from wetland_change.outputs.geoparquet import read_observations, write_observations
 from wetland_change.raster.read import RasterReader, read_stack
 from wetland_change.raster.scaling import check_band_scaling, parse_product_metadata
+from wetland_change.stac import build_and_write
 from wetland_change.stats import ObservationRow, summarise
 from wetland_change.store import OutputStore
 from wetland_change.windows import plan_window
@@ -328,6 +329,7 @@ def run_once(
         manifest.change_files_removed = scored.removed
     manifest.finished_at = now
     write_manifest(manifest, store)
+    build_and_write(store, base_url=cfg.catalogue.base_url)
     return manifest
 
 

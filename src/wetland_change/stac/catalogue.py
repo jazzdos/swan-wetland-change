@@ -8,21 +8,28 @@ from __future__ import annotations
 
 import datetime as dt
 import json
+import tempfile
+from collections.abc import Collection
+from pathlib import Path
 from typing import Any
 
 import pyarrow as pa
 import pystac
+import stac_geoparquet.arrow
 from shapely.geometry import shape
 
 from wetland_change.catalogue.item import parse_timestamp
 from wetland_change.ledger import read_ledger
+from wetland_change.outputs.changes import change_path
 from wetland_change.store import OutputStore
+from wetland_change.verify.checks import report_path
 
 CATALOG_ID = "swan-wetland-change-catalog"
 COLLECTION_ID = "swan-wetland-change"
 LICENSE = "CC-BY-SA-4.0"
 SWAN_COASTAL_PLAIN_BBOX = [114.9, -33.3, 115.9, -31.5]
 PARQUET_MEDIA_TYPE = "application/vnd.apache.parquet"
+ITEMS_PARQUET_KEY = f"stac/{COLLECTION_ID}/items.parquet"
 KEPT_PROPERTIES = (
     "created",
     "updated",
@@ -73,7 +80,9 @@ def processed_entries(ledger: pa.Table) -> list[dict[str, Any]]:
     ]
 
 
-def _item(entry: dict[str, Any], base_url: str) -> pystac.Item:
+def _item(
+    entry: dict[str, Any], base_url: str, available: Collection[str]
+) -> pystac.Item:
     source: dict[str, Any] = json.loads(entry["source_item"])
     geometry = source["geometry"]
     bbox = source.get("bbox") or list(shape(geometry).bounds)
@@ -104,6 +113,31 @@ def _item(entry: dict[str, Any], base_url: str) -> pystac.Item:
                 roles=["data"],
             ),
         )
+    when, tile = entry["datetime"], entry["tile"]
+    if when is not None and tile is not None:
+        changes = change_path(when.astimezone(dt.UTC).year, tile, entry["item_id"])
+        if changes in available:
+            item.add_asset(
+                "changes",
+                pystac.Asset(
+                    href=f"{base_url}/{changes}",
+                    title="Changes (GeoParquet)",
+                    media_type=PARQUET_MEDIA_TYPE,
+                    roles=["data"],
+                ),
+            )
+    if entry["run_id"] is not None:
+        report = report_path(entry["run_id"])
+        if report in available:
+            item.add_asset(
+                "verification",
+                pystac.Asset(
+                    href=f"{base_url}/{report}",
+                    title="Verification report",
+                    media_type="application/json",
+                    roles=["metadata"],
+                ),
+            )
     return item
 
 
@@ -128,9 +162,12 @@ def _extent(items: list[pystac.Item]) -> pystac.Extent:
     )
 
 
-def build_catalogue(ledger: pa.Table, *, base_url: str) -> pystac.Catalog:
+def build_catalogue(
+    ledger: pa.Table, *, base_url: str, available: Collection[str] = frozenset()
+) -> pystac.Catalog:
+    """`available` holds the store-relative paths that exist, gating item assets."""
     base_url = base_url.rstrip("/")
-    items = [_item(entry, base_url) for entry in processed_entries(ledger)]
+    items = [_item(entry, base_url, available) for entry in processed_entries(ledger)]
     collection = pystac.Collection(
         id=COLLECTION_ID,
         title="Swan Coastal Plain wetland change",
@@ -147,6 +184,16 @@ def build_catalogue(ledger: pa.Table, *, base_url: str) -> pystac.Catalog:
     )
     for item in items:
         collection.add_item(item)
+    if items:
+        collection.add_asset(
+            "items",
+            pystac.Asset(
+                href=f"{base_url}/{ITEMS_PARQUET_KEY}",
+                title="Catalogue items (stac-geoparquet)",
+                media_type=PARQUET_MEDIA_TYPE,
+                roles=["data"],
+            ),
+        )
     catalog = pystac.Catalog(
         id=CATALOG_ID,
         description="Sentinel-2 wetland observations for the Swan Coastal Plain.",
@@ -156,6 +203,15 @@ def build_catalogue(ledger: pa.Table, *, base_url: str) -> pystac.Catalog:
     catalog.add_child(collection)
     catalog.normalize_hrefs(f"{base_url}/stac")
     return catalog
+
+
+def items_parquet_bytes(items: list[dict[str, Any]]) -> bytes:
+    """stac-geoparquet file bytes; `to_parquet` needs a real path, not a BytesIO."""
+    table = stac_geoparquet.arrow.parse_stac_items_to_arrow(items)
+    with tempfile.TemporaryDirectory() as tmp:
+        path = Path(tmp) / "items.parquet"
+        stac_geoparquet.arrow.to_parquet(table, path)
+        return path.read_bytes()
 
 
 def validate_catalogue(catalog: pystac.Catalog) -> None:
@@ -181,7 +237,28 @@ def write_catalogue(
                 "write_catalogue base_url must match build_catalogue base_url"
             )
         keys.append(href.removeprefix(prefix))
+    collection_assets = [
+        c.assets.get("items")
+        for c in catalog.get_children()
+        if isinstance(c, pystac.Collection)
+    ]
+    items_asset = next((a for a in collection_assets if a is not None), None)
+    items_key: str | None = None
+    if items_asset is not None:
+        if not items_asset.href.startswith(prefix):
+            raise ValueError(
+                f"items asset href {items_asset.href!r} does not start with "
+                f"base_url {prefix!r}; write_catalogue base_url must match "
+                "build_catalogue base_url"
+            )
+        items_key = items_asset.href.removeprefix(prefix)
     written: list[str] = []
+    if items_key is not None:
+        all_items = sorted(catalog.get_items(recursive=True), key=lambda i: i.id)
+        dicts = [
+            i.to_dict(include_self_link=True, transform_hrefs=False) for i in all_items
+        ]
+        written.append(store.write_bytes(items_key, items_parquet_bytes(dicts)))
     for obj, key in zip(objects, keys, strict=True):
         text = (
             json.dumps(
@@ -196,6 +273,9 @@ def write_catalogue(
 
 
 def build_and_write(store: OutputStore, *, base_url: str) -> list[str]:
-    catalog = build_catalogue(read_ledger(store), base_url=base_url)
+    available = set(store.list_files("changes")) | set(store.list_files("verification"))
+    catalog = build_catalogue(
+        read_ledger(store), base_url=base_url, available=available
+    )
     validate_catalogue(catalog)
     return write_catalogue(catalog, store, base_url=base_url)
