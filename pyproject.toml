@@ -30,6 +30,7 @@ dev = [
     "mypy>=1.10",
     "planetary-computer>=1.0",
     "pytest>=8.0",
+    "pytest-regressions>=2.5",
     "ruff>=0.6",
     "spyndex>=0.12",
     "stac-check==1.14.0",
