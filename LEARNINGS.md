@@ -174,6 +174,53 @@ seam_overlap subset, are in docs/research/2026-10-29-polygon-calibration.csv.
 The scripts that produced it (scratch/spikes/polygon_calibrate.py and its log)
 are untracked in scratch/spikes/.
 
+### S9 historical tolerance (2026-10-30)
+
+Compared the DEA Waterbodies v3 wet fraction with the ga_ls_wo_3 wet fraction
+per Landsat pass over Thomsons Lake (uid qd635epws_v3, 193.2 ha) from 2022-12
+onward. A pass is a calendar date on which Waterbodies v3 publishes a non-blank
+pc_wet for the polygon. The Waterbodies series has 315 rows since 2022-12-01,
+of which 129 are valid and 186 are blank; the blank rows are not compared.
+Each valid date was matched to the ga_ls_wo_3 STAC items (two per date) that
+intersect the polygon, read on the 30 m EPSG:32650 grid with a pixel-centre
+polygon mask (2145 pixels). Passes compared: 129 (2022-12-17 to 2026-10-10).
+Passes dropped for lacking a WO item: 0.
+
+Wet fraction convention: wet pixels equal to 128 over all polygon pixels,
+including pixels that are not clean, matching px_wet and pc_wet. Difference is
+Waterbodies minus ga_ls_wo_3, signed. Absolute difference over the 129 passes:
+median 0.024 pp, 90th percentile 0.101 pp (numpy linear), maximum 0.181 pp on
+2026-01-11 (0.8905 against 0.892308, valid fraction 1.0). No pass differs by
+more than 0.2 pp. The mean signed difference is -0.017 pp. The largest
+differences are consistent with pixel-count effects: one polygon pixel is 0.047
+pp, the 2145 pixel mask used here differs by 2 pixels from the 2147 pixel
+polygon area on the 30 m EPSG:3577 grid (0.093 pp), and the Waterbodies value
+is published to four decimals. The maximum is about four pixels, not a frame
+seam or a coverage gap; 43 passes have valid fraction below 1 (minimum 0.903)
+and the 2022-12-25 pass at 0.919 differs by 0.025 pp.
+
+Chosen tolerance: 10 percentage points. Rule: the smallest whole number of
+percentage points in 10..15 that is at least the 90th percentile of absolute
+difference; the 90th percentile is below 10, so the floor of the band applies.
+
+The near-zero differences are consistent with Waterbodies v3 being derived from
+the same ga_ls_wo_3 data. The tolerance therefore bounds polygon rasterisation
+and validity filtering differences between the two DEA reference paths
+(Waterbodies and ga_ls_wo_3), not agreement between independent algorithms.
+The 10 pp figure is the floor of the 10..15 band applied by rule, not a
+measured disagreement. S9 compared only same-date Waterbodies against
+ga_ls_wo_3. It did not measure Sentinel-2 versus Landsat wet fraction
+disagreement or the effect of the 1 to 3 day offset between pipeline passes and
+Waterbodies passes; a different wet definition and a time offset are expected
+in the Water extent history check. Between the two DEA reference paths, a
+difference beyond 10 pp would indicate a wrong polygon, a wrong pass match or a
+different wet definition. The Milestone 2 history check still has to validate
+10 pp for the pipeline against Waterbodies.
+
+Per-pass rows are in docs/research/2026-10-30-waterbodies-tolerance.csv. The
+script that produced it (scratch/spikes/s9_tolerance.py) is untracked in
+scratch/spikes/.
+
 ## Live run findings
 
 ### SCL overview resampling (2026-10-29)
