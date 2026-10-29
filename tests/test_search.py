@@ -2,9 +2,10 @@ from __future__ import annotations
 
 import copy
 from collections.abc import Iterator
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta, timezone
 from typing import Any
 
+import pytest
 from shapely.geometry import box
 
 from tests.conftest import REQUIRED_ASSETS
@@ -147,3 +148,81 @@ def test_discover_rejects_malformed_item_without_aborting(
     assert [s.item_id for s in result.scenes] == [good["id"]]
     assert [item_id for item_id, _ in result.rejected] == [bad["id"]]
     assert "KeyError" in result.rejected[0][1]
+
+
+RANGE_START = datetime(2026, 10, 26, tzinfo=UTC)
+RANGE_END = datetime(2026, 10, 28, 23, 59, 59, 999999, tzinfo=UTC)
+RANGE_STRING = "2026-10-26T00:00:00Z/2026-10-28T23:59:59.999999Z"
+
+
+def test_build_search_kwargs_with_datetime_range() -> None:
+    kwargs = build_search_kwargs(
+        CFG,
+        bbox=BBOX,
+        created_from=None,
+        datetime_range=(RANGE_START, RANGE_END),
+    )
+    assert kwargs["datetime"] == RANGE_STRING
+    assert kwargs["query"] == {"eo:cloud_cover": {"lt": 20.0}}
+    assert kwargs["sortby"] == [{"field": "properties.created", "direction": "asc"}]
+
+
+def test_build_search_kwargs_range_converts_to_utc() -> None:
+    start = datetime(2026, 10, 26, 8, tzinfo=timezone(timedelta(hours=8)))
+    kwargs = build_search_kwargs(
+        CFG, bbox=BBOX, created_from=None, datetime_range=(start, RANGE_END)
+    )
+    assert kwargs["datetime"].startswith("2026-10-26T00:00:00Z/")
+
+
+def test_build_search_kwargs_rejects_bad_range() -> None:
+    naive = datetime(2026, 10, 26)
+    with pytest.raises(ValueError):
+        build_search_kwargs(
+            CFG, bbox=BBOX, created_from=None, datetime_range=(naive, RANGE_END)
+        )
+    with pytest.raises(ValueError):
+        build_search_kwargs(
+            CFG, bbox=BBOX, created_from=None, datetime_range=(RANGE_START, naive)
+        )
+    with pytest.raises(ValueError):
+        build_search_kwargs(
+            CFG,
+            bbox=BBOX,
+            created_from=None,
+            datetime_range=(RANGE_END, RANGE_START),
+        )
+
+
+def test_build_search_kwargs_without_range_has_no_datetime() -> None:
+    since = datetime(2026, 10, 28, 0, 0, tzinfo=UTC)
+    kwargs = build_search_kwargs(CFG, bbox=BBOX, created_from=since)
+    assert "datetime" not in kwargs
+
+
+def test_discover_rechecks_datetime_range(fixture_item: dict[str, Any]) -> None:
+    good = fixture_item
+    at_start = _variant(good, "at_start", datetime="2026-10-26T00:00:00Z")
+    at_end = _variant(good, "at_end", datetime="2026-10-28T23:59:59.999999Z")
+    before = _variant(good, "before", datetime="2026-10-25T23:59:59Z")
+    after = _variant(good, "after", datetime="2026-10-29T00:00:00Z")
+    baddate = _variant(good, "baddate", datetime="not-a-date")
+    client = FakeClient([good, at_start, at_end, before, after, baddate])
+    result = discover(
+        client,
+        CFG,
+        bbox=BBOX,
+        polygons_4326=[THOMSONS_4326],
+        created_from=None,
+        seen=set(),
+        datetime_range=(RANGE_START, RANGE_END),
+    )
+    assert {s.item_id for s in result.scenes} == {
+        good["id"],
+        at_start["id"],
+        at_end["id"],
+    }
+    assert result.skipped_filter == 2
+    assert [item_id for item_id, _ in result.rejected] == [baddate["id"]]
+    assert client.calls[0]["datetime"] == RANGE_STRING
+    assert "created" not in client.calls[0]["query"]

@@ -43,6 +43,10 @@ class RunManifest:
     skipped_filter: int = 0
     observation_files: list[str] = field(default_factory=list)
     ledger_files: list[str] = field(default_factory=list)
+    kind: str = "run"
+    datetime_start: datetime | None = None
+    datetime_end: datetime | None = None
+    output_root_override: str | None = None
 
     def to_json(self) -> str:
         def _default(value: Any) -> str:

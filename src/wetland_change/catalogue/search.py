@@ -10,7 +10,7 @@ from __future__ import annotations
 import logging
 from collections.abc import Iterable, Iterator
 from dataclasses import dataclass, field
-from datetime import datetime
+from datetime import UTC, datetime
 from typing import Any, Protocol, Self, cast
 
 from shapely.geometry import shape
@@ -104,8 +104,20 @@ def build_search_kwargs(
     bbox: tuple[float, float, float, float],
     created_from: datetime | None,
     ids: list[str] | None = None,
+    datetime_range: tuple[datetime, datetime] | None = None,
 ) -> dict[str, Any]:
-    """Keyword arguments for `Client.search`, using only query and sort."""
+    """Keyword arguments for `Client.search`, using only query and sort.
+
+    `datetime_range` is a closed acquisition interval [start, end] sent as the
+    STAC `datetime` parameter in UTC. Both bounds must be timezone-aware and
+    start must not be after end, otherwise `ValueError` is raised.
+    """
+    if datetime_range is not None:
+        start, end = datetime_range
+        if start.tzinfo is None or end.tzinfo is None:
+            raise ValueError("datetime_range bounds must be timezone-aware")
+        if start > end:
+            raise ValueError("datetime_range start is after end")
     query: dict[str, Any] = {"eo:cloud_cover": {"lt": cfg.cloud_cover_max}}
     if created_from is not None:
         query["created"] = {"gte": _rfc3339(created_from)}
@@ -117,6 +129,10 @@ def build_search_kwargs(
     }
     if ids:
         kwargs["ids"] = ids
+    if datetime_range is not None:
+        kwargs["datetime"] = (
+            f"{_rfc3339(start.astimezone(UTC))}/{_rfc3339(end.astimezone(UTC))}"
+        )
     return kwargs
 
 
@@ -137,13 +153,21 @@ def discover(
     created_from: datetime | None,
     seen: set[tuple[str, datetime]],
     retry_ids: Iterable[str] = (),
+    datetime_range: tuple[datetime, datetime] | None = None,
 ) -> Discovery:
     """New scenes since the watermark plus explicit retries, re-checked locally.
 
     `seen` holds (item id, parsed `updated`) pairs already processed
     successfully; an item republished with a new `updated` is processed again.
+
+    `datetime_range`, when given, restricts the main search to a closed
+    acquisition interval [start, end]. Like cloud cover and footprint
+    intersection it is re-checked locally, because the server may ignore it;
+    the retry-by-id search is not restricted by it.
     """
-    kwargs = build_search_kwargs(cfg, bbox=bbox, created_from=created_from)
+    kwargs = build_search_kwargs(
+        cfg, bbox=bbox, created_from=created_from, datetime_range=datetime_range
+    )
     candidates = list(client.search(**kwargs).items_as_dicts())
     retry_list = list(retry_ids)
     if retry_list:
@@ -165,6 +189,11 @@ def discover(
             if updated_raw and (item_id, parse_timestamp(str(updated_raw))) in seen:
                 result.skipped_seen += 1
                 continue
+            if datetime_range is not None:
+                acquired = parse_timestamp(str(props["datetime"]))
+                if not datetime_range[0] <= acquired <= datetime_range[1]:
+                    result.skipped_filter += 1
+                    continue
             cloud = props.get("eo:cloud_cover")
             if cloud is None or float(cloud) >= cfg.cloud_cover_max:
                 result.skipped_filter += 1

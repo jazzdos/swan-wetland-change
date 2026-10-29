@@ -1,13 +1,19 @@
 from __future__ import annotations
 
+import dataclasses
+import io
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
+
+import pyarrow.parquet as pq
 
 from wetland_change.catalogue.item import SceneItem
 from wetland_change.ledger import (
     LEDGER_SCHEMA,
     MAX_ATTEMPTS,
+    RUN_KIND_BACKFILL,
     attempts_so_far,
+    entries_to_table,
     entry_for,
     exhausted_keys,
     ledger_path,
@@ -116,3 +122,123 @@ def test_later_success_supersedes_failure(
     assert retry_ids(ledger) == []
     assert exhausted_keys(ledger) == set()
     assert seen_keys(ledger) == {(fixture_scene.item_id, fixture_scene.updated)}
+
+
+def _late(scene: SceneItem) -> SceneItem:
+    return dataclasses.replace(
+        scene,
+        item_id="late",
+        created=scene.created + timedelta(days=5),
+        updated=scene.updated + timedelta(days=5),
+    )
+
+
+def test_ledger_path_with_part(fixture_scene: SceneItem, tmp_path: Path) -> None:
+    store = OutputStore(str(tmp_path))
+    assert ledger_path("r1", 2026, 3) == "ledger/year=2026/ledger_r1_00003.parquet"
+    entry = entry_for(
+        fixture_scene, status="succeeded", attempts=1, run_id="r1", processed_at=T0
+    )
+    files = write_ledger([entry], store, run_id="r1", part=3)
+    assert files == ["ledger/year=2026/ledger_r1_00003.parquet"]
+
+
+def test_run_kind_defaults_to_run_and_round_trips(
+    fixture_scene: SceneItem, tmp_path: Path
+) -> None:
+    store = OutputStore(str(tmp_path))
+    replaced = dataclasses.replace(fixture_scene, item_id="other")
+    entries = [
+        entry_for(
+            fixture_scene, status="succeeded", attempts=1, run_id="r1", processed_at=T0
+        ),
+        entry_for(
+            replaced,
+            status="succeeded",
+            attempts=1,
+            run_id="r1",
+            processed_at=T0,
+            run_kind=RUN_KIND_BACKFILL,
+        ),
+        rejected_entry(
+            "bad-id",
+            "collection mismatch",
+            run_id="r1",
+            processed_at=T0,
+            run_kind=RUN_KIND_BACKFILL,
+        ),
+    ]
+    write_ledger(entries, store, run_id="r1")
+    kinds = read_ledger(store).column("run_kind").to_pylist()
+    assert kinds == ["run", "backfill", "backfill"]
+
+
+def test_watermark_ignores_backfill_rows(
+    fixture_scene: SceneItem, tmp_path: Path
+) -> None:
+    store = OutputStore(str(tmp_path))
+    late = _late(fixture_scene)
+    daily = entry_for(
+        fixture_scene, status="succeeded", attempts=1, run_id="r1", processed_at=T0
+    )
+    backfill = entry_for(
+        late,
+        status="succeeded",
+        attempts=1,
+        run_id="b1",
+        processed_at=T0,
+        run_kind=RUN_KIND_BACKFILL,
+    )
+    write_ledger([daily], store, run_id="r1")
+    write_ledger([backfill], store, run_id="b1")
+    ledger = read_ledger(store)
+    assert watermark(ledger) == fixture_scene.created
+    keys = seen_keys(ledger)
+    assert (fixture_scene.item_id, fixture_scene.updated) in keys
+    assert ("late", late.updated) in keys
+
+
+def test_watermark_is_none_with_only_backfill_rows(
+    fixture_scene: SceneItem, tmp_path: Path
+) -> None:
+    store = OutputStore(str(tmp_path))
+    backfill = entry_for(
+        _late(fixture_scene),
+        status="succeeded",
+        attempts=1,
+        run_id="b1",
+        processed_at=T0,
+        run_kind=RUN_KIND_BACKFILL,
+    )
+    write_ledger([backfill], store, run_id="b1")
+    assert watermark(read_ledger(store)) is None
+
+
+def test_reads_ledger_files_written_before_run_kind(
+    fixture_scene: SceneItem, tmp_path: Path
+) -> None:
+    store = OutputStore(str(tmp_path))
+    seed = entries_to_table(
+        [
+            entry_for(
+                fixture_scene, status="seed", attempts=0, run_id="seed", processed_at=T0
+            )
+        ]
+    ).drop_columns(["run_kind"])
+    buffer = io.BytesIO()
+    pq.write_table(seed, buffer)
+    store.write_bytes("ledger/year=2026/ledger_seed.parquet", buffer.getvalue())
+    backfill = entry_for(
+        _late(fixture_scene),
+        status="succeeded",
+        attempts=1,
+        run_id="b1",
+        processed_at=T0,
+        run_kind=RUN_KIND_BACKFILL,
+    )
+    write_ledger([backfill], store, run_id="b1")
+    ledger = read_ledger(store)
+    assert ledger.schema.equals(LEDGER_SCHEMA)
+    kinds = ledger.column("run_kind").to_pylist()
+    assert sorted(v or "" for v in kinds) == ["", "backfill"]
+    assert watermark(ledger) == fixture_scene.created
