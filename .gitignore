@@ -13,3 +13,10 @@ __pycache__/
 .ruff_cache/
 
 .agents/shousper-stories/local/
+
+# Terraform / OpenTofu
+infra/.terraform/
+*.tfstate
+*.tfstate.*
+*.tfvars
+crash.log
