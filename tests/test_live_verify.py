@@ -5,6 +5,7 @@ Run with: uv run pytest -q -m live tests/test_live_verify.py
 
 from __future__ import annotations
 
+from datetime import UTC, datetime
 from pathlib import Path
 
 import pytest
@@ -12,9 +13,11 @@ from shapely.geometry import box
 
 from tests.conftest import REQUIRED_ASSETS, load_fixture_item
 from wetland_change.catalogue.item import parse_item
+from wetland_change.catalogue.search import open_client
 from wetland_change.config import load_config
 from wetland_change.raster.read import RasterioReader, read_stack
 from wetland_change.stats import rasterise
+from wetland_change.verify.copernicus import CDSE_STAC, discovery_checks
 from wetland_change.verify.pixels import pixel_check
 from wetland_change.verify.scl import scl_checks
 from wetland_change.verify.wo import dea_reader, find_wo_href, wo_check
@@ -74,3 +77,24 @@ def test_water_agrees_with_dea_wo(remote_scene) -> None:  # type: ignore[no-unty
     )
     assert check.detail["n_mutually_clear"] > 10000
     assert check.passed, check.detail
+
+
+def test_discovery_lists_both_catalogues_for_50hlk() -> None:
+    cfg = load_config(Path(__file__).parents[1] / "config" / "pipeline.toml")
+    end = datetime(2026, 10, 29, tzinfo=UTC)
+    checks = discovery_checks(
+        open_client(cfg.stac.endpoint),
+        open_client(CDSE_STAC),
+        cfg.stac,
+        bbox=THOMSONS_4326,
+        polygons_4326=[box(*THOMSONS_4326)],
+        start=datetime(2026, 10, 1, tzinfo=UTC),
+        end=end,
+        now=end,
+    )
+    check = next((c for c in checks if c.detail.get("tile") == "50HLK"), None)
+    assert check is not None, [c.detail for c in checks]
+    assert check.passed is not None, check.detail
+    month = check.detail["months"].get("2026-10", {})
+    assert month.get("earth_search", 0) > 0, check.detail
+    assert month.get("cdse", 0) > 0, check.detail

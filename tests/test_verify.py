@@ -8,6 +8,7 @@ import numpy as np
 
 from tests.conftest import FIXTURE_DIR
 from wetland_change.catalogue.item import SceneItem
+from wetland_change.manifest import manifest_path
 from wetland_change.store import OutputStore
 from wetland_change.verify.checks import Check, write_report
 from wetland_change.verify.pixels import pc_item_id
@@ -327,6 +328,14 @@ def _built_run(
     return cfg, OutputStore(cfg.output.root), manifest.run_id, polygons
 
 
+@pytest.fixture(autouse=True)
+def _no_network(monkeypatch: pytest.MonkeyPatch) -> None:
+    def refuse(endpoint: str) -> Any:
+        raise RuntimeError("network disabled in offline tests")
+
+    monkeypatch.setattr("wetland_change.verify.run.open_client", refuse)
+
+
 def test_scenes_for_run_and_latest_run_id(
     fixture_item: dict[str, Any], fixture_polygon: BaseGeometry, tmp_path: Path
 ) -> None:
@@ -430,6 +439,147 @@ def test_verify_run_with_unknown_run_scores_nothing(
     assert verify_run(cfg, store, "typo", polygons=polygons, docs_dir=None) == []
     report = json.loads(store.read_bytes("verification/typo.json"))
     assert report["all_passed"] is False and report["n_scored"] == 0
+
+
+ES_HLK = "S2C_MSIL2A_20261027T021211_N0513_R060_T50HLK_20261027T071801"
+CDSE_HLK = "S2C_MSIL2A_20261027T021211_N0512_R060_T50HLK_20261027T091500"
+CDSE_HLJ = "S2C_MSIL2A_20261027T021211_N0512_R060_T50HLJ_20261027T091500"
+
+
+def _discovery_clients(
+    fixture_item: dict[str, Any],
+) -> tuple[FakeClient, list[dict[str, Any]]]:
+    other = copy.deepcopy(fixture_item)
+    other["id"] = fixture_item["id"].replace("50HLK", "50HLJ")
+    other["properties"]["s2:product_uri"] = fixture_item["properties"][
+        "s2:product_uri"
+    ].replace("T50HLK", "T50HLJ")
+    other["properties"]["grid:code"] = "MGRS-50HLJ"
+    cdse = [
+        {
+            "id": name,
+            "geometry": fixture_item["geometry"],
+            "properties": {
+                "datetime": fixture_item["properties"]["datetime"],
+                "eo:cloud_cover": 5.0,
+                "grid:code": f"MGRS-{name.split('_')[5][1:]}",
+            },
+        }
+        for name in (CDSE_HLK, CDSE_HLJ)
+    ]
+    return FakeClient([fixture_item, other]), cdse
+
+
+def _discovery(checks: list[Check]) -> dict[str, Check]:
+    return {c.detail["tile"]: c for c in checks if c.name == "discovery_vs_copernicus"}
+
+
+def test_verify_run_emits_discovery_check_per_tile(
+    fixture_item: dict[str, Any], fixture_polygon: BaseGeometry, tmp_path: Path
+) -> None:
+    cfg, store, run_id, polygons = _built_run(fixture_item, fixture_polygon, tmp_path)
+    es, cdse = _discovery_clients(fixture_item)
+    checks = verify_run(
+        cfg,
+        store,
+        run_id,
+        polygons=polygons,
+        es_client=es,
+        cdse_client=FakeClient(cdse),
+        wo_lookup=lambda scene, bbox: None,
+        pixel_checker=lambda *a: Check("p", True, 1.0, 1.0, "fake"),
+        docs_dir=None,
+    )
+    found = [c for c in checks if c.name == "discovery_vs_copernicus"]
+    assert len(found) == 2
+    assert set(_discovery(checks)) == {"50HLK", "50HLJ"}
+    assert all(c.passed is True for c in found)
+    report = json.loads(store.read_bytes(f"verification/{run_id}.json"))
+    in_report = [c for c in report["checks"] if c["name"] == "discovery_vs_copernicus"]
+    assert len(in_report) == 2
+
+
+def test_verify_run_discovery_fails_for_product_missing_from_earth_search(
+    fixture_item: dict[str, Any], fixture_polygon: BaseGeometry, tmp_path: Path
+) -> None:
+    cfg, store, run_id, polygons = _built_run(fixture_item, fixture_polygon, tmp_path)
+    es, cdse = _discovery_clients(fixture_item)
+    es.items = es.items[:1]  # Earth Search lacks the 50HLJ product
+    for item in cdse:  # sensed more than 24 h before the run start
+        item["properties"]["datetime"] = "2026-10-27T02:26:39Z"
+    checks = verify_run(
+        cfg,
+        store,
+        run_id,
+        polygons=polygons,
+        es_client=es,
+        cdse_client=FakeClient(cdse),
+        wo_lookup=lambda scene, bbox: None,
+        pixel_checker=lambda *a: Check("p", True, 1.0, 1.0, "fake"),
+        docs_dir=None,
+    )
+    by_tile = _discovery(checks)
+    assert by_tile["50HLK"].passed is True
+    assert by_tile["50HLJ"].passed is False
+    assert by_tile["50HLJ"].detail["missing_from_earth_search"] == [CDSE_HLJ]
+
+
+def test_verify_run_discovery_latency_uses_listing_time_not_run_start(
+    fixture_item: dict[str, Any], fixture_polygon: BaseGeometry, tmp_path: Path
+) -> None:
+    cfg, store, run_id, polygons = _built_run(fixture_item, fixture_polygon, tmp_path)
+    es, cdse = _discovery_clients(fixture_item)
+    es.items = es.items[:1]  # Earth Search lacks the 50HLJ product
+    for item in cdse:  # sensed within 24 h of the run start
+        item["properties"]["datetime"] = "2026-10-27T02:26:39Z"
+    manifest_key = manifest_path(run_id)
+    manifest = json.loads(store.read_bytes(manifest_key))
+    manifest["started_at"] = "2026-10-27T10:00:00Z"
+    store.write_bytes(manifest_key, json.dumps(manifest).encode())
+    checks = verify_run(
+        cfg,
+        store,
+        run_id,
+        polygons=polygons,
+        es_client=es,
+        cdse_client=FakeClient(cdse),
+        wo_lookup=lambda scene, bbox: None,
+        pixel_checker=lambda *a: Check("p", True, 1.0, 1.0, "fake"),
+        docs_dir=None,
+        clock=lambda: datetime(2026, 10, 30, 10, 0, tzinfo=UTC),  # listed 3 days on
+    )
+    by_tile = _discovery(checks)
+    assert by_tile["50HLJ"].passed is False
+    assert by_tile["50HLJ"].detail["missing_from_earth_search"] == [CDSE_HLJ]
+    assert by_tile["50HLJ"].detail["pending_latency"] == []
+
+
+def test_verify_run_discovery_error_is_one_skipped_check(
+    fixture_item: dict[str, Any], fixture_polygon: BaseGeometry, tmp_path: Path
+) -> None:
+    cfg, store, run_id, polygons = _built_run(fixture_item, fixture_polygon, tmp_path)
+
+    class Broken:
+        def search(self, **kwargs: Any) -> Any:
+            raise RuntimeError("CDSE is down")
+
+    checks = verify_run(
+        cfg,
+        store,
+        run_id,
+        polygons=polygons,
+        es_client=FakeClient([fixture_item]),
+        cdse_client=Broken(),
+        wo_lookup=lambda scene, bbox: None,
+        pixel_checker=lambda *a: Check("p", True, 1.0, 1.0, "fake"),
+        docs_dir=None,
+    )
+    found = [c for c in checks if c.name == "discovery_vs_copernicus"]
+    assert len(found) == 1
+    assert found[0].passed is None
+    assert "CDSE is down" in found[0].detail["error"]
+    assert found[0].detail["run_id"] == run_id
+    assert any(c.name == "reflectance_scaling" and c.passed for c in checks)
 
 
 def test_pixel_check_skips_on_different_processing_baseline(
