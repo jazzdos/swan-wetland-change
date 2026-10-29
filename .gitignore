@@ -3,7 +3,7 @@
 MACHINES.md
 data/*
 !data/SOURCES.md
-outputs/
+/outputs/
 scratch/
 *.log
 .venv/
