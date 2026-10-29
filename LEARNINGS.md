@@ -98,6 +98,82 @@ agreement_min default is lowered from 0.95 to 0.91 (0.9303 minus 0.02, rounded
 down). The live test test_water_agrees_with_dea_wo now reads the calibrated
 [water] section from config/pipeline.toml and passes at 0.91.
 
+### Per-polygon water calibration (2026-10-29)
+
+Scope: ramsar-15, ramsar-28 and ramsar-56, the three polygons that failed
+water_vs_dea_s2_wo at the global setting. The Earth Search search (c1, cloud
+cover under 20 percent, last 90 days, bbox over the three polygons) returned 37
+items; 29 of them had a scoreable window, giving 51 polygon-scene passes
+between 2026-08-03 and 2026-10-29. DEA ga_s2_wo_provisional_3 keeps about 3
+months, so these are the only passes available now. Passes and mutually clear
+pixels by polygon: ramsar-15 10 passes (tile 50HLJ), 57288 pixels; ramsar-28 22
+passes (10 on 50HLJ, 12 on 50HLK), 126489 pixels; ramsar-56 19 passes (12 on
+50HLK, 7 on 50HMK), 345217 pixels. Total 528994 pixels. Agreement is pixel
+weighted, sum(n_agree) / sum(n_mutually_clear), over subset=all rows. The sweep
+covered NDWI and MNDWI at thresholds -0.50 to 0.50 in steps of 0.05, plus SCL
+class 6. wetland_change.config.WaterConfig accepts only ndwi and mndwi, so scl6
+cannot be expressed in config today. Applying scl6 to ramsar-15 needs a config
+change that a later story must decide; this story changes no config and no code.
+The ndwi -0.45 setting below is the best the current config can express.
+
+Proposed settings (agreement_min is pooled agreement minus 0.02, rounded down
+to 2 decimals, the S2 convention):
+- ramsar-15: method scl6 (class 6, no threshold), agreement 0.9682,
+  agreement_min 0.94. Failing passes at agreement_min: 1 of 10 (2026-09-17,
+  0.9384). Best setting the config can express: method ndwi, threshold -0.45,
+  agreement 0.7814, agreement_min 0.76. wo_check applies agreement_min to each
+  pass, not to the pooled figure, and this setting fails 6 of 10 passes
+  (2026-09-12 0.4800 on 300 pixels, 08-03 0.6439, 09-07 0.6107, 09-17 0.7247,
+  10-02 0.6273, 10-12 0.6145). No ndwi or mndwi setting lets ramsar-15 pass
+  most of its passes: the best any of them manages with its own pooled
+  agreement_min is 4 of 10 failing. It is not a viable fallback.
+- ramsar-28: method ndwi, threshold -0.15, agreement 0.9438, agreement_min 0.92.
+  Failing passes at agreement_min: 0 of 22 (worst 0.9202, 2026-08-30, 50HLJ). Selection
+  rule: take the best pooled setting, and prefer mndwi -0.1 only when it is
+  within 0.005 of the best (it is not: 0.9296). The near-equal alternative is
+  mndwi 0.05, pooled 0.9414, 0.24 percentage points below ndwi -0.15; ramsar-56
+  uses that same setting.
+- ramsar-56: method mndwi, threshold 0.05, agreement 0.9795, agreement_min 0.95.
+  Failing passes at agreement_min: 1 of 19 (2026-08-28, 50HLK, 0.9487).
+
+For context, the global setting (method mndwi, threshold -0.1) scores 0.6311 on
+ramsar-15, 0.9296 on ramsar-28 and 0.9541 on ramsar-56 (0.9132 pooled over the
+three). SCL class 6 scores 0.9682, 0.8485 and 0.8875 (0.8869 pooled).
+
+One setting for all three: the best pooled setting is method mndwi, threshold
+0.05, at 0.9311. It loses nothing on ramsar-56 (0.9795, equal to its own best),
+0.24 percentage points on ramsar-28 (0.9414 against 0.9438), and 16.5
+percentage points on ramsar-15 (0.6169 against 0.7814 for its best
+ndwi/mndwi setting, 35.1 against SCL class 6). Pooled over ramsar-28 and
+ramsar-56 alone it scores 0.9693 (0.9475 at mndwi -0.1). One setting serves
+ramsar-28 and ramsar-56 but not ramsar-15.
+
+ramsar-15 is the odd one. Its MNDWI and NDWI agreement swings by pass (MNDWI at
+-0.1 is about 0.50 on 2026-08-03, 08-28, 09-17, 10-02 and 10-12, about 0.90 on
+08-30 and 10-29) while SCL class 6 stays between 0.9384 and 0.9754 on every full-size pass. The
+2026-10-27 pass scores 0.576 at mndwi -0.1, 0.6887 at mndwi -0.25, 0.8815 with
+ndwi -0.45 and 0.9615 with scl6. Because SCL class 6 agrees with DEA WO on
+every pass, the outlier is in the index values, not in the scene or the WO
+layer. Unconfirmed inference: this 68 ha polygon holds shallow or turbid
+water whose green/SWIR contrast sits near the threshold, so small changes in
+water colour between passes flip most of its pixels. It has not been checked
+at pixel level.
+
+Seam, ramsar-56: at the chosen setting (mndwi 0.05) agreement is 0.9786 on
+50HLK against 0.9844 on 50HMK, a 0.58 percentage point difference (HMK higher),
+over all in-scene pixels (12 and 7 passes). On the seam-overlap pixels only
+(the 7 dates with both tiles, 61574 and 55754 pixels) it is 0.9839 against
+0.9844, 0.05 percentage points. At the global setting (mndwi -0.1) the
+difference is 0.29 percentage points in scene (0.9545 against 0.9516) and 0.20
+on the overlap (0.9536 against 0.9516). The seam does not explain the lower
+ramsar-56 agreement at the global setting; the threshold does (0.9541 at -0.1
+against 0.9795 at 0.05).
+
+Per-pass rows for every polygon, pass, method and threshold, including the
+seam_overlap subset, are in docs/research/2026-10-29-polygon-calibration.csv.
+The scripts that produced it (scratch/spikes/polygon_calibrate.py and its log)
+are untracked in scratch/spikes/.
+
 ## Live run findings
 
 ### SCL overview resampling (2026-10-29)
