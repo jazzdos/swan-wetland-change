@@ -74,3 +74,26 @@ def write_observations(rows: Sequence[ObservationRow], store: OutputStore) -> st
     relpath = observation_path(first.datetime.year, first.tile, first.item_id)
     store.write_bytes(relpath, to_geoparquet_bytes(rows_to_frame(rows)))
     return relpath
+
+
+def _empty_observations() -> gpd.GeoDataFrame:
+    frame = pd.DataFrame({col: [] for col in OBSERVATION_COLUMNS})
+    frame["datetime"] = pd.to_datetime(frame["datetime"], utc=True)
+    return gpd.GeoDataFrame(frame, geometry=[], crs="EPSG:4326")
+
+
+def read_observations(store: OutputStore) -> gpd.GeoDataFrame:
+    """Every stored observation, sorted by item then polygon."""
+    paths = [
+        path
+        for path in store.list_files("observations")
+        if path.rsplit("/", 1)[-1].startswith("obs_") and path.endswith(".parquet")
+    ]
+    if not paths:
+        return _empty_observations()
+    frames = [gpd.read_parquet(BytesIO(store.read_bytes(path))) for path in paths]
+    combined = pd.concat(frames, ignore_index=True)
+    ordered = combined.sort_values(["item_id", "polygon_id"], kind="stable")
+    return gpd.GeoDataFrame(
+        ordered.reset_index(drop=True), geometry="geometry", crs="EPSG:4326"
+    )

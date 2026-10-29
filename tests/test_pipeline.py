@@ -3,13 +3,17 @@ from __future__ import annotations
 import copy
 import hashlib
 import json
+import shutil
+import subprocess
 from collections.abc import Iterator
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Any
 
 import geopandas as gpd
+import pyarrow.parquet as pq
 import pyproj
+import pytest
 from shapely.geometry import box
 from shapely.geometry.base import BaseGeometry
 from shapely.ops import transform as shapely_transform
@@ -24,9 +28,12 @@ from wetland_change.config import (
     WaterConfig,
 )
 from wetland_change.ledger import read_ledger, retry_ids
-from wetland_change.manifest import RunManifest
-from wetland_change.pipeline import run_once
+from wetland_change.manifest import KIND_SCORE, RunManifest
+from wetland_change.outputs.changes import CHANGE_COLUMNS, change_path
+from wetland_change.outputs.geoparquet import observation_path, write_observations
+from wetland_change.pipeline import backfill_once, run_once, score_changes, score_once
 from wetland_change.raster.read import RasterioReader
+from wetland_change.stats import ObservationRow
 from wetland_change.store import OutputStore
 
 NOW = datetime(2026, 10, 29, 10, 0, tzinfo=UTC)
@@ -229,3 +236,216 @@ def test_run_once_records_output_root_override(
         recorded["config_sha256"]
         == hashlib.sha256(config_path.read_bytes()).hexdigest()
     )
+
+
+def _probe(
+    tmp_path: Path, item: dict[str, Any], fixture_polygon: BaseGeometry
+) -> dict[str, Any]:
+    """The fixture scene's observation row, from a run in a scratch root."""
+    probe = tmp_path / "probe"
+    probe.mkdir()
+    manifest = _run(probe, FakeClient([item]), _polygons(fixture_polygon), NOW)
+    frame = gpd.read_parquet(probe / "out" / manifest.observation_files[0])
+    row: dict[str, Any] = frame.iloc[0].to_dict()
+    row["datetime"] = row["datetime"].to_pydatetime()
+    return row
+
+
+def _seed_october_baseline(
+    store: OutputStore, probe: dict[str, Any], fixture_polygon: BaseGeometry
+) -> None:
+    """Six prior Octobers far from the fixture row, with nonzero spread."""
+    geometry = _polygons(fixture_polygon)[0].geometry_4326
+    for i in range(6):
+        when = probe["datetime"].replace(year=2020 + i)
+        write_observations(
+            [
+                ObservationRow(
+                    polygon_id="ramsar-52",
+                    site=probe["site"],
+                    aoi_layer=probe["aoi_layer"],
+                    item_id=f"prior-{2020 + i}",
+                    product_uri=probe["product_uri"],
+                    datetime=when,
+                    tile=probe["tile"],
+                    processing_baseline=probe["processing_baseline"],
+                    scene_coverage=1.0,
+                    n_pixels=1000,
+                    n_clear=950,
+                    valid_fraction=0.95,
+                    cloud_fraction=0.05,
+                    water_ha_index=probe["water_ha_index"] + 10.0 + 0.5 * i,
+                    water_ha_scl=probe["water_ha_scl"],
+                    ndwi_median=probe["ndwi_median"],
+                    mndwi_median=probe["mndwi_median"],
+                    ndvi_median=probe["ndvi_median"] + 0.3 + 0.01 * i,
+                    dea_wo_agreement=None,
+                    geometry_4326=geometry,
+                    run_id="seed",
+                )
+            ],
+            store,
+        )
+
+
+def test_run_once_writes_change_file_for_flagged_item(
+    fixture_item: dict[str, Any], fixture_polygon: BaseGeometry, tmp_path: Path
+) -> None:
+    probe = _probe(tmp_path, fixture_item, fixture_polygon)
+    store = OutputStore(str(tmp_path / "out"))
+    _seed_october_baseline(store, probe, fixture_polygon)
+    client = FakeClient([fixture_item])
+    manifest = _run(tmp_path, client, _polygons(fixture_polygon), NOW)
+    expected = change_path(2026, probe["tile"], probe["item_id"])
+    assert manifest.change_rows == 2
+    assert manifest.change_files == [expected]
+    out = tmp_path / "out"
+    back = gpd.read_parquet(out / expected)
+    assert set(CHANGE_COLUMNS) <= set(back.columns)
+    assert sorted(back["metric"]) == ["ndvi_median", "water_ha_index"]
+    recorded = json.loads((out / "runs" / f"{manifest.run_id}.json").read_text())
+    assert recorded["change_rows"] == 2
+    assert recorded["change_files"] == [expected]
+    exe = shutil.which("geoparquet-validator")
+    if exe is not None:
+        result = subprocess.run(
+            [exe, "check", str(out / expected), "--json"],
+            capture_output=True,
+            text=True,
+        )
+        assert result.returncode == 0, result.stdout + result.stderr
+    before = (out / expected).read_bytes()
+    again = score_changes(
+        store,
+        min_valid_fraction=_config(tmp_path).water.min_valid_fraction,
+        dates=[probe["datetime"].date()],
+    )
+    assert again.files == [expected]
+    assert (out / expected).read_bytes() == before
+    second = _run(tmp_path, client, _polygons(fixture_polygon), NOW + timedelta(days=1))
+    assert second.change_rows == 0
+    assert second.change_files == []
+    assert (out / expected).read_bytes() == before
+
+
+def test_run_once_without_baseline_writes_no_changes(
+    fixture_item: dict[str, Any], fixture_polygon: BaseGeometry, tmp_path: Path
+) -> None:
+    manifest = _run(
+        tmp_path, FakeClient([fixture_item]), _polygons(fixture_polygon), NOW
+    )
+    assert manifest.change_rows == 0
+    assert manifest.change_files == []
+    assert not (tmp_path / "out" / "changes").exists()
+
+
+def test_backfill_once_does_not_score(
+    fixture_item: dict[str, Any], fixture_polygon: BaseGeometry, tmp_path: Path
+) -> None:
+    probe = _probe(tmp_path, fixture_item, fixture_polygon)
+    store = OutputStore(str(tmp_path / "out"))
+    _seed_october_baseline(store, probe, fixture_polygon)
+    cfg = _config(tmp_path)
+    config_path = tmp_path / "pipeline.toml"
+    config_path.write_text("# test\n")
+    manifest = backfill_once(
+        cfg,
+        start=datetime(2026, 10, 26, tzinfo=UTC),
+        end=datetime(2026, 10, 28, 23, 59, 59, tzinfo=UTC),
+        client=FakeClient([fixture_item]),
+        reader=RasterioReader(),
+        store=store,
+        polygons=_polygons(fixture_polygon),
+        now=NOW,
+        config_path=config_path,
+    )
+    assert manifest.processed == 1
+    assert manifest.change_rows == 0
+    assert manifest.change_files == []
+    assert not (tmp_path / "out" / "changes").exists()
+
+
+def _score_once(
+    tmp_path: Path, start: datetime, end: datetime, now: datetime
+) -> RunManifest:
+    cfg = _config(tmp_path)
+    config_path = tmp_path / "pipeline.toml"
+    config_path.write_text("# test\n")
+    return score_once(
+        cfg,
+        start=start,
+        end=end,
+        store=OutputStore(cfg.output.root),
+        now=now,
+        config_path=config_path,
+        output_root_override="override-root",
+    )
+
+
+def test_score_once_scores_range_and_writes_manifest(
+    fixture_item: dict[str, Any], fixture_polygon: BaseGeometry, tmp_path: Path
+) -> None:
+    probe = _probe(tmp_path, fixture_item, fixture_polygon)
+    store = OutputStore(str(tmp_path / "out"))
+    first = _run(tmp_path, FakeClient([fixture_item]), _polygons(fixture_polygon), NOW)
+    assert first.change_rows == 0
+    _seed_october_baseline(store, probe, fixture_polygon)
+    start = datetime(2026, 10, 26, tzinfo=UTC)
+    end = datetime(2026, 10, 28, 23, 59, 59, tzinfo=UTC)
+    later = NOW + timedelta(days=1)
+    manifest = _score_once(tmp_path, start, end, later)
+    expected = change_path(2026, probe["tile"], probe["item_id"])
+    assert manifest.kind == KIND_SCORE
+    assert manifest.change_rows == 2
+    assert manifest.change_files == [expected]
+    assert (manifest.datetime_start, manifest.datetime_end) == (start, end)
+    assert manifest.watermark_before is None
+    assert manifest.watermark_after is None
+    assert (manifest.discovered, manifest.processed, manifest.failed) == (0, 0, 0)
+    assert manifest.output_root_override == "override-root"
+    assert (tmp_path / "out" / expected).exists()
+    recorded = json.loads(
+        (tmp_path / "out" / "runs" / f"{manifest.run_id}.json").read_text()
+    )
+    assert recorded["kind"] == "score"
+    assert recorded["change_rows"] == 2
+    assert recorded["change_files_removed"] == []
+    assert pq.read_schema(tmp_path / "out" / expected).names[0] == "polygon_id"
+    with pytest.raises(ValueError, match="manifest"):
+        _score_once(tmp_path, start, end, later)
+
+
+def test_score_once_records_removed_change_files(
+    fixture_item: dict[str, Any], fixture_polygon: BaseGeometry, tmp_path: Path
+) -> None:
+    probe = _probe(tmp_path, fixture_item, fixture_polygon)
+    store = OutputStore(str(tmp_path / "out"))
+    _run(tmp_path, FakeClient([fixture_item]), _polygons(fixture_polygon), NOW)
+    _seed_october_baseline(store, probe, fixture_polygon)
+    start = datetime(2026, 10, 26, tzinfo=UTC)
+    end = datetime(2026, 10, 28, 23, 59, 59, tzinfo=UTC)
+    first = _score_once(tmp_path, start, end, NOW + timedelta(days=1))
+    expected = change_path(2026, probe["tile"], probe["item_id"])
+    assert first.change_files == [expected]
+    assert first.change_files_removed == []
+    for year in range(2020, 2026):
+        assert store.delete(observation_path(year, probe["tile"], f"prior-{year}"))
+    second = _score_once(tmp_path, start, end, NOW + timedelta(days=2))
+    assert second.change_files == []
+    assert second.change_files_removed == [expected]
+    assert not (tmp_path / "out" / expected).exists()
+    recorded = json.loads(
+        (tmp_path / "out" / "runs" / f"{second.run_id}.json").read_text()
+    )
+    assert recorded["change_files_removed"] == [expected]
+
+
+def test_score_once_rejects_reversed_and_naive_ranges(tmp_path: Path) -> None:
+    start = datetime(2026, 10, 28, tzinfo=UTC)
+    end = datetime(2026, 10, 26, tzinfo=UTC)
+    with pytest.raises(ValueError, match="after end"):
+        _score_once(tmp_path, start, end, NOW)
+    with pytest.raises(ValueError, match="timezone-aware"):
+        _score_once(tmp_path, datetime(2026, 10, 26), end, NOW)
+    with pytest.raises(ValueError, match="timezone-aware"):
+        _score_once(tmp_path, start, datetime(2026, 10, 29), NOW)
