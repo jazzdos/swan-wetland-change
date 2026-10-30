@@ -246,8 +246,8 @@ def _verify_scene(
                     wo_href=href,
                     reader=dea,
                     scene_grid=grid,
+                    polygon_id=polygon.polygon_id,
                 )
-                result.detail["polygon_id"] = polygon.polygon_id
                 return [result]
 
             checks.extend(

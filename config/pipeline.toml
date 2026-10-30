@@ -19,7 +19,25 @@ operation_epsg = 32750
 [water]
 method = "mndwi"
 threshold = -0.1
+agreement_min = 0.91
 min_valid_fraction = 0.8
+
+# Per-polygon overrides: LEARNINGS.md "Per-polygon water calibration" and
+# docs/decisions/0005-per-polygon-water-settings.md. scl6 means SCL class 6
+# and takes no threshold.
+[water.overrides.ramsar-15]
+method = "scl6"
+agreement_min = 0.94
+
+[water.overrides.ramsar-28]
+method = "ndwi"
+threshold = -0.15
+agreement_min = 0.92
+
+[water.overrides.ramsar-56]
+method = "mndwi"
+threshold = 0.05
+agreement_min = 0.95
 
 [output]
 root = "outputs"

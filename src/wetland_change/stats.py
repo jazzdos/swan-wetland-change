@@ -13,7 +13,7 @@ from shapely.geometry.base import BaseGeometry
 
 from wetland_change.aoi import AoiPolygon
 from wetland_change.catalogue.item import SceneItem
-from wetland_change.config import WaterConfig
+from wetland_change.config import WaterConfig, WaterSetting
 from wetland_change.indices import mndwi, ndvi, ndwi
 from wetland_change.mask import clear_mask, cloud_mask, water_mask_scl
 from wetland_change.raster.read import BandStack
@@ -63,6 +63,26 @@ def _median(values: np.ndarray, mask: np.ndarray) -> float:
     return float(np.median(selected)) if selected.size else float("nan")
 
 
+def water_pixels(
+    setting: WaterSetting, stack: BandStack, clear: np.ndarray
+) -> np.ndarray:
+    """Clear pixels the setting calls water: SCL class 6 for scl6, else the
+    setting's index (ndwi or mndwi) above its threshold."""
+    if setting.method == "scl6":
+        scl_water: np.ndarray = clear & water_mask_scl(stack.scl)
+        return scl_water
+    if setting.threshold is None:  # WaterSetting's validator forbids this
+        raise ValueError(f"method {setting.method!r} needs a threshold")
+    index = (
+        ndwi(stack.green, stack.nir)
+        if setting.method == "ndwi"
+        else mndwi(stack.green, stack.swir16)
+    )
+    with np.errstate(invalid="ignore"):
+        water: np.ndarray = clear & (index > setting.threshold)
+    return water
+
+
 def summarise(
     polygon: AoiPolygon,
     scene: SceneItem,
@@ -72,7 +92,11 @@ def summarise(
     water: WaterConfig,
     run_id: str,
 ) -> ObservationRow:
-    """One observation row: areas in hectares, medians over clear pixels."""
+    """One observation row: areas in hectares, medians over clear pixels.
+
+    water_ha_index uses the polygon's override from water.overrides when it has
+    one, else the global setting (decision 0005).
+    """
     inside = rasterise(polygon.geometry, stack.transform, stack.shape)
     n_pixels = int(inside.sum())
     clear = (
@@ -83,9 +107,7 @@ def summarise(
     ndwi_arr = ndwi(stack.green, stack.nir)
     mndwi_arr = mndwi(stack.green, stack.swir16)
     ndvi_arr = ndvi(stack.nir, stack.red)
-    index_arr = ndwi_arr if water.method == "ndwi" else mndwi_arr
-    with np.errstate(invalid="ignore"):
-        water_index = clear & (index_arr > water.threshold)
+    water_index = water_pixels(water.for_polygon(polygon.polygon_id), stack, clear)
     water_scl = clear & water_mask_scl(stack.scl)
     return ObservationRow(
         polygon_id=polygon.polygon_id,

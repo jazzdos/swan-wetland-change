@@ -3,7 +3,10 @@
 `ga_s2_wo_provisional_3` is on the same 10 m grid (EPSG:32750) for the same
 pass. Bit 128 is wet; bits 1 (nodata), 2 (non-contiguous), 32 (cloud
 shadow) and 64 (cloud) exclude a pixel. Agreement is scored on pixels both
-products call clear.
+products call clear. Each polygon is scored with its own water setting and
+agreement_min (`WaterConfig.for_polygon`,
+docs/decisions/0005-per-polygon-water-settings.md), and `Check.threshold` is
+that agreement_min.
 """
 
 from __future__ import annotations
@@ -15,10 +18,10 @@ import requests
 
 from wetland_change.catalogue.item import SceneItem
 from wetland_change.config import WaterConfig
-from wetland_change.indices import mndwi, ndwi
 from wetland_change.mask import clear_mask
 from wetland_change.raster.env import cog_env
 from wetland_change.raster.read import BandStack, RasterioReader, RasterReader
+from wetland_change.stats import water_pixels
 from wetland_change.verify.checks import Check
 from wetland_change.windows import Grid, PlannedWindow
 
@@ -78,26 +81,36 @@ def wo_check(
     wo_href: str,
     reader: RasterReader,
     scene_grid: Grid | None = None,
-    agreement_min: float = 0.91,
+    polygon_id: str | None = None,
 ) -> Check:
     name = "water_vs_dea_s2_wo"
+    setting = water.for_polygon(polygon_id)
+    agreement_min = setting.agreement_min
+    base: dict[str, Any] = {
+        "item": scene.item_id,
+        "method": setting.method,
+        "threshold": setting.threshold,
+        "agreement_min": agreement_min,
+        "override": polygon_id is not None and polygon_id in water.overrides,
+    }
+    if polygon_id is not None:
+        base["polygon_id"] = polygon_id
     wo_grid = reader.open_grid(wo_href)
     # `reader` is the DEA reader; the scene grid comes from the caller when it
     # already has it (it was read with the scene's own reader and environment).
     scene_grid = scene_grid or reader.open_grid(scene.bands["green"].href)
     if wo_grid.transform != scene_grid.transform:
         return Check(
-            name, False, None, agreement_min, wo_href, {"reason": "grid differs"}
+            name,
+            False,
+            None,
+            agreement_min,
+            wo_href,
+            {**base, "reason": "grid differs"},
         )
     wo = reader.read(wo_href, planned.window10)
     clear = clear_mask(stack.scl, stack.green, stack.nir, stack.swir16) & inside
-    index = (
-        ndwi(stack.green, stack.nir)
-        if water.method == "ndwi"
-        else mndwi(stack.green, stack.swir16)
-    )
-    with np.errstate(invalid="ignore"):
-        pipeline_water = clear & (index > water.threshold)
+    pipeline_water = water_pixels(setting, stack, clear)
     agreement, n = wo_agreement(pipeline_water, clear, wo)
     scl_agreement, _ = wo_agreement(clear & (stack.scl == 6), clear, wo)
     return Check(
@@ -106,11 +119,5 @@ def wo_check(
         measured=agreement if n else None,
         threshold=agreement_min,
         reference=wo_href,
-        detail={
-            "item": scene.item_id,
-            "n_mutually_clear": n,
-            "method": water.method,
-            "threshold": water.threshold,
-            "scl_agreement": scl_agreement,
-        },
+        detail={**base, "n_mutually_clear": n, "scl_agreement": scl_agreement},
     )
