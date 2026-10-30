@@ -6,8 +6,11 @@ import json
 import logging
 from collections.abc import Callable
 from datetime import UTC, datetime
+from io import BytesIO
 from pathlib import Path
 
+import numpy as np
+import pandas as pd
 from rasterio.windows import Window
 
 from wetland_change.aoi import AoiPolygon, union_bbox_4326
@@ -16,7 +19,13 @@ from wetland_change.catalogue.search import StacClient, open_client
 from wetland_change.config import PipelineConfig
 from wetland_change.ledger import read_ledger
 from wetland_change.manifest import manifest_path
-from wetland_change.raster.read import RasterioReader, RasterReader, read_stack
+from wetland_change.outputs.geoparquet import observation_path
+from wetland_change.raster.read import (
+    BandStack,
+    RasterioReader,
+    RasterReader,
+    read_stack,
+)
 from wetland_change.stats import rasterise
 from wetland_change.store import OutputStore
 from wetland_change.verify.checks import Check, write_report
@@ -25,6 +34,18 @@ from wetland_change.verify.copernicus import (
     CHECK_NAME,
     discovery_checks,
     run_window,
+)
+from wetland_change.verify.ndvi import (
+    CHECK_NAME as NDVI_CHECK,
+)
+from wetland_change.verify.ndvi import (
+    CORRELATION_CHECK_NAME as NDVI_CORRELATION_CHECK,
+)
+from wetland_change.verify.ndvi import (
+    NbartItem,
+    find_nbart_item,
+    ndvi_correlation_check,
+    ndvi_scene_check,
 )
 from wetland_change.verify.pixels import pixel_check
 from wetland_change.verify.scaling import scaling_check
@@ -89,6 +110,21 @@ def _guard(name: str, func: Callable[[], list[Check]], **detail: object) -> list
 
 WoLookup = Callable[[SceneItem, tuple[float, float, float, float]], str | None]
 PixelChecker = Callable[[SceneItem, RasterReader, Window], Check]
+NbartLookup = Callable[[SceneItem, tuple[float, float, float, float]], NbartItem | None]
+
+
+def stored_ndvi(store: OutputStore, scene: SceneItem) -> dict[str, float]:
+    """Pipeline ndvi_median per polygon for one scene; {} when it has no file."""
+    path = observation_path(scene.year, scene.tile, scene.item_id)
+    if not store.exists(path):
+        return {}
+    frame = pd.read_parquet(
+        BytesIO(store.read_bytes(path)), columns=["polygon_id", "ndvi_median"]
+    )
+    return {
+        str(pid): float(value)
+        for pid, value in zip(frame["polygon_id"], frame["ndvi_median"], strict=True)
+    }
 
 
 def _verify_scene(
@@ -99,6 +135,9 @@ def _verify_scene(
     wo_lookup: WoLookup,
     wo_reader_factory: Callable[[], RasterReader],
     pixel_checker: PixelChecker,
+    nbart_lookup: NbartLookup,
+    nbart_reader_factory: Callable[[], RasterReader],
+    store: OutputStore,
 ) -> list[Check]:
     item = scene.item_id
     checks: list[Check] = []
@@ -120,6 +159,10 @@ def _verify_scene(
     wo_href: str | None = None
     wo_reader: RasterReader | None = None
     wo_resolved = False
+    nbart: NbartItem | None = None
+    nbart_reader: RasterReader | None = None
+    stored: dict[str, float] = {}
+    nbart_resolved = False
     for polygon in polygons:
         planned = plan_window(polygon.geometry, grid)
         if planned is None:
@@ -145,33 +188,117 @@ def _verify_scene(
                             {"item": item, "reason": "no DEA WO scene found"},
                         )
                     )
-        if wo_href is None or wo_reader is None:
-            continue
+        if not nbart_resolved:
+            nbart_resolved = True
+            try:
+                nbart = nbart_lookup(scene, union_bbox_4326(polygons))
+                if nbart is not None:
+                    stored = stored_ndvi(store, scene)
+                    nbart_reader = nbart_reader_factory()
+            except Exception as exc:
+                checks.append(_error_check(NDVI_CHECK, exc, item=item))
+                nbart = None
+            else:
+                if nbart is None:
+                    checks.append(
+                        Check(
+                            NDVI_CHECK,
+                            None,
+                            None,
+                            None,
+                            "DEA STAC",
+                            {
+                                "item": item,
+                                "reason": "no DEA ARD item for this acquisition",
+                            },
+                        )
+                    )
+        # One stack read and rasterisation per polygon, shared by WO and NDVI.
+        loaded: list[tuple[BandStack, np.ndarray]] = []
 
-        def _wo(
+        def _load(
             polygon: AoiPolygon = polygon,
             planned: PlannedWindow = planned,
-            href: str = wo_href,
-            dea: RasterReader = wo_reader,
-        ) -> list[Check]:
-            stack = read_stack(scene, planned, reader)
-            inside = rasterise(polygon.geometry, stack.transform, stack.shape)
-            result = wo_check(
-                scene,
-                stack,
-                planned,
-                inside,
-                water=cfg.water,
-                wo_href=href,
-                reader=dea,
-                scene_grid=grid,
-            )
-            result.detail["polygon_id"] = polygon.polygon_id
-            return [result]
+            loaded: list[tuple[BandStack, np.ndarray]] = loaded,
+        ) -> tuple[BandStack, np.ndarray]:
+            if not loaded:
+                stack = read_stack(scene, planned, reader)
+                inside = rasterise(polygon.geometry, stack.transform, stack.shape)
+                loaded.append((stack, inside))
+            return loaded[0]
 
-        checks.extend(
-            _guard("water_vs_dea_s2_wo", _wo, item=item, polygon_id=polygon.polygon_id)
-        )
+        if wo_href is not None and wo_reader is not None:
+
+            def _wo(
+                polygon: AoiPolygon = polygon,
+                planned: PlannedWindow = planned,
+                href: str = wo_href,
+                dea: RasterReader = wo_reader,
+                load: Callable[[], tuple[BandStack, np.ndarray]] = _load,
+            ) -> list[Check]:
+                stack, inside = load()
+                result = wo_check(
+                    scene,
+                    stack,
+                    planned,
+                    inside,
+                    water=cfg.water,
+                    wo_href=href,
+                    reader=dea,
+                    scene_grid=grid,
+                )
+                result.detail["polygon_id"] = polygon.polygon_id
+                return [result]
+
+            checks.extend(
+                _guard(
+                    "water_vs_dea_s2_wo", _wo, item=item, polygon_id=polygon.polygon_id
+                )
+            )
+        if nbart is not None and nbart_reader is not None:
+            if polygon.polygon_id not in stored:
+                checks.append(
+                    Check(
+                        NDVI_CHECK,
+                        None,
+                        None,
+                        None,
+                        nbart.reference,
+                        {
+                            "item": item,
+                            "polygon_id": polygon.polygon_id,
+                            "reason": "no observation row for this polygon",
+                        },
+                    )
+                )
+                continue
+
+            def _ndvi(
+                polygon: AoiPolygon = polygon,
+                planned: PlannedWindow = planned,
+                item_dea: NbartItem = nbart,
+                dea: RasterReader = nbart_reader,
+                measured: float = stored[polygon.polygon_id],
+                load: Callable[[], tuple[BandStack, np.ndarray]] = _load,
+            ) -> list[Check]:
+                stack, inside = load()
+                result = ndvi_scene_check(
+                    scene,
+                    stack,
+                    planned,
+                    inside,
+                    measured_median=measured,
+                    nbart=item_dea,
+                    reader=dea,
+                    scene_grid=grid,
+                    expected_epsg=cfg.aoi.operation_epsg,
+                )
+                result.detail["polygon_id"] = polygon.polygon_id
+                return [result]
+
+            checks.extend(
+                _guard(NDVI_CHECK, _ndvi, item=item, polygon_id=polygon.polygon_id)
+            )
     if planned_first is not None:
         window = planned_first.window10
         checks.extend(
@@ -194,6 +321,8 @@ def verify_run(
     wo_lookup: WoLookup = find_wo_href,
     wo_reader_factory: Callable[[], RasterReader] = dea_reader,
     pixel_checker: PixelChecker = pixel_check,
+    nbart_lookup: NbartLookup | None = None,
+    nbart_reader_factory: Callable[[], RasterReader] = dea_reader,
     docs_dir: Path | None = Path("docs/research"),
     es_client: StacClient | None = None,
     cdse_client: StacClient | None = None,
@@ -202,6 +331,7 @@ def verify_run(
     reader = reader or RasterioReader()
     checks: list[Check] = []
     scenes = scenes_for_run(cfg, store, run_id)
+    lookup = nbart_lookup if nbart_lookup is not None else find_nbart_item
     for scene in scenes:
         checks.extend(
             _verify_scene(
@@ -212,10 +342,39 @@ def verify_run(
                 wo_lookup,
                 wo_reader_factory,
                 pixel_checker,
+                lookup,
+                nbart_reader_factory,
+                store,
             )
         )
     listed_at = clock()
     if scenes:
+        scored = [
+            c
+            for c in checks
+            if c.name == NDVI_CHECK
+            and "ndvi_median" in c.detail
+            and "dea_ndvi_median" in c.detail
+        ]
+        checks.extend(
+            _guard(
+                NDVI_CORRELATION_CHECK,
+                lambda: [
+                    ndvi_correlation_check(
+                        [c.detail["ndvi_median"] for c in scored],
+                        [c.detail["dea_ndvi_median"] for c in scored],
+                        detail={
+                            "run_id": run_id,
+                            "rows": [
+                                [c.detail.get("item"), c.detail.get("polygon_id")]
+                                for c in scored
+                            ],
+                        },
+                    )
+                ],
+                run_id=run_id,
+            )
+        )
 
         def _discovery() -> list[Check]:
             manifest = json.loads(store.read_bytes(manifest_path(run_id)))

@@ -262,3 +262,42 @@ different writer. Reading: a Planetary Computer ingestion fault, external to
 this pipeline; no code changed. Rule: a reference oracle can be the broken
 side. When a bit-identity check fails, compare value ranges and correlation
 before suspecting the read, and never convert a bad reference into a skip.
+
+### DEA NBART scale (2026-10-30)
+
+The scale and offset of DEA Surface Reflectance NBART (ga_s2am_ard_3,
+ga_s2bm_ard_3, ga_s2cm_ard_3) are 1e-4 and 0: reflectance = DN / 10000. The
+source is the DEA Knowledge Hub product pages for DEA Surface Reflectance
+NBART (Sentinel-2A, 2B and 2C MSI), for example
+https://knowledge.dea.ga.gov.au/data/product/dea-surface-reflectance-nbart-sentinel-2c-msi/,
+which state "Valid data range [1,10000]" and "For all 'nbart_' bands,
+Surface Reflectance is scaled between 0 and 10,000".
+
+No machine-readable source states the scale. Re-checked on 2026-10-30: STAC
+`raster:bands` for nbart_red and nbart_nir_1 on item
+155b809a-5595-41b4-a1c2-09bd487347c6 holds only nodata -999, data_type int16
+and unit "1". The ODC product YAML
+https://explorer.dea.ga.gov.au/products/ga_s2cm_ard_3.odc-product.yaml has
+dtype int16, units '1' and nodata -999 for every measurement and no
+scale_factor (a case-insensitive grep for "scale" finds nothing). The dataset
+proc-info YAML has no scale or offset either. The band04 COG carries no scale
+or offset tags; rasterio reports the GDAL defaults 1.0 and 0.0.
+
+NDVI does not change under a pure scale, so only the zero offset matters. The
+check refuses an item whose `raster:bands` states another scale or offset.
+
+Grid and CRS: nbart_red and nbart_nir_1 are 10 m on EPSG:32750 with the
+50HLK origin (300000, 6500020), identical to Earth Search. oa_fmask is 20 m
+and is not used. The compared mask is the pipeline SCL clear mask minus DEA
+-999.
+
+Maturity: values seen are final up to 2026-10-17 and nrt from 2026-10-22. nrt
+is DEA's provisional.
+
+Live result: the newest 50HLK pass with a DEA match on 2026-10-30,
+S2A_T50HLK_20261029T021516_L2A, against ga_s2am_ard_3 item
+def48e1d-e43d-4314-a381-fb269120f4a6 (nrt): pipeline ndvi_median 0.4749,
+DEA NBART median 0.4715, abs_diff about 0.003, n_compared 63600, passed True
+(tolerance 0.05).
+
+This resolves the design's open research item on the NBART scale factor.
