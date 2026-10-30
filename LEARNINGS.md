@@ -14,6 +14,19 @@ recorded result.
 4. Spearman correlation between pipeline water hectares and DEA Waterbodies
    wet fraction on passes within three days is at least 0.9.
 
+## Pre-registered hypotheses (st-2048, 2026-10-30)
+
+5. The per-polygon water settings of decision 0005 hold on passes acquired
+   after 2026-10-29. For each polygon, pooled `water_vs_dea_s2_wo`
+   agreement (agreeing pixels over mutually clear pixels, summed over its
+   passes) is at or above its agreement_min: ramsar-15 with scl6 at least
+   0.94 (in sample 0.9682), ramsar-28 with ndwi above -0.15 at least 0.92
+   (0.9438) and ramsar-56 with mndwi above 0.05 at least 0.95 (0.9795).
+   Each polygon fails at most one scored pass in ten (in sample: 1 of 10,
+   0 of 22 and 1 of 19). Assessed when a polygon has ten scored passes
+   acquired after 2026-10-29. The calibration covers August to October 2026
+   only, so these passes are out of season as well as out of sample.
+
 ## Spike results
 
 ### S1 Forrestdale seam (2026-10-29)
@@ -173,6 +186,21 @@ Per-pass rows for every polygon, pass, method and threshold, including the
 seam_overlap subset, are in docs/research/2026-10-29-polygon-calibration.csv.
 The scripts that produced it (scratch/spikes/polygon_calibrate.py and its log)
 are untracked in scratch/spikes/.
+
+Correction (2026-10-30). The unconfirmed inference above about ramsar-15 is
+wrong: its missed water is not near-threshold water. On the live re-run of
+the 2026-10-12 pass, green BOA reflectance is at or below 0 on 74 percent of
+the pixels DEA WO calls wet (median -0.0006), and the DEA-wet pixels the
+indices miss have MNDWI median -1.2, so no index threshold recovers them.
+An independent check on 2026-10-30 reproduced every figure in this section
+from docs/research/2026-10-29-polygon-calibration.csv, and the live re-run
+of ramsar-15 on the 2026-10-12 pass gave 0.5162 (mndwi -0.1), 0.6145 (ndwi
+-0.45) and 0.9705 (scl6), the same as the CSV. Leave-one-date-out agreement
+is 0.9682 (ramsar-15), 0.9434 (ramsar-28) and 0.9788 (ramsar-56), and
+holding out any one date leaves each polygon's winning setting unchanged.
+Applied in docs/decisions/0005-per-polygon-water-settings.md: ramsar-15
+uses SCL class 6 (scl6, agreement_min 0.94), and ramsar-28 and ramsar-56
+use the settings proposed above.
 
 ### S9 historical tolerance (2026-10-30)
 

@@ -7,6 +7,8 @@ from wetland_change.config import (
     DEFAULT_CATALOGUE_BASE_URL,
     CatalogueConfig,
     PipelineConfig,
+    WaterConfig,
+    WaterSetting,
     load_config,
 )
 
@@ -67,3 +69,101 @@ def test_missing_catalogue_section_uses_default(tmp_path: Path) -> None:
     path.write_text(text)
     cfg = load_config(path)
     assert cfg.catalogue.base_url == DEFAULT_CATALOGUE_BASE_URL
+
+
+def test_repo_config_water_overrides_match_learnings() -> None:
+    cfg = load_config(REPO_CONFIG)
+    assert cfg.water.agreement_min == 0.91
+    assert set(cfg.water.overrides) == {"ramsar-15", "ramsar-28", "ramsar-56"}
+    scl6 = cfg.water.overrides["ramsar-15"]
+    assert scl6 == WaterSetting(method="scl6", agreement_min=0.94)
+    assert scl6.threshold is None
+    assert cfg.water.overrides["ramsar-28"] == WaterSetting(
+        method="ndwi", threshold=-0.15, agreement_min=0.92
+    )
+    assert cfg.water.overrides["ramsar-56"] == WaterSetting(
+        method="mndwi", threshold=0.05, agreement_min=0.95
+    )
+
+
+def test_for_polygon_falls_back_to_global() -> None:
+    water: WaterConfig = load_config(REPO_CONFIG).water
+    expected = WaterSetting(method="mndwi", threshold=-0.1, agreement_min=0.91)
+    assert water.for_polygon("ramsar-52") == expected
+    assert water.for_polygon(None) == expected
+    assert water.for_polygon("ramsar-28") == water.overrides["ramsar-28"]
+
+
+@pytest.mark.parametrize(
+    "snippet",
+    [
+        pytest.param(
+            '[water.overrides.ramsar-99]\nmethod = "ndvi"\nthreshold = 0.0\n'
+            "agreement_min = 0.9\n",
+            id="unknown-method",
+        ),
+        pytest.param(
+            '[water.overrides.ramsar-99]\nmethod = "ndwi"\nthreshold = 1.5\n'
+            "agreement_min = 0.9\n",
+            id="threshold-above-1",
+        ),
+        pytest.param(
+            '[water.overrides.ramsar-99]\nmethod = "mndwi"\nthreshold = -1.5\n'
+            "agreement_min = 0.9\n",
+            id="threshold-below-minus-1",
+        ),
+        pytest.param(
+            '[water.overrides.ramsar-99]\nmethod = "scl6"\nthreshold = 0.0\n'
+            "agreement_min = 0.9\n",
+            id="scl6-with-threshold",
+        ),
+        pytest.param(
+            '[water.overrides.ramsar-99]\nmethod = "ndwi"\nagreement_min = 0.9\n',
+            id="index-method-without-threshold",
+        ),
+        pytest.param(
+            '[water.overrides.ramsar-99]\nmethod = "ndwi"\nthreshold = 0.0\n'
+            "agreement_min = 1.2\n",
+            id="agreement-min-above-1",
+        ),
+        pytest.param(
+            '[water.overrides.ramsar-99]\nmethod = "scl6"\nagreement_min = 0.9\n'
+            "threshhold = 0.1\n",
+            id="misspelt-extra-key",
+        ),
+        pytest.param(
+            '[water.overrides."ramsar 99"]\nmethod = "scl6"\nagreement_min = 0.9\n',
+            id="bad-polygon-id",
+        ),
+        pytest.param(
+            '[water.overrides.ramsar-99]\nmethod = "ndwi"\nthreshold = 0.0\n',
+            id="missing-agreement-min",
+        ),
+    ],
+)
+def test_override_rejected(tmp_path: Path, snippet: str) -> None:
+    bad = tmp_path / "pipeline.toml"
+    bad.write_text(REPO_CONFIG.read_text() + "\n" + snippet)
+    with pytest.raises(ValidationError):
+        load_config(bad)
+
+
+@pytest.mark.parametrize("value", [-1.0, 1.0])
+def test_override_accepts_threshold_bounds(tmp_path: Path, value: float) -> None:
+    path = tmp_path / "pipeline.toml"
+    snippet = (
+        "[water.overrides.ramsar-99]\n"
+        'method = "ndwi"\n'
+        f"threshold = {value}\n"
+        "agreement_min = 0.9\n"
+    )
+    path.write_text(REPO_CONFIG.read_text() + "\n" + snippet)
+    assert load_config(path).water.overrides["ramsar-99"].threshold == value
+
+
+def test_global_threshold_out_of_range_rejected(tmp_path: Path) -> None:
+    text = REPO_CONFIG.read_text().replace("threshold = -0.1\n", "threshold = 1.5\n", 1)
+    bad = tmp_path / "pipeline.toml"
+    bad.write_text(text)
+    with pytest.raises(ValidationError):
+        load_config(bad)

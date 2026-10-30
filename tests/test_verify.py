@@ -115,7 +115,11 @@ from typer.testing import CliRunner  # noqa: E402
 
 from tests.test_pipeline import NOW, FakeClient, _config, _polygons, _run  # noqa: E402
 from wetland_change import cli  # noqa: E402
-from wetland_change.config import PipelineConfig, WaterConfig  # noqa: E402
+from wetland_change.config import (  # noqa: E402
+    PipelineConfig,
+    WaterConfig,
+    WaterSetting,
+)
 from wetland_change.outputs.geoparquet import (  # noqa: E402
     observation_path,
     read_observations,
@@ -297,11 +301,10 @@ def test_wo_check_branches(
             stack,
             planned,
             inside,
-            water=WaterConfig(),
+            water=WaterConfig(agreement_min=0.5),
             wo_href="wo.tif",
             reader=reader,
             scene_grid=grid,
-            agreement_min=0.5,
         )
 
     shifted = Grid(
@@ -323,6 +326,127 @@ def test_wo_check_branches(
     assert wet.passed is True
     dry = run(FakeReader(grid=grid, data=np.zeros(shape, np.uint8)))
     assert dry.passed is False
+
+
+def _wo_with(
+    fixture_scene: SceneItem,
+    fixture_polygon: BaseGeometry,
+    water: WaterConfig,
+    *,
+    polygon_id: str | None = None,
+    shift: bool = False,
+) -> Check:
+    stack, planned, inside, grid = _stack_and_window(fixture_scene, fixture_polygon)
+    reader_grid = grid
+    if shift:
+        reader_grid = Grid(
+            transform=grid.transform * grid.transform.translation(5, 0),
+            width=grid.width,
+            height=grid.height,
+            epsg=grid.epsg,
+        )
+    reader = FakeReader(grid=reader_grid, data=np.full(stack.shape, WO_WET, np.uint8))
+    return wo_check(
+        fixture_scene,
+        stack,
+        planned,
+        inside,
+        water=water,
+        wo_href="wo.tif",
+        reader=reader,
+        scene_grid=grid,
+        polygon_id=polygon_id,
+    )
+
+
+def test_wo_check_scores_each_polygon_with_its_own_setting(
+    fixture_scene: SceneItem, fixture_polygon: BaseGeometry
+) -> None:
+    water = WaterConfig(
+        method="mndwi",
+        threshold=-0.1,
+        agreement_min=0.5,
+        overrides={
+            "ramsar-52": WaterSetting(method="ndwi", threshold=0.0, agreement_min=0.9)
+        },
+    )
+    over = _wo_with(fixture_scene, fixture_polygon, water, polygon_id="ramsar-52")
+    assert over.measured == pytest.approx(1125 / 1936)
+    assert over.threshold == 0.9
+    assert over.passed is False
+    assert over.reference == "wo.tif"
+    assert over.detail["method"] == "ndwi"
+    assert over.detail["threshold"] == 0.0
+    assert over.detail["agreement_min"] == 0.9
+    assert over.detail["override"] is True
+    assert over.detail["polygon_id"] == "ramsar-52"
+
+    other = _wo_with(fixture_scene, fixture_polygon, water, polygon_id="ramsar-53")
+    assert other.measured == 1.0
+    assert other.threshold == 0.5
+    assert other.passed is True
+    assert other.reference == "wo.tif"
+    assert other.detail["method"] == "mndwi"
+    assert other.detail["override"] is False
+
+    glob = _wo_with(fixture_scene, fixture_polygon, water)
+    assert glob.threshold == other.threshold
+    assert glob.measured == other.measured
+    assert glob.reference == "wo.tif"
+    assert "polygon_id" not in glob.detail
+
+
+@pytest.mark.parametrize(("agreement_min", "expected"), [(0.55, True), (0.60, False)])
+def test_wo_check_agreement_min_alone_decides_pass(
+    fixture_scene: SceneItem,
+    fixture_polygon: BaseGeometry,
+    agreement_min: float,
+    expected: bool,
+) -> None:
+    water = WaterConfig(
+        overrides={
+            "ramsar-52": WaterSetting(
+                method="ndwi", threshold=0.0, agreement_min=agreement_min
+            )
+        }
+    )
+    result = _wo_with(fixture_scene, fixture_polygon, water, polygon_id="ramsar-52")
+    assert result.passed is expected
+    assert result.threshold == agreement_min
+    assert result.measured == pytest.approx(1125 / 1936)
+
+
+def test_wo_check_scl6_override_scores_scl_class_6(
+    fixture_scene: SceneItem, fixture_polygon: BaseGeometry
+) -> None:
+    water = WaterConfig(
+        method="ndwi",
+        threshold=0.0,
+        overrides={"ramsar-15": WaterSetting(method="scl6", agreement_min=0.94)},
+    )
+    scl = _wo_with(fixture_scene, fixture_polygon, water, polygon_id="ramsar-15")
+    assert scl.measured == scl.detail["scl_agreement"] == 1.0
+    assert scl.detail["threshold"] is None
+    assert scl.threshold == 0.94
+    assert scl.passed is True
+
+    index = _wo_with(fixture_scene, fixture_polygon, water, polygon_id="ramsar-52")
+    assert index.measured == pytest.approx(1125 / 1936)
+
+
+def test_wo_check_grid_differs_reports_the_polygon_agreement_min(
+    fixture_scene: SceneItem, fixture_polygon: BaseGeometry
+) -> None:
+    water = WaterConfig(
+        overrides={"ramsar-52": WaterSetting(method="scl6", agreement_min=0.97)}
+    )
+    result = _wo_with(
+        fixture_scene, fixture_polygon, water, polygon_id="ramsar-52", shift=True
+    )
+    assert result.passed is False
+    assert result.threshold == 0.97
+    assert result.detail["reason"] == "grid differs"
+    assert result.detail["polygon_id"] == "ramsar-52"
 
 
 def _built_run(
@@ -394,6 +518,39 @@ def test_verify_run_with_injected_dependencies(
     assert report["n_scored"] > 0
     wo = next(c for c in checks if c.name == "water_vs_dea_s2_wo")
     assert wo.passed is not None and wo.detail["polygon_id"] == "ramsar-52"
+
+
+def test_verify_run_scores_wo_with_the_polygon_override(
+    fixture_item: dict[str, Any], fixture_polygon: BaseGeometry, tmp_path: Path
+) -> None:
+    cfg, store, run_id, polygons = _built_run(fixture_item, fixture_polygon, tmp_path)
+    cfg = cfg.model_copy(
+        update={
+            "water": WaterConfig(
+                overrides={"ramsar-52": WaterSetting(method="scl6", agreement_min=0.97)}
+            )
+        }
+    )
+    grid = RasterioReader().open_grid(fixture_item["assets"]["green"]["href"])
+    checks = verify_run(
+        cfg,
+        store,
+        run_id,
+        polygons=polygons,
+        wo_lookup=lambda s, b: "wo.tif",
+        wo_reader_factory=lambda: FakeReader(
+            grid=grid, data=np.full((48, 48), WO_WET, np.uint8)
+        ),
+        pixel_checker=lambda *a: Check("p", True, 1.0, 1.0, "fake"),
+        docs_dir=None,
+    )
+    (wo,) = [c for c in checks if c.name == "water_vs_dea_s2_wo"]
+    assert wo.threshold == 0.97
+    assert wo.detail["method"] == "scl6"
+    assert wo.detail["polygon_id"] == "ramsar-52"
+    assert wo.detail["override"] is True
+    assert wo.measured == 1.0
+    assert wo.passed is True
 
 
 def test_verify_run_turns_exceptions_into_skipped_checks(
