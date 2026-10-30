@@ -1,9 +1,9 @@
 """Matrix row: water extent against DEA Sentinel-2 Water Observations.
 
 `ga_s2_wo_provisional_3` is on the same 10 m grid (EPSG:32750) for the same
-pass. Bit 128 is wet; bits 1 (nodata), 2 (non-contiguous), 32 (cloud
-shadow) and 64 (cloud) exclude a pixel. Agreement is scored on pixels both
-products call clear. Each polygon is scored with its own water setting and
+pass. Only values 0 (clear dry) and 128 (clear wet) are clear; every other
+flag bit excludes the pixel. Agreement is scored on pixels both products
+call clear. Each polygon is scored with its own water setting and
 agreement_min (`WaterConfig.for_polygon`,
 docs/decisions/0005-per-polygon-water-settings.md), and `Check.threshold` is
 that agreement_min.
@@ -28,7 +28,8 @@ from wetland_change.windows import Grid, PlannedWindow
 DEA_STAC = "https://explorer.dea.ga.gov.au/stac"
 WO_COLLECTION = "ga_s2_wo_provisional_3"
 WO_WET = 128
-WO_EXCLUDE = 1 | 2 | 32 | 64
+# Only WO values 0 and 128 are clear, so every flag bit below 128 excludes.
+WO_EXCLUDE = 1 | 2 | 4 | 8 | 16 | 32 | 64
 _S3 = "s3://dea-public-data/"
 _HTTPS = "https://dea-public-data.s3.ap-southeast-2.amazonaws.com/"
 
