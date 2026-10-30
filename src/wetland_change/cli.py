@@ -1,4 +1,4 @@
-"""Command line: discover, run, backfill, score, verify."""
+"""Command line: discover, run, backfill, score, verify, build-catalogue."""
 
 from __future__ import annotations
 
@@ -22,6 +22,7 @@ from wetland_change.ledger import (
 )
 from wetland_change.pipeline import backfill_once, run_once, score_once
 from wetland_change.raster.read import RasterioReader
+from wetland_change.stac import build_and_write
 from wetland_change.store import OutputStore
 
 app = typer.Typer(add_completion=False, no_args_is_help=True)
@@ -233,3 +234,16 @@ def verify(
     if not any(check.passed is not None for check in checks):
         typer.echo(f"no checks were scored for run {target}", err=True)
         raise typer.Exit(code=4)
+
+
+@app.command("build-catalogue")
+def build_catalogue_command(
+    config: ConfigOption = Path("config/pipeline.toml"),
+    output_root: OutputRootOption = None,
+) -> None:
+    """Rebuild the STAC catalogue and items.parquet from the ledger."""
+    cfg = load_config(config)
+    written = build_and_write(_store(cfg, output_root), base_url=cfg.catalogue.base_url)
+    for path in written:
+        typer.echo(path)
+    typer.echo(f"{len(written)} files written")

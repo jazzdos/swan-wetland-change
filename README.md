@@ -15,3 +15,14 @@ uv run python scripts/fetch_aoi.py
 uv run wetland-change discover --config config/pipeline.toml
 uv run wetland-change score --start 2022-01-01 --end 2026-10-29  # after a backfill
 ```
+
+## STAC catalogue
+
+`wetland-change run` rebuilds the STAC catalogue and
+`stac/swan-wetland-change/items.parquet` from the ledger after writing the
+run manifest. `wetland-change build-catalogue` rebuilds the same files
+without running a scene. Order after a run: `verify`, then
+`build-catalogue`. The `verification` item asset only appears once
+`build-catalogue` (or the next `run`) executes after `verify`, because the
+catalogue links only files that already exist in the output store. The
+`changes` asset follows the same rule.
