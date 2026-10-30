@@ -62,6 +62,29 @@ def test_wo_agreement_on_mutually_clear_pixels() -> None:
     assert (agreement, n) == (1.0, 2)
 
 
+def test_wo_agreement_counts_only_wo_0_and_128_as_clear() -> None:
+    clear = np.ones((1, 6), bool)
+    wo = np.array([[0, 128, 4, 8, 16, 132]], dtype=np.uint8)
+    water = np.array([[False, True, True, True, True, True]])
+    agreement, n = wo_agreement(water, clear, wo)
+    assert n == 2
+    assert agreement == 1.0
+    for value in (4, 8, 16, 132, 1, 2, 32, 64):
+        agreement, n = wo_agreement(
+            np.ones((1, 1), bool),
+            np.ones((1, 1), bool),
+            np.array([[value]], dtype=np.uint8),
+        )
+        assert n == 0 and np.isnan(agreement), value
+    for value in (0, 128):
+        _, n = wo_agreement(
+            np.ones((1, 1), bool),
+            np.ones((1, 1), bool),
+            np.array([[value]], dtype=np.uint8),
+        )
+        assert n == 1, value
+
+
 def test_wo_agreement_with_nothing_clear_is_nan() -> None:
     agreement, n = wo_agreement(
         np.zeros((1, 1), bool), np.zeros((1, 1), bool), np.zeros((1, 1), np.uint8)
