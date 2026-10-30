@@ -27,6 +27,19 @@ recorded result.
    acquired after 2026-10-29. The calibration covers August to October 2026
    only, so these passes are out of season as well as out of sample.
 
+## Pre-registered hypotheses (st-d457, 2026-10-30)
+
+6. NDWI, MNDWI and NDVI from `wetland_change.indices` equal dea-tools 0.4.10
+   `calculate_indices` output at `assert_allclose` with atol 1e-6 and rtol 0,
+   on synthetic float arrays (seed 42, uniform reflectance 0 to 0.6) and on
+   the Thomsons fixture window (tests/fixtures/thomsons_20261027,
+   reflectance from the item's raster:bands scale and offset, nodata as
+   NaN). The comparison is made with collection 'ga_s2_3' and
+   normalise=False, so nbart_green is B03, nbart_red is B04, nbart_nir_1 is
+   B08 and nbart_swir_2 is B11. NaN positions also match. Run once as a
+   one-off from the pinned PyPI wheel with xarray as an overlay; spyndex in
+   tests/test_indices.py stays the standing check.
+
 ## Spike results
 
 ### S1 Forrestdale seam (2026-10-29)
@@ -329,3 +342,24 @@ DEA NBART median 0.4715, abs_diff about 0.003, n_compared 63600, passed True
 (tolerance 0.05).
 
 This resolves the design's open research item on the NBART scale factor.
+
+### dea-tools index comparison (2026-10-30)
+
+Result against hypothesis 6: held. All six comparisons passed at assert_allclose atol 1e-6, rtol 0 (6 of 6). NaN counts were 0 for both wetland_change.indices and dea-tools in every case, and dea-tools produced no inf values. The NaN-position clause of hypothesis 6 held only vacuously: the fixture window had 0 nodata pixels and no case had a zero denominator, so no NaN positions were ever compared. The two implementations also differ on x/0: dea-tools returns +-inf where wetland_change.indices returns NaN (stated in the script docstring). That difference is not covered by this comparison.
+
+- synthetic NDWI: max absolute difference 2.965e-08, PASS
+- synthetic MNDWI: max absolute difference 2.974e-08, PASS
+- synthetic NDVI: max absolute difference 2.979e-08, PASS
+- Thomsons fixture NDWI: max absolute difference 0.000e+00, PASS
+- Thomsons fixture MNDWI: max absolute difference 0.000e+00, PASS
+- Thomsons fixture NDVI: max absolute difference 0.000e+00, PASS
+
+The synthetic differences come from our float32 output against dea-tools float64 (seed 42, uniform 0 to 0.6, 32x32 arrays). On the fixture window both sides were float32 and matched exactly.
+
+Method: dea-tools 0.4.10 `calculate_indices` with collection 'ga_s2_3' and normalise=False, drop=True. Band mapping: nbart_green=B03, nbart_red=B04, nbart_nir_1=B08, nbart_swir_2=B11 (the MNDWI SWIR band). Cases were synthetic arrays (seed 42, float64 uniform 0 to 0.6, 32x32) and the Thomsons fixture window (64x64, B11 nearest-upsampled from 20 m).
+
+Wheel: `dea_tools-0.4.10-py3-none-any.whl`, sha256 `8f42620975a8b904446718e561c25d1c39f38c1511359e7730cf3d786890c4ba` (verified by the script before use). Command: `uv run --with xarray python scripts/compare_dea_tools_indices.py`.
+
+Only dea_tools/bandindices.py was loaded from the wheel; it imports only numpy and warnings. xarray was a `--with` overlay. No dependency was added, and pyproject.toml and uv.lock are unchanged.
+
+Decision context: dea-tools 0.4.10 resolves on Python 3.12, but its transitive geomad 1.0.0 (via odc-algo) has no macOS wheel and the sdist build fails with 'omp.h file not found'. The standing check therefore stays spyndex 0.12.0 in tests/test_indices.py (human decision 2026-10-30).
