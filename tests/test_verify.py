@@ -116,11 +116,17 @@ from typer.testing import CliRunner  # noqa: E402
 from tests.test_pipeline import NOW, FakeClient, _config, _polygons, _run  # noqa: E402
 from wetland_change import cli  # noqa: E402
 from wetland_change.config import PipelineConfig, WaterConfig  # noqa: E402
+from wetland_change.outputs.geoparquet import (  # noqa: E402
+    observation_path,
+    read_observations,
+)
 from wetland_change.raster.read import RasterioReader, read_stack  # noqa: E402
 from wetland_change.stats import rasterise  # noqa: E402
+from wetland_change.verify.ndvi import NbartItem  # noqa: E402
 from wetland_change.verify.run import (  # noqa: E402
     latest_run_id,
     scenes_for_run,
+    stored_ndvi,
     verify_run,
 )
 from wetland_change.verify.scl import scl_checks  # noqa: E402
@@ -333,7 +339,11 @@ def _no_network(monkeypatch: pytest.MonkeyPatch) -> None:
     def refuse(endpoint: str) -> Any:
         raise RuntimeError("network disabled in offline tests")
 
+    def refuse_lookup(scene: SceneItem, bbox: Any) -> Any:
+        raise RuntimeError("network disabled in offline tests")
+
     monkeypatch.setattr("wetland_change.verify.run.open_client", refuse)
+    monkeypatch.setattr("wetland_change.verify.run.find_nbart_item", refuse_lookup)
 
 
 def test_scenes_for_run_and_latest_run_id(
@@ -430,6 +440,200 @@ def test_verify_run_does_not_look_up_wo_without_overlap(
         pixel_checker=lambda *a: Check("p", True, 1.0, 1.0, "fake"),
     )
     assert "water_vs_dea_s2_wo" not in [c.name for c in checks]
+
+
+class DictReader:
+    """Serves arrays by href; `grid` answers open_grid for every href."""
+
+    def __init__(self, *, grid: Grid, arrays: dict[str, np.ndarray]) -> None:
+        self.grid = grid
+        self.arrays = arrays
+
+    def open_grid(self, href: str) -> Grid:
+        return self.grid
+
+    def read(self, href: str, window: Window) -> np.ndarray:
+        return self.arrays[href]
+
+    def read_overview(self, href: str, factor: int) -> np.ndarray:
+        raise NotImplementedError
+
+    def read_text(self, href: str) -> str:
+        raise NotImplementedError
+
+
+def _nbart_item() -> NbartItem:
+    return NbartItem(
+        "dea-1", "ga_s2cm_ard_3", "nrt", "S2C_MSIL1C_x", 32750, "red.tif", "nir.tif"
+    )
+
+
+def _dea_dn(stack: Any, band: np.ndarray) -> np.ndarray:
+    return np.where(np.isfinite(band), np.round(band * 1e4), -999).astype(np.int16)
+
+
+def _ndvi_run(
+    fixture_item: dict[str, Any],
+    fixture_polygon: BaseGeometry,
+    tmp_path: Path,
+    **overrides: Any,
+) -> tuple[list[Check], OutputStore, str]:
+    cfg, store, run_id, polygons = _built_run(fixture_item, fixture_polygon, tmp_path)
+    scene = scenes_for_run(cfg, store, run_id)[0]
+    stack, _, _, grid = _stack_and_window(scene, fixture_polygon)
+    arrays = {
+        "red.tif": _dea_dn(stack, stack.red),
+        "nir.tif": _dea_dn(stack, stack.nir),
+    }
+    kwargs: dict[str, Any] = {
+        "nbart_lookup": lambda s, b: _nbart_item(),
+        "nbart_reader_factory": lambda: DictReader(grid=grid, arrays=arrays),
+        "wo_lookup": lambda s, b: None,
+        "pixel_checker": lambda *a: Check("p", True, 1.0, 1.0, "fake"),
+        "docs_dir": None,
+    }
+    kwargs.update(overrides)
+    checks = verify_run(cfg, store, run_id, polygons=polygons, **kwargs)
+    return checks, store, run_id
+
+
+def test_verify_run_scores_ndvi_against_injected_nbart_item(
+    fixture_item: dict[str, Any], fixture_polygon: BaseGeometry, tmp_path: Path
+) -> None:
+    checks, store, run_id = _ndvi_run(fixture_item, fixture_polygon, tmp_path)
+    ndvi = [c for c in checks if c.name == "ndvi_vs_dea_nbart"]
+    assert len(ndvi) == 1  # the off-scene polygon is skipped
+    assert ndvi[0].passed is True
+    assert ndvi[0].detail["polygon_id"] == "ramsar-52"
+    observed = read_observations(store)
+    stored = float(
+        observed.loc[observed["polygon_id"] == "ramsar-52", "ndvi_median"].iloc[0]
+    )
+    assert ndvi[0].detail["ndvi_median"] == pytest.approx(stored)
+    assert abs(ndvi[0].detail["dea_ndvi_median"] - ndvi[0].detail["ndvi_median"]) < 1e-3
+    corr = [c for c in checks if c.name == "ndvi_correlation_vs_dea_nbart"]
+    assert len(corr) == 1 and corr[0].passed is None
+    report = json.loads(store.read_bytes(f"verification/{run_id}.json"))
+    names = {c["name"] for c in report["checks"]}
+    assert {"ndvi_vs_dea_nbart", "ndvi_correlation_vs_dea_nbart"} <= names
+
+
+def test_verify_run_correlation_is_skipped_not_errored_on_a_mismatched_grid(
+    fixture_item: dict[str, Any], fixture_polygon: BaseGeometry, tmp_path: Path
+) -> None:
+    cfg, store, run_id, _ = _built_run(fixture_item, fixture_polygon, tmp_path)
+    scene = scenes_for_run(cfg, store, run_id)[0]
+    _, _, _, grid = _stack_and_window(scene, fixture_polygon)
+    wrong = dataclasses.replace(grid, epsg=grid.epsg + 1)
+    checks, _, _ = _ndvi_run(
+        fixture_item,
+        fixture_polygon,
+        tmp_path,
+        nbart_reader_factory=lambda: DictReader(grid=wrong, arrays={}),
+    )
+    ndvi = [c for c in checks if c.name == "ndvi_vs_dea_nbart"]
+    assert len(ndvi) == 1
+    assert ndvi[0].passed is False
+    assert ndvi[0].detail["reason"] == "crs differs"
+    corr = [c for c in checks if c.name == "ndvi_correlation_vs_dea_nbart"]
+    assert len(corr) == 1
+    assert corr[0].passed is None
+    assert "error" not in corr[0].detail, corr[0].detail
+
+
+def test_verify_run_ndvi_skips_when_dea_has_no_item(
+    fixture_item: dict[str, Any], fixture_polygon: BaseGeometry, tmp_path: Path
+) -> None:
+    checks, _, _ = _ndvi_run(
+        fixture_item, fixture_polygon, tmp_path, nbart_lookup=lambda s, b: None
+    )
+    ndvi = [c for c in checks if c.name == "ndvi_vs_dea_nbart"]
+    assert len(ndvi) == 1
+    assert ndvi[0].passed is None
+    assert ndvi[0].detail["reason"] == "no DEA ARD item for this acquisition"
+
+
+def test_verify_run_default_nbart_lookup_is_offline(
+    fixture_item: dict[str, Any], fixture_polygon: BaseGeometry, tmp_path: Path
+) -> None:
+    cfg, store, run_id, polygons = _built_run(fixture_item, fixture_polygon, tmp_path)
+    checks = verify_run(
+        cfg,
+        store,
+        run_id,
+        polygons=polygons,
+        wo_lookup=lambda s, b: None,
+        pixel_checker=lambda *a: Check("p", True, 1.0, 1.0, "fake"),
+        docs_dir=None,
+    )
+    ndvi = [c for c in checks if c.name == "ndvi_vs_dea_nbart"]
+    assert len(ndvi) == 1
+    assert ndvi[0].detail["error"] == "RuntimeError: network disabled in offline tests"
+
+
+def test_verify_run_ndvi_skips_when_observation_file_is_missing(
+    fixture_item: dict[str, Any], fixture_polygon: BaseGeometry, tmp_path: Path
+) -> None:
+    cfg, store, run_id, polygons = _built_run(fixture_item, fixture_polygon, tmp_path)
+    for path in store.list_files("observations"):
+        store.delete(path)
+    checks = verify_run(
+        cfg,
+        store,
+        run_id,
+        polygons=polygons,
+        nbart_lookup=lambda s, b: _nbart_item(),
+        nbart_reader_factory=lambda: DictReader(
+            grid=RasterioReader().open_grid(fixture_item["assets"]["green"]["href"]),
+            arrays={},
+        ),
+        wo_lookup=lambda s, b: None,
+        pixel_checker=lambda *a: Check("p", True, 1.0, 1.0, "fake"),
+        docs_dir=None,
+    )
+    ndvi = [c for c in checks if c.name == "ndvi_vs_dea_nbart"]
+    assert len(ndvi) == 1
+    assert ndvi[0].passed is None
+    assert ndvi[0].detail["reason"] == "no observation row for this polygon"
+
+
+def test_verify_run_reads_the_stack_once_for_wo_and_ndvi(
+    fixture_item: dict[str, Any], fixture_polygon: BaseGeometry, tmp_path: Path
+) -> None:
+    red_href = fixture_item["assets"]["red"]["href"]
+    reads: list[str] = []
+
+    class CountingReader(RasterioReader):
+        def read(self, href: str, window: Window) -> np.ndarray:
+            reads.append(href)
+            return super().read(href, window)
+
+    grid = RasterioReader().open_grid(fixture_item["assets"]["green"]["href"])
+    checks, _, _ = _ndvi_run(
+        fixture_item,
+        fixture_polygon,
+        tmp_path,
+        reader=CountingReader(),
+        wo_lookup=lambda s, b: "wo.tif",
+        wo_reader_factory=lambda: FakeReader(
+            grid=grid, data=np.full((48, 48), WO_WET, np.uint8)
+        ),
+    )
+    assert any(c.name == "water_vs_dea_s2_wo" and c.passed is not None for c in checks)
+    assert any(c.name == "ndvi_vs_dea_nbart" and c.passed is not None for c in checks)
+    assert reads.count(red_href) == 1
+
+
+def test_stored_ndvi_reads_the_scene_observation_file(
+    fixture_item: dict[str, Any], fixture_polygon: BaseGeometry, tmp_path: Path
+) -> None:
+    cfg, store, run_id, _ = _built_run(fixture_item, fixture_polygon, tmp_path)
+    scene = scenes_for_run(cfg, store, run_id)[0]
+    values = stored_ndvi(store, scene)
+    assert set(values) == {"ramsar-52"}
+    assert np.isfinite(values["ramsar-52"])
+    store.delete(observation_path(scene.year, scene.tile, scene.item_id))
+    assert stored_ndvi(store, scene) == {}
 
 
 def test_verify_run_with_unknown_run_scores_nothing(
