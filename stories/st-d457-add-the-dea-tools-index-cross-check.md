@@ -5,7 +5,7 @@ type: chore
 epic: st-1d45
 priority: P3
 depends_on: []
-touches: [LEARNINGS.md, docs/plans/**, scripts/**, pyproject.toml]
+touches: [LEARNINGS.md, docs/plans/2026-10-29-swan-wetland-change-design.md, scripts/compare_dea_tools_indices.py]
 exclusive: false
 created: 2026-10-29
 updated: 2026-10-30
@@ -21,6 +21,18 @@ Verification matrix row "Index arithmetic" (design). The spyndex 0.12.0 cross-ch
 - [ ] `uv sync --locked` succeeds with the new dev dependency.
 
 ## Implementation Plan
+
+# st-d457 plan: one-off dea-tools index comparison
+
+Verified in the worktree (main 6b1cdc5, clean): `tests/test_indices.py` has the spyndex test (stays unchanged); `src/wetland_change/indices.py` exposes `ndwi(green, nir)`, `mndwi(green, swir16)`, `ndvi(nir, red)` (float32, NaN on zero denominator, integers refused); `scripts/` holds `__init__.py`, `fetch_aoi.py`, `make_fixture.py`; `scratch/` does not exist yet and is gitignored; the fixture is `tests/fixtures/thomsons_20261027/{B03,B04,B08,B11}.tif` plus `item.json` (uint16, nodata 0, scale 0.0001, offset -0.1; B03/B04/B08 are 64x64 at 10 m, B11 is 32x32 at 20 m); `to_reflectance` is in `src/wetland_change/raster/scaling.py`; design lines 225 and 365 are the "Index arithmetic" row and the dea-tools reference. xarray is not in the project env. pyproject.toml and uv.lock must not change. No test file is added (story touches omit tests/**; the one-off result is recorded in LEARNINGS.md).
+
+Steps, in three sequential batches:
+
+1. Batch 1, task t1: append a "Pre-registered hypotheses (st-d457, 2026-10-30)" section to `LEARNINGS.md` (inserted before "## Spike results", numbered 6) stating the expectation, and amend `docs/plans/2026-10-29-swan-wetland-change-design.md` lines 225 and 365 to spyndex as the standing test plus the recorded one-off dea-tools comparison. This lands before any comparison run (AGENTS.md pre-registration rule).
+2. Batch 2, task t2: write `scripts/compare_dea_tools_indices.py`. It downloads the pinned `dea_tools-0.4.10-py3-none-any.whl` from PyPI into `scratch/dea-tools-0.4.10/` (gitignored), verifies sha256, loads `dea_tools/bandindices.py` from the zip with importlib (no dea-tools install, no dependencies), imports xarray through `importlib.import_module` (so mypy needs no override and pyproject.toml stays untouched), and compares NDWI, MNDWI and NDVI from `wetland_change.indices` with `calculate_indices(collection='ga_s2_3', normalise=False)` at `assert_allclose` rtol=0, atol=1e-6, on synthetic arrays and the fixture window. Run it with `uv run --with xarray python scripts/compare_dea_tools_indices.py`. What it proves: the project index arithmetic equals the DEA reference implementation on random reflectance and on real fixture pixels (including NaN nodata positions).
+3. Batch 3, task t3: append the result, wheel sha256 and command under "## Live run findings" at the end of `LEARNINGS.md` (append only).
+
+Final verification (by build-flow, not the implementers): ruff check, ruff format --check, mypy src scripts, pytest -q, and `git diff --stat` showing pyproject.toml and uv.lock unchanged.
 
 ## Implementation Notes
 
