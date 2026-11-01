@@ -71,37 +71,50 @@ jobs:
         run: uv run --no-sync python scripts/fetch_aoi.py
 
       # The manifest goes to a file by redirect, not a pipe, so the exit code
-      # of `run` (2 when any scene failed) fails this step.
+      # of `run` (2 when any scene failed) fails this step. `run` still writes
+      # the manifest when scenes failed, so the later steps read it anyway.
       - name: Run the incremental pipeline
+        id: run
         run: >-
           uv run --no-sync wetland-change run
           --output-root s3://${{ vars.OUTPUT_BUCKET }}/
           > "$RUNNER_TEMP/run-manifest.json"
 
+      # `!cancelled()` drops the implicit success(), so this step runs after a
+      # failed `run` step. If `run` crashed before writing a manifest, the
+      # file is empty or missing and `processed` is 0.
       - name: Read the processed scene count
         id: manifest
+        if: ${{ !cancelled() }}
         run: |
-          cat "$RUNNER_TEMP/run-manifest.json"
-          processed="$(jq -r '.processed' "$RUNNER_TEMP/run-manifest.json")"
+          manifest="$RUNNER_TEMP/run-manifest.json"
+          processed=0
+          if [ -s "$manifest" ]; then
+            cat "$manifest"
+            processed="$(jq -r '.processed // 0' "$manifest" || echo 0)"
+          fi
           echo "processed=${processed}" >> "$GITHUB_OUTPUT"
 
+      # Catalogue, verify and commit all hang on the same condition: the run
+      # processed scenes, even if some other scenes failed. Otherwise verify
+      # would re-check an old run (or fail when no processed run exists yet).
       - name: Build the catalogue
+        if: ${{ !cancelled() && steps.manifest.outputs.processed > 0 }}
         run: >-
           uv run --no-sync wetland-change build-catalogue
           --output-root s3://${{ vars.OUTPUT_BUCKET }}/
 
-      # Only when this run processed scenes: otherwise verify would re-check an
-      # old run (or fail when no processed run exists yet).
       - name: Verify the run
-        if: ${{ steps.manifest.outputs.processed > 0 }}
+        if: ${{ !cancelled() && steps.manifest.outputs.processed > 0 }}
         run: >-
           uv run --no-sync wetland-change verify
           --output-root s3://${{ vars.OUTPUT_BUCKET }}/
 
-      # `!cancelled()` is a status-check function, so the implicit success()
-      # is dropped and this step still runs when verify exits non-zero (the
-      # job then ends red). If `run` itself failed, the manifest step never
-      # ran, `processed` is empty and this step is skipped.
+      # The condition does not reference verify's outcome, so this step still
+      # runs when verify exits non-zero (the job then ends red). The push
+      # rebases onto main first because the job can run for up to 120 minutes
+      # on a depth-1 checkout, and main may have moved; one retry covers a
+      # push that lands between the rebase and the push.
       - name: Commit the verification report
         if: ${{ !cancelled() && steps.manifest.outputs.processed > 0 }}
         run: |
@@ -112,5 +125,11 @@ jobs:
             echo "no verification report to commit"
           else
             git commit -m "Verification report for ${GITHUB_RUN_ID}"
-            git push
+            for attempt in 1 2; do
+              if git pull --rebase origin main && git push origin HEAD:main; then
+                exit 0
+              fi
+              echo "push attempt ${attempt} failed"
+            done
+            exit 1
           fi

@@ -110,26 +110,59 @@ def test_steps_run_fetch_run_catalogue_verify_commit_in_order() -> None:
         assert BUCKET_URI in command
 
 
+PROCESSED_CONDITION: Final = "!cancelled() && steps.manifest.outputs.processed > 0"
+
+
 def test_commit_step_still_runs_when_verify_fails() -> None:
     steps = _steps(_workflow())
-    run = _index(steps, RUN_PATTERN)
     verify = _index(steps, r"wetland-change verify")
     commit = _index(steps, r"git commit")
 
     condition = _normalised_condition(steps[commit])
-    assert "steps.manifest.outputs.processed > 0" in condition
-    assert "!cancelled()" in condition or "always()" in condition
-    assert "success()" not in condition
+    assert condition == PROCESSED_CONDITION
+    for forbidden in ("steps.verify", "success()", "failure()"):
+        assert forbidden not in condition
 
     assert "continue-on-error" not in steps[verify]
 
+
+def test_manifest_step_reads_the_count_after_a_failed_run_step() -> None:
+    steps = _steps(_workflow())
+    run = _index(steps, RUN_PATTERN)
     manifest = [
         position for position, step in enumerate(steps) if step.get("id") == "manifest"
     ]
     assert len(manifest) == 1
-    assert run < manifest[0] < verify
-    assert "GITHUB_OUTPUT" in steps[manifest[0]]["run"]
-    assert "processed" in steps[manifest[0]]["run"]
+    step = steps[manifest[0]]
+    assert steps[run].get("id") == "run"
+    assert run < manifest[0]
+    assert _normalised_condition(step) == "!cancelled()"
+    assert "continue-on-error" not in steps[run]
+    assert "GITHUB_OUTPUT" in step["run"]
+    assert "processed" in step["run"]
+
+
+def test_catalogue_verify_and_commit_run_whenever_scenes_were_processed() -> None:
+    steps = _steps(_workflow())
+    manifest = next(
+        position for position, step in enumerate(steps) if step.get("id") == "manifest"
+    )
+    for pattern in (
+        r"wetland-change build-catalogue",
+        r"wetland-change verify",
+        r"git commit",
+    ):
+        position = _index(steps, pattern)
+        assert position > manifest
+        assert _normalised_condition(steps[position]) == PROCESSED_CONDITION
+
+
+def test_commit_step_rebases_onto_main_before_pushing_with_a_retry() -> None:
+    steps = _steps(_workflow())
+    script = steps[_index(steps, r"git commit")]["run"]
+    assert "git pull --rebase origin main" in script
+    assert script.index("git pull --rebase") < script.index("git push")
+    assert re.search(r"for \w+ in 1 2", script)
 
 
 def test_aws_credentials_step_reads_role_and_region_from_variables() -> None:
