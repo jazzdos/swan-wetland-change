@@ -351,3 +351,35 @@ def test_freshness_exits_four_when_earth_search_fails_to_open(
     assert result.exit_code == 4, result.output
     assert "skip\tfreshness_count_vs_earth_search" in result.output
     assert "pass\tfreshness_count_vs_copernicus\t" in result.output
+
+
+def _load_polygons(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, waterbodies: Path
+) -> list[Any]:
+    fix = Path(__file__).parent / "fixtures" / "aoi"
+    cfg = _config(tmp_path / "configured")
+    aoi = cfg.aoi.model_copy(
+        update={
+            "ramsar_path": fix / "ramsar_mini.geojson",
+            "waterbodies_path": waterbodies,
+            "site_prefixes": ["Forrestdale & Thomsons Lakes"],
+        }
+    )
+    cfg = cfg.model_copy(update={"aoi": aoi})
+    monkeypatch.setattr(cli, "load_config", lambda config: cfg)
+    return cli._load(Path("unused.toml"))[1]
+
+
+def test_load_includes_dea_waterbodies(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    fix = Path(__file__).parent / "fixtures" / "aoi"
+    polygons = _load_polygons(monkeypatch, tmp_path, fix / "waterbodies_mini.geojson")
+    assert {p.layer for p in polygons} == {"ramsar", "dea_waterbody"}
+
+
+def test_load_without_waterbodies_file_keeps_ramsar(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    polygons = _load_polygons(monkeypatch, tmp_path, tmp_path / "absent.geojson")
+    assert {p.layer for p in polygons} == {"ramsar"}

@@ -127,6 +127,21 @@ class CatalogueConfig(BaseModel):
         return value.rstrip("/")
 
 
+class WaterbodiesVerifyConfig(BaseModel):
+    """Tolerances of the DEA Waterbodies history check."""
+
+    tolerance_pp: float = Field(default=10.0, gt=0.0, le=100.0)  # wet fraction, pp
+    max_day_gap: int = Field(default=3, ge=1)  # days between the two passes
+    spearman_min: float = Field(default=0.9, ge=0.0, le=1.0)
+    spearman_min_pairs: int = Field(default=10, ge=3)
+
+
+class VerifyConfig(BaseModel):
+    waterbodies: WaterbodiesVerifyConfig = Field(
+        default_factory=WaterbodiesVerifyConfig
+    )
+
+
 class PipelineConfig(BaseModel):
     stac: StacConfig
     aoi: AoiConfig
@@ -135,6 +150,7 @@ class PipelineConfig(BaseModel):
     catalogue: CatalogueConfig = Field(
         default_factory=lambda: CatalogueConfig(base_url=DEFAULT_CATALOGUE_BASE_URL)
     )
+    verify: VerifyConfig = Field(default_factory=VerifyConfig)
 
 
 def load_config(path: Path) -> PipelineConfig:

@@ -1024,3 +1024,114 @@ def test_cli_verify_exit_codes(
     store.write_bytes("runs/r1.json", b'{"processed": 1}')
     result = CliRunner().invoke(cli.app, ["verify"])
     assert result.exit_code == code, result.output
+
+
+WB_UID = "qd635epws_v3"
+
+
+def _waterbody_polygon() -> Any:
+    from shapely.geometry import box
+
+    from wetland_change.aoi import AoiPolygon
+
+    geom = box(0, 0, 1932, 1000)  # 193.2 ha
+    return AoiPolygon(f"dea-{WB_UID}", WB_UID, "dea_waterbody", geom, geom)
+
+
+def _add_waterbody_row(
+    store: OutputStore, scene: SceneItem, *, wet_fraction: float
+) -> None:
+    import io
+
+    import pandas as pd
+
+    from wetland_change.outputs.geoparquet import observation_path
+
+    path = observation_path(scene.year, scene.tile, scene.item_id)
+    frame = pd.read_parquet(io.BytesIO(store.read_bytes(path)))
+    row = frame.iloc[[0]].copy()
+    row["polygon_id"] = f"dea-{WB_UID}"
+    row["aoi_layer"] = "dea_waterbody"
+    row["datetime"] = pd.Timestamp(scene.datetime)
+    row["valid_fraction"] = 1.0
+    row["water_ha_index"] = wet_fraction * 193.2
+    buf = io.BytesIO()
+    pd.concat([frame, row], ignore_index=True).to_parquet(buf)
+    store.write_bytes(path, buf.getvalue())
+
+
+def test_verify_run_scores_the_waterbody_history(
+    fixture_item: dict[str, Any], fixture_polygon: BaseGeometry, tmp_path: Path
+) -> None:
+    import pandas as pd
+
+    cfg, store, run_id, polygons = _built_run(fixture_item, fixture_polygon, tmp_path)
+    scene = scenes_for_run(cfg, store, run_id)[0]
+    _add_waterbody_row(store, scene, wet_fraction=0.5)
+    loaded: list[str] = []
+
+    def loader(uid: str) -> Any:
+        loaded.append(uid)
+        return pd.DataFrame(
+            {
+                "date": [pd.Timestamp(scene.datetime).tz_convert("UTC")],
+                "wet_fraction": [0.5025],
+            }
+        )
+
+    checks = verify_run(
+        cfg,
+        store,
+        run_id,
+        polygons=polygons,
+        waterbody_polygons=[_waterbody_polygon()],
+        waterbodies_loader=loader,
+        wo_lookup=lambda s, b: None,
+        pixel_checker=lambda *a: Check("p", True, 1.0, 1.0, "fake"),
+        docs_dir=None,
+    )
+    assert loaded == [WB_UID]
+    wb = [c for c in checks if c.name == "water_vs_dea_waterbodies"]
+    assert len(wb) == 1
+    assert wb[0].passed is True
+    assert wb[0].measured == pytest.approx(0.25)
+    spearman = [c for c in checks if c.name == "water_spearman_vs_dea_waterbodies"]
+    assert len(spearman) == 1 and spearman[0].passed is None  # fewer than 10 pairs
+
+
+def test_verify_run_without_waterbodies_makes_no_history_check(
+    fixture_item: dict[str, Any], fixture_polygon: BaseGeometry, tmp_path: Path
+) -> None:
+    def loader(uid: str) -> Any:
+        raise AssertionError("the loader must not be called")
+
+    cfg, store, run_id, polygons = _built_run(fixture_item, fixture_polygon, tmp_path)
+    checks = verify_run(
+        cfg,
+        store,
+        run_id,
+        polygons=polygons,
+        waterbodies_loader=loader,
+        wo_lookup=lambda s, b: None,
+        pixel_checker=lambda *a: Check("p", True, 1.0, 1.0, "fake"),
+        docs_dir=None,
+    )
+    names = {c.name for c in checks}
+    assert "water_vs_dea_waterbodies" not in names
+    assert "water_spearman_vs_dea_waterbodies" not in names
+
+    # Waterbody polygons but no stored waterbody rows: still no fetch.
+    checks = verify_run(
+        cfg,
+        store,
+        run_id,
+        polygons=polygons,
+        waterbody_polygons=[_waterbody_polygon()],
+        waterbodies_loader=loader,
+        wo_lookup=lambda s, b: None,
+        pixel_checker=lambda *a: Check("p", True, 1.0, 1.0, "fake"),
+        docs_dir=None,
+    )
+    names = {c.name for c in checks}
+    assert "water_vs_dea_waterbodies" not in names
+    assert "water_spearman_vs_dea_waterbodies" not in names
