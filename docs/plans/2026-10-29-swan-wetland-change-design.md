@@ -222,7 +222,7 @@ Pre-registered hypotheses for LEARNINGS.md, to be tested by the backfill:
 | Reads the right bytes | Planetary Computer `sentinel-2-l2a`, same ESA product, SAS token via the `planetary-computer` package | Same window: identical transform, bit-identical DN on a 10 m band |
 | Reflectance scaling | ESA `product_metadata` XML on each item | `raster:bands` scale equals 1/BOA_QUANTIFICATION_VALUE and offset equals BOA_ADD_OFFSET/BOA_QUANTIFICATION_VALUE, asserted at run time for every item |
 | SCL read and alignment | ESA SCL class percentages in item properties | Class shares (water, vegetation, not vegetated, cloud) recomputed from the full-resolution SCL within 1 pp of the item properties. Overviews are not used: the Earth Search SCL COGs build them with mode resampling, which biased vegetation and not-vegetated by 2 to 3 pp at 1/16 on the first live run (LEARNINGS.md, 2026-10-29) |
-| Index arithmetic | spyndex 0.12.0 and dea-tools 0.4.10 `calculate_indices` | `assert_allclose` at 1e-6 on synthetic and fixture arrays |
+| Index arithmetic | spyndex 0.12.0 (standing test); dea-tools 0.4.10 `calculate_indices` (one-off comparison recorded in LEARNINGS.md, st-d457) | `assert_allclose` at 1e-6 on synthetic arrays (spyndex test) and on synthetic and fixture arrays (dea-tools, once) |
 | Water extent, live | DEA `ga_s2_wo_provisional_3`, same pass, same grid, bit 128 wet, only WO values 0 and 128 clear (any other flag bit excludes the pixel) | Pixel agreement at or above 0.95 on mutually clear pixels; wet area within 5 pp |
 | Water extent, history | DEA Waterbodies v3 CSV per lake; DEA `ga_ls_wo_3` per scene | Wet fraction over the DEA polygon within 10 to 15 pp on passes 1 to 3 days apart; Spearman at or above 0.9 over the backfill |
 | NDVI | DEA `ga_s2am_ard_3`, `ga_s2bm_ard_3`, `ga_s2cm_ard_3` NBART, same acquisition, nodata -999 | Per-polygon median within 0.05, correlation above 0.95 |
@@ -362,7 +362,7 @@ Estuary water verification (no DEA waterbody polygon).
 - DBCA-019 Geomorphic Wetlands: https://catalogue.data.wa.gov.au/dataset/geomorphic-wetlands-swan-coastal-plain
 - Perth 2023-24 rainfall: https://www.bom.gov.au/water/nwa/2024/perth/climateandwater/climateandwater.shtml
 - spyndex: https://github.com/awesome-spectral-indices/spyndex
-- dea-tools band indices: https://github.com/GeoscienceAustralia/dea-notebooks/blob/develop/Tools/dea_tools/bandindices.py
+- dea-tools band indices: https://github.com/GeoscienceAustralia/dea-notebooks/blob/develop/Tools/dea_tools/bandindices.py (one-off comparison only, not a dependency)
 - geoparquet-validator: https://github.com/geoparquet/geoparquet-validator
 - stac-validator and stac-check: https://github.com/stac-utils/stac-validator, https://github.com/stac-utils/stac-check
 - GeoParquet 1.1: https://geoparquet.org/releases/v1.1.0/
