@@ -1,3 +1,4 @@
+import re
 from pathlib import Path
 
 import pytest
@@ -7,6 +8,7 @@ from wetland_change.config import (
     DEFAULT_CATALOGUE_BASE_URL,
     CatalogueConfig,
     PipelineConfig,
+    WaterbodiesVerifyConfig,
     WaterConfig,
     WaterSetting,
     load_config,
@@ -167,3 +169,47 @@ def test_global_threshold_out_of_range_rejected(tmp_path: Path) -> None:
     bad.write_text(text)
     with pytest.raises(ValidationError):
         load_config(bad)
+
+
+LEARNINGS = Path(__file__).resolve().parents[1] / "LEARNINGS.md"
+S9_HEADING = "### S9 historical tolerance"
+
+
+def test_repo_config_waterbodies_verify_values() -> None:
+    cfg = load_config(REPO_CONFIG)
+    wb = cfg.verify.waterbodies
+    assert wb.tolerance_pp == 10.0
+    assert wb.max_day_gap == 3
+    assert wb.spearman_min == 0.9
+    assert wb.spearman_min_pairs == 10
+
+
+def test_waterbodies_tolerance_matches_learnings() -> None:
+    text = LEARNINGS.read_text()
+    assert S9_HEADING in text, f"LEARNINGS.md has no {S9_HEADING!r} heading"
+    section = text.split(S9_HEADING, 1)[1]
+    match = re.search(r"Chosen tolerance: (\d+(?:\.\d+)?) percentage points", section)
+    assert match is not None, (
+        f"no 'Chosen tolerance: N percentage points' sentence after {S9_HEADING!r}"
+    )
+    cfg = load_config(REPO_CONFIG)
+    assert float(match.group(1)) == cfg.verify.waterbodies.tolerance_pp
+
+
+def test_missing_verify_section_uses_defaults(tmp_path: Path) -> None:
+    text = REPO_CONFIG.read_text().split("# Water extent, history")[0]
+    assert "[verify" not in text
+    path = tmp_path / "pipeline.toml"
+    path.write_text(text)
+    cfg = load_config(path)
+    assert cfg.verify.waterbodies == WaterbodiesVerifyConfig(
+        tolerance_pp=10.0, max_day_gap=3, spearman_min=0.9, spearman_min_pairs=10
+    )
+
+
+def test_waterbodies_tolerance_zero_rejected(tmp_path: Path) -> None:
+    text = REPO_CONFIG.read_text().replace("tolerance_pp = 10.0", "tolerance_pp = 0")
+    path = tmp_path / "pipeline.toml"
+    path.write_text(text)
+    with pytest.raises(ValidationError, match="tolerance_pp"):
+        load_config(path)

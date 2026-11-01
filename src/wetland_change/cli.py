@@ -9,7 +9,12 @@ from typing import Annotated
 
 import typer
 
-from wetland_change.aoi import AoiPolygon, load_ramsar, union_bbox_4326
+from wetland_change.aoi import (
+    AoiPolygon,
+    load_ramsar,
+    load_waterbodies,
+    union_bbox_4326,
+)
 from wetland_change.catalogue.search import discover as discover_items
 from wetland_change.catalogue.search import open_client
 from wetland_change.config import PipelineConfig, load_config
@@ -50,6 +55,19 @@ def _load(config: Path) -> tuple[PipelineConfig, list[AoiPolygon]]:
     )
     if not polygons:
         raise typer.BadParameter("no AOI polygons matched; run scripts/fetch_aoi.py")
+    # DEA Waterbodies lakes are the verification unit (water_vs_dea_waterbodies).
+    if cfg.aoi.waterbodies_path.exists():
+        polygons = [
+            *polygons,
+            *load_waterbodies(
+                cfg.aoi.waterbodies_path, operation_epsg=cfg.aoi.operation_epsg
+            ),
+        ]
+    else:
+        logging.getLogger(__name__).warning(
+            "%s not found; DEA Waterbodies check skipped (run scripts/fetch_aoi.py)",
+            cfg.aoi.waterbodies_path,
+        )
     return cfg, polygons
 
 

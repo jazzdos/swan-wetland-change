@@ -50,6 +50,15 @@ from wetland_change.verify.ndvi import (
 from wetland_change.verify.pixels import pixel_check
 from wetland_change.verify.scaling import scaling_check
 from wetland_change.verify.scl import scl_checks
+from wetland_change.verify.waterbodies import (
+    CHECK_NAME as WATERBODIES_CHECK,
+)
+from wetland_change.verify.waterbodies import (
+    SeriesLoader,
+    fetch_series,
+    read_observations,
+    waterbody_checks,
+)
 from wetland_change.verify.wo import dea_reader, find_wo_href, wo_check
 from wetland_change.windows import PlannedWindow, plan_window
 
@@ -326,6 +335,8 @@ def verify_run(
     docs_dir: Path | None = Path("docs/research"),
     es_client: StacClient | None = None,
     cdse_client: StacClient | None = None,
+    waterbody_polygons: list[AoiPolygon] | None = None,
+    waterbodies_loader: SeriesLoader = fetch_series,
     clock: Callable[[], datetime] = lambda: datetime.now(UTC),
 ) -> list[Check]:
     reader = reader or RasterioReader()
@@ -392,6 +403,33 @@ def verify_run(
             )
 
         checks.extend(_guard(CHECK_NAME, _discovery, run_id=run_id))
+
+        def _waterbodies() -> list[Check]:
+            lakes = (
+                waterbody_polygons
+                if waterbody_polygons is not None
+                else [p for p in polygons if p.layer == "dea_waterbody"]
+            )
+            if not lakes:
+                logger.info("no DEA waterbody polygons; skipping %s", WATERBODIES_CHECK)
+                return []
+            paths = [
+                observation_path(s.year, s.tile, s.item_id)
+                for s in scenes
+                if store.exists(observation_path(s.year, s.tile, s.item_id))
+            ]
+            frame = read_observations(store, paths)
+            if frame.empty:
+                return []
+            return waterbody_checks(
+                frame,
+                waterbodies_loader,
+                lakes,
+                cfg=cfg.verify.waterbodies,
+                min_valid_fraction=cfg.water.min_valid_fraction,
+            )
+
+        checks.extend(_guard(WATERBODIES_CHECK, _waterbodies, run_id=run_id))
     write_report(
         checks,
         store=store,

@@ -44,3 +44,10 @@ root = "outputs"
 
 [catalogue]
 base_url = "https://example.invalid/swan-wetland-change"
+
+# Water extent, history: LEARNINGS.md "S9 historical tolerance" chose 10 pp.
+[verify.waterbodies]
+tolerance_pp = 10.0
+max_day_gap = 3
+spearman_min = 0.9
+spearman_min_pairs = 10
