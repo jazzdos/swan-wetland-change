@@ -7,7 +7,7 @@ depends_on: []
 touches: []
 exclusive: false
 created: 2026-10-29
-updated: 2026-10-29
+updated: 2026-11-01
 ---
 ## Description
 
@@ -18,5 +18,7 @@ The public base URL for absolute links is unknown until an AWS bucket exists (op
 ## Implementation Plan
 
 ## Implementation Notes
+
+- 2026-11-01T05:08:47.781Z: Epic container: both children (st-1990, st-a868) are done and merged to main. Closed with no code of its own. The public base URL stays a config placeholder until the AWS bucket exists, which is tracked under st-f849 (st-ae6e infra) and remains open for Jarrod.
 
 ## Questions
