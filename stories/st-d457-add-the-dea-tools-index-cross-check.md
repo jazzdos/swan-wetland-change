@@ -8,7 +8,7 @@ depends_on: []
 touches: [LEARNINGS.md, docs/plans/2026-10-29-swan-wetland-change-design.md, scripts/compare_dea_tools_indices.py]
 exclusive: false
 created: 2026-10-29
-updated: 2026-10-30
+updated: 2026-11-01
 parked_complexity: routine
 ---
 ## Description
