@@ -26,3 +26,7 @@ without running a scene. Order after a run: `verify`, then
 `build-catalogue` (or the next `run`) executes after `verify`, because the
 catalogue links only files that already exist in the output store. The
 `changes` asset follows the same rule.
+
+`wetland-change freshness` checks the scheduled job is alive: the newest processed
+item is under 7 days old and the ledger counts match Earth Search and Copernicus
+per tile over 30 days.

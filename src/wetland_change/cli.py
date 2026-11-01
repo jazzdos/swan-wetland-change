@@ -1,17 +1,17 @@
-"""Command line: discover, run, backfill, score, verify, build-catalogue."""
+"""Command line: discover, run, backfill, score, verify, freshness, build-catalogue."""
 
 from __future__ import annotations
 
 import logging
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
-from typing import Annotated
+from typing import Annotated, Any
 
 import typer
 
 from wetland_change.aoi import AoiPolygon, load_ramsar, union_bbox_4326
+from wetland_change.catalogue.search import StacClient, open_client
 from wetland_change.catalogue.search import discover as discover_items
-from wetland_change.catalogue.search import open_client
 from wetland_change.config import PipelineConfig, load_config
 from wetland_change.ledger import (
     exhausted_keys,
@@ -233,6 +233,61 @@ def verify(
         raise typer.Exit(code=3)
     if not any(check.passed is not None for check in checks):
         typer.echo(f"no checks were scored for run {target}", err=True)
+        raise typer.Exit(code=4)
+
+
+class _UnreachableClient:
+    """Stands in for a catalogue that failed to open; every search re-raises."""
+
+    def __init__(self, exc: Exception) -> None:
+        self._exc = exc
+
+    def search(self, **kwargs: Any) -> Any:
+        raise self._exc
+
+
+def _open_or_stub(endpoint: str) -> StacClient:
+    """Open a client, or a stub whose searches raise, so one dead catalogue
+    gives skipped checks for that source only."""
+    try:
+        return open_client(endpoint)
+    except Exception as exc:
+        return _UnreachableClient(exc)
+
+
+@app.command()
+def freshness(
+    config: ConfigOption = Path("config/pipeline.toml"),
+    output_root: OutputRootOption = None,
+    now: Annotated[datetime | None, typer.Option(help="Run time, UTC")] = None,
+) -> None:
+    """Check the scheduled job is alive: newest processed item under 7 days old \
+and ledger counts matching Earth Search and Copernicus per tile over 30 days."""
+    from wetland_change.verify.copernicus import CDSE_STAC
+    from wetland_change.verify.freshness import freshness_checks
+
+    cfg, polygons = _load(config)
+    when = (now or datetime.now(UTC)).astimezone(UTC)
+    ledger = read_ledger(_store(cfg, output_root))
+    checks = freshness_checks(
+        ledger,
+        _open_or_stub(cfg.stac.endpoint),
+        _open_or_stub(CDSE_STAC),
+        cfg.stac,
+        bbox=union_bbox_4326(polygons),
+        polygons_4326=[p.geometry_4326 for p in polygons],
+        now=when,
+    )
+    for check in checks:
+        status = (
+            "skip" if check.passed is None else ("pass" if check.passed else "FAIL")
+        )
+        tile = check.detail.get("tile", "")
+        typer.echo(f"{status}\t{check.name}\t{check.measured}\t{tile}")
+    if any(check.passed is False for check in checks):
+        raise typer.Exit(code=3)
+    if any(check.passed is None for check in checks):
+        typer.echo("some freshness checks did not run", err=True)
         raise typer.Exit(code=4)
 
 

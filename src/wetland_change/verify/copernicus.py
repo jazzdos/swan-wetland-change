@@ -70,12 +70,12 @@ def run_window(
     return start, started_at
 
 
-def _rfc3339(value: datetime) -> str:
+def rfc3339(value: datetime) -> str:
     return value.isoformat().replace("+00:00", "Z")
 
 
 @dataclass(frozen=True)
-class _Scene:
+class Scene:
     name: str
     key: str
     tile: str
@@ -93,15 +93,15 @@ def _tile(props: dict[str, Any], name: str) -> str:
     return match.group(1)
 
 
-def _normalise(
+def normalise_scenes(
     items: Sequence[dict[str, Any]],
     *,
     cloud_max: float,
     polygons: list[BaseGeometry],
     es_names: bool,
-) -> dict[str, _Scene]:
+) -> dict[str, Scene]:
     """Locally filtered scenes keyed by datatake, one per datatake."""
-    scenes: list[_Scene] = []
+    scenes: list[Scene] = []
     for item in items:
         try:
             props: dict[str, Any] = item["properties"]
@@ -115,7 +115,7 @@ def _normalise(
             name = raw.removesuffix(".SAFE") if es_names else raw
             sensed = parse_timestamp(str(props["datetime"])).astimezone(UTC)
             scenes.append(
-                _Scene(
+                Scene(
                     name=name,
                     key=datatake_key(name),
                     tile=_tile(props, name),
@@ -127,7 +127,7 @@ def _normalise(
             logger.warning(
                 "skipping %s in Copernicus comparison: %s", item.get("id"), exc
             )
-    unique: dict[str, _Scene] = {}
+    unique: dict[str, Scene] = {}
     for scene in sorted(scenes, key=lambda s: s.name):
         unique.setdefault(scene.key, scene)
     return unique
@@ -145,7 +145,7 @@ def discovery_checks(
     now: datetime,
 ) -> list[Check]:
     """One check per tile comparing Earth Search with CDSE over the window."""
-    window = f"{_rfc3339(start)}/{_rfc3339(end)}"
+    window = f"{rfc3339(start)}/{rfc3339(end)}"
     es_items = list(
         es_client.search(
             collections=[cfg.collection],
@@ -159,10 +159,10 @@ def discovery_checks(
             collections=[CDSE_COLLECTION], bbox=list(bbox), datetime=window
         ).items_as_dicts()
     )
-    es = _normalise(
+    es = normalise_scenes(
         es_items, cloud_max=cfg.cloud_cover_max, polygons=polygons_4326, es_names=True
     )
-    cdse = _normalise(
+    cdse = normalise_scenes(
         cdse_items,
         cloud_max=cfg.cloud_cover_max,
         polygons=polygons_4326,

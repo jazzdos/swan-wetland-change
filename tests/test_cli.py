@@ -7,13 +7,19 @@ from pathlib import Path
 from typing import Any
 
 import pytest
+from shapely.geometry import box as shapely_box
 from shapely.geometry.base import BaseGeometry
 from typer.testing import CliRunner
 
-from tests.test_pipeline import NOW, FakeClient, _config, _polygons, _run
+from tests.test_pipeline import NOW, FakeClient, FakeSearch, _config, _polygons, _run
+from tests.test_verify_copernicus import BBOX, cdse_item, es_item
+from tests.test_verify_freshness import row
 from wetland_change import cli
+from wetland_change.aoi import AoiPolygon
 from wetland_change.cli import app
+from wetland_change.ledger import write_ledger
 from wetland_change.store import OutputStore
+from wetland_change.verify.copernicus import CDSE_STAC
 
 runner = CliRunner()
 
@@ -48,6 +54,7 @@ def test_help_lists_commands() -> None:
         "backfill",
         "score",
         "verify",
+        "freshness",
         "build-catalogue",
     ):
         assert command in result.output
@@ -72,7 +79,7 @@ def test_backfill_help_lists_range_and_output_root() -> None:
 
 
 @pytest.mark.parametrize(
-    "command", ["run", "verify", "discover", "score", "build-catalogue"]
+    "command", ["run", "verify", "freshness", "discover", "score", "build-catalogue"]
 )
 def test_output_root_listed_on_every_command(command: str) -> None:
     result = runner.invoke(app, [command, "--help"])
@@ -196,3 +203,151 @@ def test_build_catalogue_rebuilds_stac_in_output_root(
     assert result.exit_code == 0, result.output
     assert (out / "stac" / "catalog.json").exists()
     assert not (tmp_path / "configured").exists()
+
+
+FRESH_NOW = "2026-10-29T10:00:00"
+FRESH_SENSED_2D = "2026-10-27T02:12:11"
+FRESH_SENSED_8D = "2026-10-21T02:12:11"
+
+
+class RaisingClient:
+    def search(self, **kwargs: Any) -> FakeSearch:
+        raise RuntimeError("catalogue down")
+
+
+def _patch_freshness(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    es_items: list[dict[str, Any]],
+    cdse: Any,
+    sensed: str,
+) -> tuple[Path, Path]:
+    """Config, plus an output root whose ledger holds one succeeded item."""
+    cfg = _config(tmp_path / "configured")
+    box_4326 = shapely_box(*BBOX)
+    polygons = [AoiPolygon("p", "site", "ramsar", box_4326, box_4326)]
+    monkeypatch.setattr(cli, "_load", lambda config: (cfg, polygons))
+    clients = {cfg.stac.endpoint: FakeClient(es_items), CDSE_STAC: cdse}
+    monkeypatch.setattr(cli, "open_client", lambda endpoint: clients[endpoint])
+    root = tmp_path / "root"
+    write_ledger([row(sensed)], OutputStore(str(root)), run_id="r1")
+    config_file = tmp_path / "pipeline.toml"
+    config_file.write_text("# test config\n")
+    return config_file, root
+
+
+def _freshness(config_file: Path, root: Path) -> Any:
+    return runner.invoke(
+        app,
+        [
+            "freshness",
+            "--config",
+            str(config_file),
+            "--output-root",
+            str(root),
+            "--now",
+            FRESH_NOW,
+        ],
+    )
+
+
+def test_freshness_help_lists_options() -> None:
+    result = runner.invoke(app, ["freshness", "--help"])
+    assert result.exit_code == 0
+    for option in ("--config", "--output-root", "--now"):
+        assert option in result.output
+
+
+def test_freshness_fails_when_newest_item_is_eight_days_old(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    config_file, root = _patch_freshness(
+        monkeypatch, tmp_path, [], FakeClient([]), FRESH_SENSED_8D
+    )
+    result = _freshness(config_file, root)
+    assert result.exit_code == 3, result.output
+    lines = [line for line in result.output.splitlines() if line.startswith("FAIL")]
+    assert any("freshness_newest_item" in line for line in lines)
+
+
+def test_freshness_passes_when_ledger_and_catalogues_agree(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    config_file, root = _patch_freshness(
+        monkeypatch,
+        tmp_path,
+        [es_item(FRESH_SENSED_2D)],
+        FakeClient([cdse_item(FRESH_SENSED_2D)]),
+        FRESH_SENSED_2D,
+    )
+    result = _freshness(config_file, root)
+    assert result.exit_code == 0, result.output
+    assert "FAIL" not in result.output
+    assert "pass\tfreshness_newest_item\t" in result.output
+    assert "\t50HLK" in result.output
+
+
+def test_freshness_exits_four_when_copernicus_is_unreachable(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    config_file, root = _patch_freshness(
+        monkeypatch,
+        tmp_path,
+        [es_item(FRESH_SENSED_2D)],
+        RaisingClient(),
+        FRESH_SENSED_2D,
+    )
+    result = _freshness(config_file, root)
+    assert result.exit_code == 4, result.output
+    assert "skip\tfreshness_count_vs_copernicus" in result.output
+    assert "FAIL" not in result.output
+
+
+def test_freshness_exits_four_when_copernicus_fails_to_open(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    config_file, root = _patch_freshness(
+        monkeypatch,
+        tmp_path,
+        [es_item(FRESH_SENSED_2D)],
+        FakeClient([]),
+        FRESH_SENSED_2D,
+    )
+    patched = cli.open_client
+
+    def opener(endpoint: str) -> Any:
+        if endpoint == CDSE_STAC:
+            raise RuntimeError("landing page down")
+        return patched(endpoint)
+
+    monkeypatch.setattr(cli, "open_client", opener)
+    result = _freshness(config_file, root)
+    assert result.exit_code == 4, result.output
+    assert "pass\tfreshness_newest_item\t" in result.output
+    assert "pass\tfreshness_count_vs_earth_search\t" in result.output
+    assert "skip\tfreshness_count_vs_copernicus" in result.output
+    assert "FAIL" not in result.output
+
+
+def test_freshness_exits_four_when_earth_search_fails_to_open(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    config_file, root = _patch_freshness(
+        monkeypatch,
+        tmp_path,
+        [],
+        FakeClient([cdse_item(FRESH_SENSED_2D)]),
+        FRESH_SENSED_2D,
+    )
+    patched = cli.open_client
+
+    def opener(endpoint: str) -> Any:
+        if endpoint != CDSE_STAC:
+            raise RuntimeError("landing page down")
+        return patched(endpoint)
+
+    monkeypatch.setattr(cli, "open_client", opener)
+    result = _freshness(config_file, root)
+    assert result.exit_code == 4, result.output
+    assert "skip\tfreshness_count_vs_earth_search" in result.output
+    assert "pass\tfreshness_count_vs_copernicus\t" in result.output
