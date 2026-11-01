@@ -206,7 +206,7 @@ def watermark(ledger: pa.Table) -> dt.datetime | None:
     return value if isinstance(value, dt.datetime) else None
 
 
-def _latest(ledger: pa.Table) -> pd.DataFrame:
+def latest_entries(ledger: pa.Table) -> pd.DataFrame:
     frame = ledger.to_pandas()
     if frame.empty:
         return frame
@@ -215,7 +215,7 @@ def _latest(ledger: pa.Table) -> pd.DataFrame:
 
 
 def seen_keys(ledger: pa.Table) -> set[tuple[str, dt.datetime]]:
-    latest = _latest(ledger)
+    latest = latest_entries(ledger)
     if latest.empty:
         return set()
     ok = latest[latest["status"] == "succeeded"]
@@ -226,7 +226,7 @@ def seen_keys(ledger: pa.Table) -> set[tuple[str, dt.datetime]]:
 
 
 def retry_ids(ledger: pa.Table, *, max_attempts: int = MAX_ATTEMPTS) -> list[str]:
-    latest = _latest(ledger)
+    latest = latest_entries(ledger)
     if latest.empty:
         return []
     failed = latest[
@@ -239,7 +239,7 @@ def exhausted_keys(
     ledger: pa.Table, *, max_attempts: int = MAX_ATTEMPTS
 ) -> set[tuple[str, dt.datetime]]:
     """Items that failed `max_attempts` times; skipped until republished."""
-    latest = _latest(ledger)
+    latest = latest_entries(ledger)
     if latest.empty:
         return set()
     done = latest[(latest["status"] == "failed") & (latest["attempts"] >= max_attempts)]
@@ -250,7 +250,7 @@ def exhausted_keys(
 
 
 def attempts_so_far(ledger: pa.Table, item_id: str) -> int:
-    latest = _latest(ledger)
+    latest = latest_entries(ledger)
     if latest.empty:
         return 0
     match = latest[latest["item_id"] == item_id]
