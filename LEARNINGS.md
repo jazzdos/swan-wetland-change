@@ -40,6 +40,19 @@ recorded result.
    one-off from the pinned PyPI wheel with xarray as an overlay; spyndex in
    tests/test_indices.py stays the standing check.
 
+## Pre-registered hypotheses (st-b983, 2026-11-02)
+
+Recorded before the Collection 1 backfill runs. The verdict rules are fixed here and implemented in `docs/research/2026-11-02-backfill-analysis.py`. Thresholds stay as configured: |z| above 3, valid fraction above 0.8, at least 5 baseline samples, and the per-polygon water settings in `config/pipeline.toml` (ramsar-56 MNDWI 0.05; ramsar-52 and the DEA polygons the global MNDWI -0.1). Nothing is tuned after the run.
+
+Definitions. H1 to H3 use metric `water_ha_index`, UTC acquisition dates and one daily score per polygon, computed as `wetland-change score` computes it, with a baseline of the same polygon and month on strictly earlier dates (ADR 0004). A date is scored when `reason` is null and `z` is not null. A low flag is a row with `flagged` true and `z` below zero. Forrestdale is `ramsar-56` (DEA `qd63n1ww5_v3`). Thomsons is `ramsar-52` (DEA `qd635epws_v3`). The code has no dry-down flag, so H3 reads a dry-down flag as a low flag.
+
+- H1, Forrestdale low water, 2023-12-01 to 2024-01-31. Supported if there is at least one low flag. Not supported if at least one date is scored and there is no low flag. Untestable if no date is scored.
+- H2, Forrestdale no anomaly, 2023-02-01 to 2023-04-30. Supported if at least one date is scored and no `water_ha_index` row is flagged with either sign. Not supported if any such row is flagged. Untestable if no date is scored. NDVI flags are reported separately and do not affect the verdict. The 2022 half is untestable because Earth Search Collection 1 has no items covering Forrestdale for February to April 2022 under the pipeline's 20 percent cloud filter. An unfiltered search finds two items intersecting ramsar-56, both on 2022-03-22 and both excluded by that filter: S2A_T50HLK_20220322T022405_L2A at 39.8 percent cloud and S2A_T50HMK_20220322T022405_L2A at 68.6 percent cloud.
+- H3, winter water at or above baseline, 2025-06-01 to 2025-08-31, ramsar-56 and ramsar-52. A polygon meets the rule if the median of `value - baseline_median` over its scored dates is at least 0 and it has no low flag. Supported if both polygons meet it. Not supported if either polygon has scored dates and fails. Untestable if a polygon has no scored date and the other does not fail. A per-date reading is rejected because about half of any series sits below its median.
+- H4, agreement with DEA Waterbodies, 2022-12-01 to the run end date, per lake in `LAKES` (Thomsons, Forrestdale, Lake Clifton, Lake Preston), from check `water_spearman_vs_dea_waterbodies` (passes within 3 days, at least 10 pairs). Supported if at least one lake is scored and every scored lake has rho at least 0.9. Not supported if any scored lake has rho below 0.9. Untestable if no lake is scored.
+
+H2 may come out untestable. The store starts in December 2022, so a February to April 2023 baseline holds only earlier dates of that same month, and 4 to 5 dates a month may not reach 5 samples. The report gives the count per `reason`. It also gives a descriptive z for those dates against same-month observations from all years other than 2023; that figure is not a verdict and does not follow ADR 0004.
+
 ## Spike results
 
 ### S1 Forrestdale seam (2026-10-29)
