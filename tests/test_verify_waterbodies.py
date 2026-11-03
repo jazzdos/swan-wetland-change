@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from collections.abc import Sequence
 from datetime import date
 from pathlib import Path
 
@@ -42,14 +43,20 @@ def _polygon(uid: str = UID) -> AoiPolygon:
     )
 
 
-def _obs(*rows: tuple[str, float, float]) -> pd.DataFrame:
-    """Rows of (datetime, valid_fraction, wet fraction of the polygon)."""
+def _obs(
+    *rows: tuple[str, float, float], tiles: Sequence[str] | None = None
+) -> pd.DataFrame:
+    """Rows of (datetime, valid_fraction, wet fraction of the polygon).
+
+    `tiles` sets the tile of each row; every row is on T50HMK by default.
+    """
     return pd.DataFrame(
         {
             "polygon_id": [PID] * len(rows),
             "aoi_layer": ["dea_waterbody"] * len(rows),
             "item_id": [f"item-{i}" for i in range(len(rows))],
             "datetime": pd.to_datetime([r[0] for r in rows], utc=True),
+            "tile": list(tiles) if tiles is not None else ["T50HMK"] * len(rows),
             "scene_coverage": [1.0] * len(rows),
             "valid_fraction": [r[1] for r in rows],
             "water_ha_index": [r[2] * AREA_HA for r in rows],
@@ -253,6 +260,71 @@ def test_end_to_end_single_spearman_check() -> None:
     assert checks[-1] is rho
 
 
+def test_same_tile_same_date_different_datetimes_yield_one_pair() -> None:
+    checks = _run(
+        _obs(
+            ("2026-10-12T02:26:00Z", 0.95, 0.85),
+            ("2026-10-12T02:26:20Z", 0.95, 0.80),
+        )
+    )
+    assert len(_passes(checks)) == 1
+    assert _rho(checks).detail["n_pairs"] == 1
+
+
+def test_same_tile_same_date_keeps_highest_coverage_then_valid_fraction() -> None:
+    obs = _obs(
+        ("2026-10-12T02:26:00Z", 0.99, 0.85),
+        ("2026-10-12T02:26:10Z", 0.90, 0.85),
+        ("2026-10-12T02:26:20Z", 0.97, 0.80),
+    )
+    obs["scene_coverage"] = [0.5, 1.0, 1.0]
+    (check,) = _passes(_run(obs))
+    assert check.detail["valid_fraction"] == 0.97
+    assert check.detail["scene_coverage"] == 1.0
+
+
+def test_same_tile_same_date_tie_keeps_earliest_datetime() -> None:
+    obs = _obs(
+        ("2026-10-12T02:26:20Z", 0.95, 0.80),
+        ("2026-10-12T02:26:00Z", 0.95, 0.85),
+    )
+    (check,) = _passes(_run(obs))
+    assert check.detail["pipeline_date"].startswith("2026-10-12T02:26:00")
+
+
+def test_same_date_different_tiles_with_different_datetimes_kept_apart() -> None:
+    obs = _obs(
+        ("2026-10-12T02:26:00Z", 0.95, 0.85),
+        ("2026-10-12T02:26:20Z", 0.95, 0.80),
+        tiles=["T50HMK", "T50HLK"],
+    )
+    assert len(_passes(_run(obs))) == 2
+
+
+def test_same_tile_different_dates_not_merged() -> None:
+    dates = pd.to_datetime(["2026-10-10T02:05:30Z", "2026-10-20T02:05:30Z"])
+    series = pd.DataFrame({"date": dates, "wet_fraction": [0.80, 0.70]})
+    obs = _obs(
+        ("2026-10-11T02:26:00Z", 0.95, 0.81),
+        ("2026-10-21T02:26:00Z", 0.95, 0.71),
+    )
+    checks = waterbody_checks(
+        obs, {UID: series}, [_polygon()], cfg=CFG, min_valid_fraction=0.8
+    )
+    assert len(_passes(checks)) == 2
+
+
+def test_seam_datetime_rule_still_applies_with_tiles() -> None:
+    obs = _obs(
+        ("2026-10-12T02:26:00Z", 0.95, 0.85),
+        ("2026-10-12T02:26:00Z", 0.95, 0.85),
+        tiles=["T50HMK", "T50HLK"],
+    )
+    obs["scene_coverage"] = [0.363, 1.0]
+    (check,) = _passes(_run(obs))
+    assert check.detail["scene_coverage"] == 1.0
+
+
 def test_loader_exception_skips() -> None:
     def boom(uid: str) -> pd.DataFrame:
         raise RuntimeError("network down")
@@ -299,6 +371,7 @@ def test_read_observations_keeps_only_waterbodies(tmp_path: Path) -> None:
             "aoi_layer": ["dea_waterbody", "ramsar"],
             "item_id": ["i1", "i1"],
             "datetime": pd.to_datetime(["2026-10-12T02:26:00Z"] * 2, utc=True),
+            "tile": ["T50HMK", "T50HMK"],
             "scene_coverage": [1.0, 1.0],
             "valid_fraction": [0.9, 0.9],
             "water_ha_index": [10.0, 20.0],
@@ -317,6 +390,7 @@ def test_read_observations_keeps_only_waterbodies(tmp_path: Path) -> None:
         "aoi_layer",
         "item_id",
         "datetime",
+        "tile",
         "scene_coverage",
         "valid_fraction",
         "water_ha_index",
