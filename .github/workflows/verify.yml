@@ -1,0 +1,128 @@
+# Weekly verify: run the live contract tests, verify the latest run in the S3
+# output store against the independent references, and check freshness. Any
+# failure opens a GitHub issue that links to the workflow run.
+#
+# Runs at 22:00 UTC every Sunday and on manual dispatch. The time is clear of
+# the 10:00 UTC daily pipeline.
+#
+# This is the alert path. The daily pipeline commits its verification report,
+# which keeps the schedule alive but does not notify anyone; this workflow
+# opens an issue when something is wrong.
+#
+# AWS access is through OIDC. The IAM role trusts only runs on
+# refs/heads/main, so workflow_dispatch only works from main. The role ARN,
+# region and bucket name come from repository variables (not secrets); no
+# long-lived credentials are stored anywhere. The credentials are assumed
+# after the live tests, which read public COGs unsigned and need none.
+#
+# Access to the bucket is not read-only. The role can write, and `verify`
+# writes `verification/<run_id>.json` for the run it checks, overwriting the
+# pipeline's copy in the public, unversioned bucket. The design accepts that
+# write; the catalogue links the file as the run's record. This workflow
+# shares the `pipeline` concurrency group so the write never overlaps a
+# pipeline run.
+#
+# Timeouts. A job-level timeout ends the job as cancelled or timed out, not
+# failed, so the issue step would skip. Each long step therefore has its own
+# `timeout-minutes` (a step timeout fails the step and `failure()` fires):
+# 5 + 15 + 20 + 5 = 45 minutes of the 60 minute job limit. Checkout, install
+# and the credential step have no step timeout; if one of them hangs past
+# the remaining 15 minutes, the job limit cancels the run and no issue opens.
+
+name: verify
+
+on:
+  schedule:
+    - cron: "0 22 * * 0"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+# One run at a time, shared with the daily pipeline, and never cancel a run
+# part-way through.
+concurrency:
+  group: pipeline
+  cancel-in-progress: false
+
+jobs:
+  verify:
+    name: live contract, verify, freshness
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+    # Widened from the workflow default for this job only.
+    permissions:
+      # Check out the repository.
+      contents: read
+      # Mint the OIDC token for the AWS role.
+      id-token: write
+      # Open the failure issue.
+      issues: write
+
+    steps:
+      - name: Check out the repository
+        # actions/checkout v7.0.1
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+
+      - name: Install uv and Python
+        # astral-sh/setup-uv v9.0.0
+        uses: astral-sh/setup-uv@c771a70e6277c0a99b617c7a806ffedaca235ff9
+        with:
+          version: "0.9.29"
+          python-version: "3.12"
+          enable-cache: false
+
+      - name: Install the project
+        run: uv sync --locked
+
+      - name: Fetch the AOI
+        timeout-minutes: 5
+        run: uv run --no-sync python scripts/fetch_aoi.py
+
+      # `-m live` on the command line overrides the default `-m 'not live'`
+      # from pyproject.toml.
+      - name: Live contract tests
+        timeout-minutes: 15
+        run: uv run --no-sync pytest -m live -rs
+
+      # Exports AWS credentials as environment variables, which pyarrow's
+      # S3FileSystem reads for `s3://` output roots. Only verify and
+      # freshness need them. `!cancelled()` keeps them available after a
+      # failed live test.
+      - name: Assume the AWS role through OIDC
+        id: aws
+        if: ${{ !cancelled() }}
+        # aws-actions/configure-aws-credentials v6.3.0
+        uses: aws-actions/configure-aws-credentials@e1253824e5c10ff9df46874f81ed3ec929e19cfd
+        with:
+          role-to-assume: ${{ vars.AWS_ROLE_ARN }}
+          aws-region: ${{ vars.AWS_REGION }}
+
+      # `!cancelled()` drops the implicit success(), so verify and freshness
+      # still run after a failed earlier step and every problem shows up in
+      # one run. The job still ends red.
+      - name: Verify the latest run
+        if: ${{ !cancelled() }}
+        timeout-minutes: 20
+        run: >-
+          uv run --no-sync wetland-change verify
+          --output-root s3://${{ vars.OUTPUT_BUCKET }}/
+
+      - name: Check freshness
+        if: ${{ !cancelled() }}
+        timeout-minutes: 5
+        run: >-
+          uv run --no-sync wetland-change freshness
+          --output-root s3://${{ vars.OUTPUT_BUCKET }}/
+
+      # No --label: gh issue create fails when the label does not exist.
+      - name: Open an issue on failure
+        if: failure()
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          RUN_URL: "${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}"
+        run: >-
+          gh issue create
+          --title "Weekly verify failed (run ${GITHUB_RUN_ID})"
+          --body "The weekly verify workflow failed. Run: ${RUN_URL}"
