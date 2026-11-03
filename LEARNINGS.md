@@ -275,6 +275,15 @@ Per-pass rows are in docs/research/2026-10-30-waterbodies-tolerance.csv. The
 script that produced it (scratch/spikes/s9_tolerance.py) is untracked in
 scratch/spikes/.
 
+### Backfill hypotheses (2026-11-03)
+
+Report: [docs/research/2026-11-03-backfill-hypotheses.md](docs/research/2026-11-03-backfill-hypotheses.md). Range 2022-12-01 to 2026-11-02, 1147 items processed, 0 failed, coverage 1.0 of a 1147 item reference (0.8756 of the 1310 item raw search count).
+
+- H1: supported, 2 low flags in 3 scored dates: 2023-12-17 (z -8.87) and 2023-12-22 (z -5.16). DEA wet fraction is 0.0 on all 5 passes in the window.
+- H2: untestable for 2023, 0 of 12 dates scored, all 12 `too_few_samples`; no NDVI flags. The 2022 half is untestable: Earth Search Collection 1 has no items covering Forrestdale for February to April 2022 under the 20 percent cloud filter (2 unfiltered items on 2022-03-22 were excluded by it, at 39.8 and 68.6 percent cloud).
+- H3: not supported. ramsar-56 median delta -14.38 ha over 1 scored date (0.0 share at or above baseline) with a low flag on 2025-08-23 (z -3.39); ramsar-52 has 0 of 5 dates scored.
+- H4: not supported. Spearman rho and n pairs: Forrestdale 0.870 (93), Thomsons 0.897 (99), Lake Clifton 0.858 (98), Lake Preston 0.861 (98); all below 0.9.
+
 ## Live run findings
 
 ### SCL overview resampling (2026-10-29)
