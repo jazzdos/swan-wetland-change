@@ -1,0 +1,415 @@
+{
+  "change_rows": {
+    "ramsar-52": 37,
+    "ramsar-56": 32
+  },
+  "config_sha256": "9ce8408cb8c554248cd8a8c03a6531405c56fe26b9ca899607625a13b340134f",
+  "date": "2026-11-03",
+  "git_head": "114459b6b5cfa507f853574e62b8ddec0da6d223",
+  "h1": {
+    "dea_wet_fraction": [
+      {
+        "date": "2023-12-12",
+        "wet_fraction": 0.0
+      },
+      {
+        "date": "2023-12-28",
+        "wet_fraction": 0.0
+      },
+      {
+        "date": "2024-01-06",
+        "wet_fraction": 0.0
+      },
+      {
+        "date": "2024-01-22",
+        "wet_fraction": 0.0
+      },
+      {
+        "date": "2024-01-29",
+        "wet_fraction": 0.0
+      }
+    ],
+    "flags": [
+      {
+        "baseline_mad": 10.748849999999978,
+        "baseline_median": 95.28999999999999,
+        "baseline_n": 5,
+        "date": "2023-12-17",
+        "value": 0.0,
+        "z": -8.86513440972757
+      },
+      {
+        "baseline_mad": 17.168507999999964,
+        "baseline_median": 88.595,
+        "baseline_n": 6,
+        "date": "2023-12-22",
+        "value": 0.0,
+        "z": -5.160320279432563
+      }
+    ],
+    "min_z": {
+      "date": "2023-12-17",
+      "z": -8.86513440972757
+    },
+    "n_dates": 11,
+    "n_scored": 3,
+    "reasons": {
+      "low_valid_fraction": 1,
+      "too_few_samples": 2,
+      "zero_mad": 5
+    },
+    "verdict": "supported",
+    "window": [
+      "2023-12-01",
+      "2024-01-31"
+    ]
+  },
+  "h2": {
+    "c1_items_feb_apr_2022": 0,
+    "c1_items_feb_apr_2022_excluded_by_cloud_filter": [
+      {
+        "cloud_cover": 68.647653,
+        "datetime": "2022-03-22T02:26:40.047000+00:00",
+        "item_id": "S2A_T50HMK_20220322T022405_L2A"
+      },
+      {
+        "cloud_cover": 39.789823,
+        "datetime": "2022-03-22T02:26:43.750000+00:00",
+        "item_id": "S2A_T50HLK_20220322T022405_L2A"
+      }
+    ],
+    "c1_items_feb_apr_2022_unfiltered": 2,
+    "flags": [],
+    "min_z": null,
+    "n_dates": 12,
+    "n_scored": 0,
+    "ndvi_flags": [],
+    "reasons": {
+      "too_few_samples": 12
+    },
+    "retrospective": [
+      {
+        "date": "2023-02-05",
+        "mad": 0.0,
+        "median": 0.0,
+        "n": 10,
+        "value": 0.0,
+        "z": null
+      },
+      {
+        "date": "2023-02-10",
+        "mad": 0.0,
+        "median": 0.0,
+        "n": 10,
+        "value": 0.0,
+        "z": null
+      },
+      {
+        "date": "2023-02-20",
+        "mad": 0.0,
+        "median": 0.0,
+        "n": 10,
+        "value": 0.0,
+        "z": null
+      },
+      {
+        "date": "2023-02-25",
+        "mad": 0.0,
+        "median": 0.0,
+        "n": 10,
+        "value": 0.0,
+        "z": null
+      },
+      {
+        "date": "2023-03-07",
+        "mad": 0.0,
+        "median": 0.0,
+        "n": 17,
+        "value": 0.0,
+        "z": null
+      },
+      {
+        "date": "2023-03-12",
+        "mad": 0.0,
+        "median": 0.0,
+        "n": 17,
+        "value": 0.0,
+        "z": null
+      },
+      {
+        "date": "2023-03-17",
+        "mad": 0.0,
+        "median": 0.0,
+        "n": 17,
+        "value": 0.0,
+        "z": null
+      },
+      {
+        "date": "2023-03-22",
+        "mad": 0.0,
+        "median": 0.0,
+        "n": 17,
+        "value": 0.0,
+        "z": null
+      },
+      {
+        "date": "2023-03-27",
+        "mad": 0.0,
+        "median": 0.0,
+        "n": 17,
+        "value": 0.0,
+        "z": null
+      },
+      {
+        "date": "2023-04-06",
+        "mad": 0.0,
+        "median": 0.0,
+        "n": 11,
+        "value": 0.0,
+        "z": null
+      },
+      {
+        "date": "2023-04-11",
+        "mad": 0.0,
+        "median": 0.0,
+        "n": 11,
+        "value": 0.20999999999999994,
+        "z": null
+      },
+      {
+        "date": "2023-04-21",
+        "mad": 0.0,
+        "median": 0.0,
+        "n": 11,
+        "value": 0.0,
+        "z": null
+      }
+    ],
+    "untestable_2022_half": true,
+    "verdict": "untestable",
+    "window": [
+      "2023-02-01",
+      "2023-04-30"
+    ]
+  },
+  "h3": {
+    "flags": [
+      {
+        "baseline_mad": 4.24023600000002,
+        "baseline_median": 92.48999999999998,
+        "baseline_n": 5,
+        "date": "2025-08-23",
+        "polygon_id": "ramsar-56",
+        "value": 78.10999999999999,
+        "z": -3.3913206717739124
+      }
+    ],
+    "min_z": {
+      "date": "2025-08-23",
+      "polygon_id": "ramsar-56",
+      "z": -3.3913206717739124
+    },
+    "n_dates": 13,
+    "n_scored": 1,
+    "polygons": {
+      "ramsar-52": {
+        "flags": [],
+        "low_flags": 0,
+        "median_delta": null,
+        "meets_rule": false,
+        "min_z": null,
+        "monthly": {
+          "2025-07": {
+            "median_delta": null,
+            "n_dates": 3,
+            "n_scored": 0
+          },
+          "2025-08": {
+            "median_delta": null,
+            "n_dates": 2,
+            "n_scored": 0
+          }
+        },
+        "n_dates": 5,
+        "n_scored": 0,
+        "reasons": {
+          "too_few_samples": 5
+        },
+        "share_at_or_above_baseline": null
+      },
+      "ramsar-56": {
+        "flags": [
+          {
+            "baseline_mad": 4.24023600000002,
+            "baseline_median": 92.48999999999998,
+            "baseline_n": 5,
+            "date": "2025-08-23",
+            "value": 78.10999999999999,
+            "z": -3.3913206717739124
+          }
+        ],
+        "low_flags": 1,
+        "median_delta": -14.379999999999995,
+        "meets_rule": false,
+        "min_z": {
+          "date": "2025-08-23",
+          "z": -3.3913206717739124
+        },
+        "monthly": {
+          "2025-07": {
+            "median_delta": null,
+            "n_dates": 5,
+            "n_scored": 0
+          },
+          "2025-08": {
+            "median_delta": -14.379999999999995,
+            "n_dates": 3,
+            "n_scored": 1
+          }
+        },
+        "n_dates": 8,
+        "n_scored": 1,
+        "reasons": {
+          "low_valid_fraction": 3,
+          "too_few_samples": 4
+        },
+        "share_at_or_above_baseline": 0.0
+      }
+    },
+    "reasons": {
+      "low_valid_fraction": 3,
+      "too_few_samples": 9
+    },
+    "verdict": "not supported",
+    "window": [
+      "2025-06-01",
+      "2025-08-31"
+    ]
+  },
+  "h4": {
+    "failing": [
+      "Forrestdale Lake",
+      "Thomsons Lake",
+      "Lake Clifton",
+      "Lake Preston"
+    ],
+    "lakes": [
+      {
+        "lake": "Forrestdale Lake",
+        "n_pairs": 93,
+        "n_unpaired": 137,
+        "passed": false,
+        "reason": null,
+        "rho": 0.8695491423458352,
+        "scored": true,
+        "uid": "qd63n1ww5_v3"
+      },
+      {
+        "lake": "Thomsons Lake",
+        "n_pairs": 99,
+        "n_unpaired": 66,
+        "passed": false,
+        "reason": null,
+        "rho": 0.8972639502690252,
+        "scored": true,
+        "uid": "qd635epws_v3"
+      },
+      {
+        "lake": "Lake Clifton",
+        "n_pairs": 98,
+        "n_unpaired": 40,
+        "passed": false,
+        "reason": null,
+        "rho": 0.8582640771936836,
+        "scored": true,
+        "uid": "qd4m2n3rj_v3"
+      },
+      {
+        "lake": "Lake Preston",
+        "n_pairs": 98,
+        "n_unpaired": 38,
+        "passed": false,
+        "reason": null,
+        "rho": 0.860606717940041,
+        "scored": true,
+        "uid": "qd4k2967m_v3"
+      }
+    ],
+    "n_lakes": 4,
+    "n_scored": 4,
+    "per_pass": {
+      "Forrestdale Lake": {
+        "fail": 9,
+        "median_abs_diff_pp": 0.15114083121184724,
+        "pass": 84,
+        "skip": 116
+      },
+      "Lake Clifton": {
+        "fail": 53,
+        "median_abs_diff_pp": 11.624679636487397,
+        "pass": 45,
+        "skip": 7
+      },
+      "Lake Preston": {
+        "fail": 3,
+        "median_abs_diff_pp": 6.624643441059641,
+        "pass": 95,
+        "skip": 9
+      },
+      "Thomsons Lake": {
+        "fail": 12,
+        "median_abs_diff_pp": 0.8068145998529563,
+        "pass": 87,
+        "skip": 6
+      }
+    },
+    "rho": {
+      "Forrestdale Lake": 0.8695491423458352,
+      "Lake Clifton": 0.8582640771936836,
+      "Lake Preston": 0.860606717940041,
+      "Thomsons Lake": 0.8972639502690252
+    },
+    "rho_min": 0.9,
+    "verdict": "not supported"
+  },
+  "ledger": {
+    "by_status": {
+      "succeeded": 1147
+    },
+    "coverage": 1.0,
+    "exhausted": 0,
+    "failed": [],
+    "in_reference": 1147,
+    "latest_items": 1147,
+    "missing_from_ledger": [],
+    "not_in_reference": [],
+    "raw_coverage": 0.8755725190839695
+  },
+  "range": {
+    "end": "2026-11-02T23:59:59.999999+00:00",
+    "start": "2022-12-01T00:00:00+00:00"
+  },
+  "reference": {
+    "end": "2026-11-02T23:59:59.999999+00:00",
+    "raw_count": 1310,
+    "reference_count": 1147,
+    "rejected_count": 0,
+    "searched_at": "2026-11-03T10:30:55.141748+00:00",
+    "skipped_filter": 163,
+    "start": "2022-12-01T00:00:00+00:00"
+  },
+  "runs": {
+    "backfill_calls": 35,
+    "backfill_seconds_sum": 174651,
+    "failed_attempts_sum": 25,
+    "first_started_at": "2026-11-02T13:23:06+00:00",
+    "manifests": 35,
+    "processed_sum": 1147,
+    "rejected_sum": 0,
+    "seconds_per_processed_scene": 152.26765475152573
+  },
+  "self_check": {
+    "matched": true,
+    "ran": true
+  }
+}

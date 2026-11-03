@@ -1,0 +1,14 @@
+#!/bin/bash
+cmd=$1; shift
+while [ $# -gt 0 ]; do case "$1" in --start) S=$2;; --end) E=$2;; --output-root) R=$2;; --now) N=${2:-};; esac; shift 2; done
+mkdir -p "$R/runs" "$R/ledger/year=2026"
+id=$(echo "${N:-score}" | tr -d ':-')
+echo "$cmd $S $E $id" >> "$R/calls.txt"
+if [ "$cmd" = score ]; then echo '{"kind":"score"}' > "$R/runs/score.json"; exit ${FAKE_SCORE_RC:-0}; fi
+[ -e "$R/runs/$id.json" ] && { echo "DUP $id" >> "$R/calls.txt"; }
+if [ -n "${FAKE_FAIL_ALL:-}" ]; then printf '{\n  "processed": 0,\n  "failed": 3,\n  "kind": "backfill"\n}\n' > "$R/runs/$id.json"; exit 2; fi
+if [ -n "${FAKE_FAIL_START:-}" ] && [ "$S" = "$FAKE_FAIL_START" ]; then printf '{\n  "processed": 0,\n  "failed": 1\n}\n' > "$R/runs/$id.json"; exit 2; fi
+if [ "$S" = 2023-04-01 ] && [ ! -e "$R/failed_once" ]; then touch "$R/failed_once"; printf '{\n  "processed": 1,\n  "failed": 1\n}\n' > "$R/runs/$id.json"; exit 2; fi
+printf '{\n  "processed": 2,\n  "failed": 0\n}\n' > "$R/runs/$id.json"
+head -c 1000 /dev/zero > "$R/ledger/year=2026/ledger_${id}_00000.parquet"
+sleep 0.2
