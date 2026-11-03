@@ -29,9 +29,14 @@ not finite, is a skipped check and is left out of the correlation. A row whose
 `water_ha_index` covers only the in-scene part but is divided by the whole
 polygon area) is skipped the same way. When several rows of one polygon share
 a datetime (the same datatake on two tiles) only the row with the highest
-`scene_coverage` is kept, so a datatake is one pair. Spearman is
-the Pearson correlation of average ranks, computed on hectares (ranks equal
-those of the fraction because the area is constant).
+`scene_coverage` is kept, so a datatake is one pair. For each tile and UTC
+calendar date only one row is kept (highest `scene_coverage`, then highest
+`valid_fraction`, then earliest datetime), because rows of one tile on one
+date pair with the same DEA row and are not independent pairs. Rows of
+different tiles with different datetimes on one date are not merged.
+`n_pairs` therefore counts one pair per tile and date. Spearman is the
+Pearson correlation of average ranks, computed on hectares (ranks equal those
+of the fraction because the area is constant).
 
 Nothing here knows about runs or ledgers, so the backfill can call it over
 any date range.
@@ -72,6 +77,7 @@ OBSERVATION_COLUMNS: list[str] = [
     "aoi_layer",
     "item_id",
     "datetime",
+    "tile",
     "scene_coverage",
     "valid_fraction",
     "water_ha_index",
@@ -198,12 +204,28 @@ def _lake_checks(
     )
     dea = dea.sort_values("date").reset_index(drop=True)
     dea_days = _day_numbers(dea["date"]) if len(dea) else np.empty(0, dtype=np.int64)
-    # One row per datetime: the tile that covers most of the polygon.
+    # Tile-seam rule: one datatake on two tiles shares a datetime, so keep the
+    # tile that covers most of the polygon.
     rows = (
         rows.sort_values(["datetime", "scene_coverage"], ascending=[True, False])
         .drop_duplicates("datetime", keep="first")
         .reset_index(drop=True)
     )
+    # Rows of one tile on one UTC date pair with the same DEA row, so they are
+    # not independent pairs. Keep the best row, in chronological order.
+    if len(rows):
+        rows = rows.assign(_day=_day_numbers(rows["datetime"]))
+        rows = (
+            rows.sort_values(
+                ["tile", "_day", "scene_coverage", "valid_fraction", "datetime"],
+                ascending=[True, True, False, False, True],
+                na_position="last",
+            )
+            .drop_duplicates(["tile", "_day"], keep="first")
+            .sort_values("datetime")
+            .drop(columns="_day")
+            .reset_index(drop=True)
+        )
 
     checks: list[Check] = []
     pipe_pairs: list[float] = []
