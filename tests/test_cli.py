@@ -3,7 +3,10 @@ from __future__ import annotations
 import hashlib
 import json
 import shutil
+import time
+from collections.abc import Iterator
 from pathlib import Path
+from types import SimpleNamespace
 from typing import Any
 
 import pytest
@@ -19,6 +22,7 @@ from wetland_change.aoi import AoiPolygon
 from wetland_change.cli import app
 from wetland_change.ledger import write_ledger
 from wetland_change.store import OutputStore
+from wetland_change.verify import freshness as freshness_module
 from wetland_change.verify.copernicus import CDSE_STAC
 
 runner = CliRunner()
@@ -85,6 +89,62 @@ def test_output_root_listed_on_every_command(command: str) -> None:
     result = runner.invoke(app, [command, "--help"])
     assert result.exit_code == 0
     assert "--output-root" in result.output
+
+
+@pytest.fixture
+def perth_tz(monkeypatch: pytest.MonkeyPatch) -> Iterator[None]:
+    monkeypatch.setenv("TZ", "Australia/Perth")
+    time.tzset()
+    yield
+    monkeypatch.undo()
+    time.tzset()
+
+
+@pytest.mark.usefixtures("perth_tz")
+@pytest.mark.parametrize("command", ["run", "backfill", "score", "freshness"])
+def test_now_without_zone_is_read_as_local_time(
+    command: str, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    box_4326 = shapely_box(*BBOX)
+    polygons = [AoiPolygon("p", "site", "ramsar", box_4326, box_4326)]
+    cfg_file = _patch_cli(monkeypatch, tmp_path, FakeClient([]), polygons)
+    monkeypatch.setattr(cli, "load_config", lambda config: _config(tmp_path / "c"))
+    seen: dict[str, Any] = {}
+
+    def fake_once(*args: Any, **kwargs: Any) -> Any:
+        seen["now"] = kwargs["now"]
+        return SimpleNamespace(to_json=lambda: "{}", failed=False)
+
+    def fake_freshness(*args: Any, **kwargs: Any) -> list[Any]:
+        seen["now"] = kwargs["now"]
+        return []
+
+    monkeypatch.setattr(cli, "run_once", fake_once)
+    monkeypatch.setattr(cli, "backfill_once", fake_once)
+    monkeypatch.setattr(cli, "score_once", fake_once)
+    monkeypatch.setattr(freshness_module, "freshness_checks", fake_freshness)
+    args = [
+        command,
+        "--config",
+        str(cfg_file),
+        "--output-root",
+        str(tmp_path / "out"),
+        "--now",
+        "2026-10-29T10:00:00",
+    ]
+    if command in ("backfill", "score"):
+        args += ["--start", "2026-10-01", "--end", "2026-10-02"]
+    result = runner.invoke(app, args)
+    assert result.exit_code == 0, (result.output, result.exception)
+    assert seen["now"].isoformat() == "2026-10-29T02:00:00+00:00"
+
+
+@pytest.mark.parametrize("command", ["run", "backfill", "score", "freshness"])
+def test_now_help_states_local_time_reading(command: str) -> None:
+    result = runner.invoke(app, [command, "--help"], env={"COLUMNS": "200"})
+    assert result.exit_code == 0
+    text = " ".join(result.output.replace("│", " ").split())
+    assert "without a zone is read as local time" in text
 
 
 def test_run_output_root_override_writes_manifest_there(

@@ -40,6 +40,10 @@ OutputRootOption = Annotated[
         help="Output root path or URI; overrides output.root in the config file",
     ),
 ]
+NOW_HELP = (
+    "Run time as YYYY-MM-DD[THH:MM:SS]. A value without a zone is read as local "
+    "time on this machine, then converted to UTC. Omitted means the current time."
+)
 
 
 def _store(cfg: PipelineConfig, output_root: str | None) -> OutputStore:
@@ -110,7 +114,7 @@ def discover(
 def run(
     config: ConfigOption = Path("config/pipeline.toml"),
     output_root: OutputRootOption = None,
-    now: Annotated[datetime | None, typer.Option(help="Run time, UTC")] = None,
+    now: Annotated[datetime | None, typer.Option(help=NOW_HELP)] = None,
 ) -> None:
     """One incremental run against the configured output root."""
     cfg, polygons = _load(config)
@@ -148,7 +152,7 @@ def backfill(
     ],
     config: ConfigOption = Path("config/pipeline.toml"),
     output_root: OutputRootOption = None,
-    now: Annotated[datetime | None, typer.Option(help="Run time, UTC")] = None,
+    now: Annotated[datetime | None, typer.Option(help=NOW_HELP)] = None,
 ) -> None:
     """Run stages 1 to 6 over acquisitions from --start to --end, skipping items
     already in the ledger.
@@ -197,7 +201,7 @@ def score(
     ],
     config: ConfigOption = Path("config/pipeline.toml"),
     output_root: OutputRootOption = None,
-    now: Annotated[datetime | None, typer.Option(help="Run time, UTC")] = None,
+    now: Annotated[datetime | None, typer.Option(help=NOW_HELP)] = None,
 ) -> None:
     """Score stored observations from --start to --end against the seasonal
     baseline and write change rows. Use after a backfill.
@@ -277,7 +281,7 @@ def _open_or_stub(endpoint: str) -> StacClient:
 def freshness(
     config: ConfigOption = Path("config/pipeline.toml"),
     output_root: OutputRootOption = None,
-    now: Annotated[datetime | None, typer.Option(help="Run time, UTC")] = None,
+    now: Annotated[datetime | None, typer.Option(help=NOW_HELP)] = None,
 ) -> None:
     """Check the scheduled job is alive: newest processed item under 7 days old \
 and ledger counts matching Earth Search and Copernicus per tile over 30 days."""
