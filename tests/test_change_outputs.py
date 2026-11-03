@@ -6,6 +6,7 @@ import subprocess
 from datetime import UTC, date, datetime
 from pathlib import Path
 
+import click
 import geopandas as gpd
 import numpy as np
 import pandas as pd
@@ -459,7 +460,7 @@ def test_score_help_lists_range_and_output_root() -> None:
     result = runner.invoke(cli.app, ["score", "--help"])
     assert result.exit_code == 0
     for option in ("--start", "--end", "--output-root"):
-        assert option in result.output
+        assert option in click.unstyle(result.output)
 
 
 def test_score_cli_writes_changes_and_manifest_under_override(
