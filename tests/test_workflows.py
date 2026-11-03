@@ -1,9 +1,10 @@
-"""Offline structural checks for the daily pipeline workflow.
+"""Offline structural checks for the daily pipeline and weekly verify workflows.
 
-No GitHub repository exists to run the workflow, so these tests read
-`.github/workflows/pipeline.yml` and assert the properties that matter:
-the schedule, pinned actions, least-privilege permissions, step order, the
-commit step surviving a failed verify, OIDC role assumption and no secrets.
+No GitHub repository exists to run the workflows, so these tests read
+`.github/workflows/pipeline.yml` and `.github/workflows/verify.yml` and
+assert the properties that matter: the schedule, pinned actions,
+least-privilege permissions, step order, the commit step surviving a failed
+verify, the issue step firing on failure, OIDC role assumption and no secrets.
 """
 
 from __future__ import annotations
@@ -19,14 +20,15 @@ import yaml
 
 REPO = Path(__file__).resolve().parents[1]
 WORKFLOW: Final = REPO / ".github" / "workflows" / "pipeline.yml"
+VERIFY_WORKFLOW: Final = REPO / ".github" / "workflows" / "verify.yml"
 
 BUCKET_URI: Final = "s3://${{ vars.OUTPUT_BUCKET }}"
 PINNED_USES: Final = re.compile(r"^[\w.-]+/[\w./-]+@[0-9a-f]{40}$")
 RUN_PATTERN: Final = r"wetland-change run --output-root s3://"
 
 
-def _workflow() -> dict[Any, Any]:
-    doc = yaml.safe_load(WORKFLOW.read_text(encoding="utf-8"))
+def _workflow(path: Path = WORKFLOW) -> dict[Any, Any]:
+    doc = yaml.safe_load(path.read_text(encoding="utf-8"))
     assert isinstance(doc, dict)
     return doc
 
@@ -200,5 +202,166 @@ def test_actionlint_accepts_the_workflow() -> None:
         pytest.skip("actionlint not installed")
     result = subprocess.run(
         [executable, str(WORKFLOW)], capture_output=True, text=True, check=False
+    )
+    assert result.returncode == 0, result.stdout + result.stderr
+
+
+# --- weekly verify workflow -------------------------------------------------
+
+LIVE_PATTERN: Final = r"pytest\b.*-m live"
+VERIFY_PATTERN: Final = r"wetland-change verify"
+FRESHNESS_PATTERN: Final = r"wetland-change freshness"
+
+
+def _verify_doc() -> dict[Any, Any]:
+    return _workflow(VERIFY_WORKFLOW)
+
+
+def test_verify_schedule_is_weekly_with_manual_dispatch() -> None:
+    doc = _verify_doc()
+    triggers = doc.get("on", doc.get(True))
+    schedule = triggers["schedule"]
+    assert len(schedule) == 1
+    fields = schedule[0]["cron"].split()
+    assert len(fields) == 5
+    assert fields[2] == "*"
+    assert fields[3] == "*"
+    assert re.fullmatch(r"[0-6]", fields[4])
+    assert "workflow_dispatch" in triggers
+
+
+def test_verify_every_action_is_pinned_to_a_full_commit_sha() -> None:
+    doc = _verify_doc()
+    references = [
+        step["uses"]
+        for job in _jobs(doc).values()
+        for step in job["steps"]
+        if "uses" in step
+    ]
+    assert len(references) >= 3
+    for reference in references:
+        assert PINNED_USES.match(reference), reference
+    names = {reference.split("@")[0] for reference in references}
+    assert {
+        "actions/checkout",
+        "astral-sh/setup-uv",
+        "aws-actions/configure-aws-credentials",
+    } <= names
+
+
+def test_verify_permissions_are_least_privilege() -> None:
+    doc = _verify_doc()
+    assert doc["permissions"] == {"contents": "read"}
+    assert _job(doc)["permissions"] == {
+        "contents": "read",
+        "id-token": "write",
+        "issues": "write",
+    }
+
+
+def test_verify_steps_run_aoi_live_verify_freshness_in_order() -> None:
+    steps = _steps(_verify_doc())
+    aws = _index(steps, r"aws-actions/configure-aws-credentials@")
+    fetch = _index(steps, r"scripts/fetch_aoi\.py")
+    live = _index(steps, LIVE_PATTERN)
+    verify = _index(steps, VERIFY_PATTERN)
+    freshness = _index(steps, FRESHNESS_PATTERN)
+    assert fetch < live < aws < verify < freshness
+
+    for position in (verify, freshness):
+        command = steps[position]["run"]
+        assert "--output-root" in command
+        assert BUCKET_URI in command
+
+
+def test_verify_aws_credentials_are_assumed_after_live_tests_and_survive_failure() -> (
+    None
+):
+    steps = _steps(_verify_doc())
+    aws = steps[_index(steps, r"aws-actions/configure-aws-credentials@")]
+    assert _normalised_condition(aws) == "!cancelled()"
+    assert "continue-on-error" not in aws
+
+
+def test_verify_long_steps_have_timeouts_that_fit_inside_the_job_limit() -> None:
+    doc = _verify_doc()
+    steps = _steps(doc)
+    timeouts = []
+    for pattern in (
+        r"scripts/fetch_aoi\.py",
+        LIVE_PATTERN,
+        VERIFY_PATTERN,
+        FRESHNESS_PATTERN,
+    ):
+        timeout = steps[_index(steps, pattern)].get("timeout-minutes")
+        assert isinstance(timeout, int), pattern
+        timeouts.append(timeout)
+    job_limit = _job(doc)["timeout-minutes"]
+    assert sum(timeouts) <= job_limit - 10
+    assert sum(timeouts) < 60
+
+
+def test_verify_shares_the_pipeline_concurrency_group() -> None:
+    verify = _verify_doc()["concurrency"]
+    assert verify["group"] == _workflow()["concurrency"]["group"]
+    assert verify["cancel-in-progress"] is False
+
+
+def test_verify_aws_credentials_step_reads_role_and_region_from_variables() -> None:
+    steps = _steps(_verify_doc())
+    aws_steps = [
+        step
+        for step in steps
+        if str(step.get("uses", "")).startswith(
+            "aws-actions/configure-aws-credentials@"
+        )
+    ]
+    assert len(aws_steps) == 1
+    assert aws_steps[0]["with"]["role-to-assume"] == "${{ vars.AWS_ROLE_ARN }}"
+    assert aws_steps[0]["with"]["aws-region"] == "${{ vars.AWS_REGION }}"
+
+
+def test_verify_and_freshness_run_after_an_earlier_failure() -> None:
+    steps = _steps(_verify_doc())
+    for pattern in (VERIFY_PATTERN, FRESHNESS_PATTERN):
+        assert _normalised_condition(steps[_index(steps, pattern)]) == "!cancelled()"
+    for pattern in (LIVE_PATTERN, VERIFY_PATTERN, FRESHNESS_PATTERN):
+        assert "continue-on-error" not in steps[_index(steps, pattern)]
+
+
+def test_verify_last_step_opens_an_issue_with_the_run_url_on_failure() -> None:
+    last = _steps(_verify_doc())[-1]
+    assert _normalised_condition(last) == "failure()"
+    assert "gh issue create" in last["run"]
+    assert "${RUN_URL}" in last["run"] or "$RUN_URL" in last["run"]
+    env = last["env"]
+    assert env["GH_TOKEN"] == "${{ github.token }}"
+    assert env["RUN_URL"] == (
+        "${{ github.server_url }}/${{ github.repository }}"
+        "/actions/runs/${{ github.run_id }}"
+    )
+
+
+def test_verify_workflow_text_contains_no_secret_literals() -> None:
+    text = VERIFY_WORKFLOW.read_text(encoding="utf-8")
+    assert not re.search(r"AKIA[0-9A-Z]{16}", text)
+    assert not re.search(r"ASIA[0-9A-Z]{16}", text)
+    lowered = text.lower()
+    for needle in (
+        "aws-secret-access-key",
+        "aws-access-key-id",
+        "aws_secret_access_key",
+        "aws_access_key_id",
+        "secrets.",
+    ):
+        assert needle not in lowered, needle
+
+
+def test_actionlint_accepts_the_verify_workflow() -> None:
+    executable = shutil.which("actionlint")
+    if executable is None:
+        pytest.skip("actionlint not installed")
+    result = subprocess.run(
+        [executable, str(VERIFY_WORKFLOW)], capture_output=True, text=True, check=False
     )
     assert result.returncode == 0, result.stdout + result.stderr
