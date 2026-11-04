@@ -27,5 +27,6 @@ The tests workflow fails on main at 2049247 (run 41657810532) with 10 failures: 
 ## Implementation Notes
 
 - 2026-11-04T00:10:00.611Z: Implemented by cloud session https://claude.ai/code/session_01FNRugNj1V9qyTgewLVHeDc as e478498 and merged into story/st-1731 as 67c4d2f. Local gates on that merge: ruff, ruff format and mypy pass; pytest 438 passed and 1 skipped with and without GITHUB_ACTIONS=true. Before the merge the same help tests gave 10 failures under GITHUB_ACTIONS=true. The fourth criterion, the tests workflow on main, is checked after the push.
+- 2026-11-04T00:12:15.321Z: Fourth criterion met: the tests workflow passed on main at 81d34a2, run 41744893130 (https://github.com/jazzdos/swan-wetland-change/actions/runs/41744893130).
 
 ## Questions
