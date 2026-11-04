@@ -9,6 +9,7 @@ from pathlib import Path
 from types import SimpleNamespace
 from typing import Any
 
+import click
 import pytest
 from shapely.geometry import box as shapely_box
 from shapely.geometry.base import BaseGeometry
@@ -61,13 +62,13 @@ def test_help_lists_commands() -> None:
         "freshness",
         "build-catalogue",
     ):
-        assert command in result.output
+        assert command in click.unstyle(result.output)
 
 
 def test_run_help_mentions_config() -> None:
     result = runner.invoke(app, ["run", "--help"])
     assert result.exit_code == 0
-    assert "--config" in result.output
+    assert "--config" in click.unstyle(result.output)
 
 
 def test_build_catalogue_help_exits_zero() -> None:
@@ -79,7 +80,7 @@ def test_backfill_help_lists_range_and_output_root() -> None:
     result = runner.invoke(app, ["backfill", "--help"])
     assert result.exit_code == 0
     for option in ("--start", "--end", "--output-root", "--config"):
-        assert option in result.output
+        assert option in click.unstyle(result.output)
 
 
 @pytest.mark.parametrize(
@@ -88,7 +89,7 @@ def test_backfill_help_lists_range_and_output_root() -> None:
 def test_output_root_listed_on_every_command(command: str) -> None:
     result = runner.invoke(app, [command, "--help"])
     assert result.exit_code == 0
-    assert "--output-root" in result.output
+    assert "--output-root" in click.unstyle(result.output)
 
 
 @pytest.fixture
@@ -143,7 +144,7 @@ def test_now_without_zone_is_read_as_local_time(
 def test_now_help_states_local_time_reading(command: str) -> None:
     result = runner.invoke(app, [command, "--help"], env={"COLUMNS": "200"})
     assert result.exit_code == 0
-    text = " ".join(result.output.replace("│", " ").split())
+    text = " ".join(click.unstyle(result.output).replace("│", " ").split())
     assert "without a zone is read as local time" in text
 
 
@@ -315,7 +316,7 @@ def test_freshness_help_lists_options() -> None:
     result = runner.invoke(app, ["freshness", "--help"])
     assert result.exit_code == 0
     for option in ("--config", "--output-root", "--now"):
-        assert option in result.output
+        assert option in click.unstyle(result.output)
 
 
 def test_freshness_fails_when_newest_item_is_eight_days_old(
