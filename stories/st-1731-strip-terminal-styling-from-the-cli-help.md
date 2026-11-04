@@ -5,10 +5,10 @@ type: bug
 epic: st-f849
 priority: P2
 depends_on: []
-touches: [tests/test_cli.py, tests/test_change_outputs.py]
+touches: [tests/test_change_outputs.py, tests/test_cli.py]
 exclusive: false
 created: 2026-11-03
-updated: 2026-11-03
+updated: 2026-11-04
 ---
 
 ## Description
@@ -25,5 +25,7 @@ The tests workflow fails on main at 2049247 (run 41657810532) with 10 failures: 
 ## Implementation Plan
 
 ## Implementation Notes
+
+- 2026-11-04T00:10:00.611Z: Implemented by cloud session https://claude.ai/code/session_01FNRugNj1V9qyTgewLVHeDc as e478498 and merged into story/st-1731 as 67c4d2f. Local gates on that merge: ruff, ruff format and mypy pass; pytest 438 passed and 1 skipped with and without GITHUB_ACTIONS=true. Before the merge the same help tests gave 10 failures under GITHUB_ACTIONS=true. The fourth criterion, the tests workflow on main, is checked after the push.
 
 ## Questions
