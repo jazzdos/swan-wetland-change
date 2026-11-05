@@ -4,12 +4,14 @@ import json
 import shutil
 import subprocess
 from datetime import UTC, date, datetime
+from io import BytesIO
 from pathlib import Path
 
 import click
 import geopandas as gpd
 import numpy as np
 import pandas as pd
+import pyarrow as pa
 import pyarrow.parquet as pq
 import pytest
 from shapely.geometry import box
@@ -19,6 +21,7 @@ from typer.testing import CliRunner
 from tests.test_pipeline import _config
 from wetland_change import cli
 from wetland_change.change import SCORE_COLUMNS
+from wetland_change.ledger import LedgerEntry, entries_to_table
 from wetland_change.outputs.changes import (
     CHANGE_COLUMNS,
     change_path,
@@ -423,6 +426,171 @@ def test_score_changes_date_range_is_inclusive_and_excludes_others(
     assert (result.files, result.rows, result.removed) == ([], 0, [])
     both = score_changes(store, min_valid_fraction=MIN_VALID)
     assert both.files == sorted([CHANGE_FILE, change_path(2027, "50HLK", "item-2027")])
+
+
+class CountingStore(OutputStore):
+    """Records every path read through `read_bytes`."""
+
+    def __init__(self, root: str) -> None:
+        super().__init__(root)
+        self.reads: list[str] = []
+
+    def read_bytes(self, relpath: str) -> bytes:
+        self.reads.append(relpath)
+        return super().read_bytes(relpath)
+
+
+def _ledger_entry(item_id: str, when: datetime, path: str) -> LedgerEntry:
+    return LedgerEntry(
+        item_id=item_id,
+        collection="sentinel-2-c1-l2a",
+        datetime=when,
+        created=when,
+        updated=when,
+        tile="50HLK",
+        cloud_cover=1.0,
+        product_uri="S2C_MSIL2A_x.SAFE",
+        status="succeeded",
+        attempts=1,
+        error=None,
+        run_id="run-1",
+        processed_at=when,
+        n_rows=1,
+        observation_path=path,
+        source_item=None,
+    )
+
+
+OFF_MONTHS = [
+    datetime(2021, 6, 14, 2, 26, 46, tzinfo=UTC),
+    datetime(2023, 3, 9, 2, 26, 46, tzinfo=UTC),
+    datetime(2024, 3, 11, 2, 26, 46, tzinfo=UTC),
+    datetime(2025, 12, 2, 2, 26, 46, tzinfo=UTC),
+]
+
+
+def _spread_store(root: str) -> tuple[CountingStore, pa.Table, dict[str, datetime]]:
+    """October history, an October outlier and observations in other months.
+
+    The returned ledger names every observation file.
+    """
+    store = CountingStore(root)
+    _seed(store)
+    _score_day(store, OUTLIER_WATER)
+    for when in OFF_MONTHS:
+        write_observations([_row(f"item-{when:%Y%m%d}", when, 70.0, 0.9)], store)
+    stamps: dict[str, datetime] = {}
+    for path in store.list_files("observations"):
+        name = path.rsplit("/", 1)[-1].removeprefix("obs_").removesuffix(".parquet")
+        frame = gpd.read_parquet(BytesIO(store.read_bytes(path)))
+        stamps[path] = frame["datetime"].iloc[0].to_pydatetime()
+        assert name.startswith("item-")
+    ledger = entries_to_table(
+        [_ledger_entry(Path(p).stem, when, p) for p, when in stamps.items()]
+    )
+    store.reads.clear()
+    return store, ledger, stamps
+
+
+def _change_files_bytes(store: OutputStore) -> dict[str, bytes]:
+    return {p: store.read_bytes(p) for p in store.list_files("changes")}
+
+
+def test_score_changes_with_ledger_matches_no_ledger_and_skips_other_months(
+    tmp_path: Path,
+) -> None:
+    store, ledger, stamps = _spread_store(str(tmp_path / "with"))
+    day = {SCORED_DAY}
+    with_ledger = score_changes(
+        store,
+        min_valid_fraction=MIN_VALID,
+        dates=day,
+        rescore_later=True,
+        ledger=ledger,
+    )
+    october = {p for p, when in stamps.items() if when.month == 10}
+    assert {p for p in store.reads if p.startswith("observations/")} == october
+    assert len(october) < len(stamps)
+
+    plain, _, _ = _spread_store(str(tmp_path / "plain"))
+    without = score_changes(
+        plain, min_valid_fraction=MIN_VALID, dates=day, rescore_later=True
+    )
+    assert with_ledger == without
+    assert with_ledger.files == [CHANGE_FILE]
+    assert _change_files_bytes(store) == _change_files_bytes(plain)
+
+    full, _, _ = _spread_store(str(tmp_path / "full"))
+    score_changes(full, min_valid_fraction=MIN_VALID)
+    assert store.read_bytes(CHANGE_FILE) == full.read_bytes(CHANGE_FILE)
+
+
+def test_score_changes_with_ledger_removes_the_same_stale_files(
+    tmp_path: Path,
+) -> None:
+    store, ledger, _ = _spread_store(str(tmp_path / "a"))
+    score_changes(store, min_valid_fraction=MIN_VALID)
+    assert store.exists(CHANGE_FILE)
+    _score_day(store, 40.5)
+    result = score_changes(
+        store,
+        min_valid_fraction=MIN_VALID,
+        dates={SCORED_DAY},
+        rescore_later=True,
+        ledger=ledger,
+    )
+    assert result.removed == [CHANGE_FILE]
+    assert not store.exists(CHANGE_FILE)
+
+
+def test_score_changes_reads_an_observation_file_that_has_no_ledger_row(
+    tmp_path: Path,
+) -> None:
+    store, ledger, stamps = _spread_store(str(tmp_path))
+    march = next(p for p, when in stamps.items() if when.month == 3)
+    kept = ledger.filter(pa.compute.not_equal(ledger["observation_path"], march))
+    assert kept.num_rows == ledger.num_rows - 1
+    score_changes(
+        store,
+        min_valid_fraction=MIN_VALID,
+        dates={SCORED_DAY},
+        rescore_later=True,
+        ledger=kept,
+    )
+    read = {p for p in store.reads if p.startswith("observations/")}
+    assert march in read
+    assert read == {p for p, when in stamps.items() if when.month in (10,)} | {march}
+
+
+def test_score_changes_without_dates_reads_every_file_even_with_a_ledger(
+    tmp_path: Path,
+) -> None:
+    store, ledger, stamps = _spread_store(str(tmp_path))
+    score_changes(store, min_valid_fraction=MIN_VALID, ledger=ledger)
+    assert {p for p in store.reads if p.startswith("observations/")} == set(stamps)
+
+
+def test_score_changes_date_range_alone_does_not_exclude_files(
+    tmp_path: Path,
+) -> None:
+    store, ledger, stamps = _spread_store(str(tmp_path))
+    score_changes(
+        store,
+        min_valid_fraction=MIN_VALID,
+        date_range=(SCORED_DAY, SCORED_DAY),
+        ledger=ledger,
+    )
+    assert {p for p in store.reads if p.startswith("observations/")} == set(stamps)
+
+
+def test_read_observations_exclude_skips_the_named_paths(tmp_path: Path) -> None:
+    store, _, stamps = _spread_store(str(tmp_path))
+    skipped = sorted(stamps)[:2]
+    frame = read_observations(store, exclude=skipped)
+    assert set(frame["item_id"]) == {
+        Path(p).stem.removeprefix("obs_") for p in stamps if p not in skipped
+    }
+    assert not set(store.reads) & set(skipped)
 
 
 runner = CliRunner()

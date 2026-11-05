@@ -69,7 +69,8 @@ output store, so reruns are safe.
    row.
 6. Publish (`outputs/geoparquet.py`, `ledger.py`, `manifest.py`). GeoParquet
    1.1 under `observations/year=YYYY/tile=<MGRS>/obs_<item_id>.parquet`,
-   ledger parts under `ledger/year=YYYY/`, and a run manifest under `runs/`.
+   ledger parts under `ledger/year=YYYY/` (merged into `ledger/compacted/`
+   once 25 or more accumulate), and a run manifest under `runs/`.
 7. Change (`change.py`, `outputs/changes.py`). Score the daily aggregate per
    polygon against its month-of-year baseline; rows with absolute robust z
    above 3, valid fraction above 0.8 and at least 5 baseline samples go to
@@ -77,6 +78,9 @@ output store, so reruns are safe.
 8. Catalogue (`stac/catalogue.py`). One Collection and one Item per processed
    scene, with the observation, change and verification files as assets,
    validated before writing, plus `stac/swan-wetland-change/items.parquet`.
+   The build is incremental: `stac/write-index.json` records the sha256 of
+   every object last written and the base URL, and only new or changed
+   objects are written, so a build with nothing new writes no catalogue file.
 9. Verify (`verify/`). Score the verification matrix for a run and write
    `verification/<run_id>.json` and `docs/research/verification-<run_id>.md`.
 
@@ -86,10 +90,12 @@ on later runs; it does not abort the run.
 ### Scheduled jobs
 
 - `.github/workflows/pipeline.yml`: daily at 10:00 UTC and on manual
-  dispatch. Fetches the AOI, runs `wetland-change run`, then `verify`, then
-  `build-catalogue` (so the catalogue links the run's report) when the run
-  processed scenes, and commits the verification report. The commit keeps the repository active so GitHub
-  does not disable the schedule after 60 days.
+  dispatch. Fetches the AOI, runs `wetland-change run --no-catalogue`, then
+  `verify` when the run processed scenes, then `build-catalogue` on every day
+  that is not cancelled (so the catalogue links the run's report, and reports
+  from `verify.yml` or a CLI backfill, even on a day with no processed
+  scenes), and commits the verification report. The commit keeps the
+  repository active so GitHub does not disable the schedule after 60 days.
 - `.github/workflows/verify.yml`: Sundays at 22:00 UTC and on manual
   dispatch. Runs the live contract tests, `verify` on the latest run and
   `freshness`, and opens a GitHub issue on any failure.
@@ -166,11 +172,13 @@ uv sync --locked
 uv run python scripts/fetch_aoi.py
 uv run wetland-change discover
 uv run wetland-change run
+uv run wetland-change run --no-catalogue
 uv run wetland-change backfill --start 2022-12-01 --end 2026-11-02
 uv run wetland-change score --start 2022-12-01 --end 2026-11-02
 uv run wetland-change requeue --all
 uv run wetland-change verify
 uv run wetland-change build-catalogue
+uv run wetland-change compact-ledger
 uv run wetland-change freshness
 ```
 
@@ -183,7 +191,9 @@ uv run wetland-change freshness
 - `discover` lists the scenes the next run would process without reading
   pixels.
 - `run` is one incremental run: stages 1 to 8. It exits 2 when any scene
-  failed.
+  failed. It reads the ledger once, and merges the ledger parts at the end
+  when 25 or more exist. `--no-catalogue` skips stage 8 (the daily workflow
+  builds the catalogue in its own step); the default builds it.
 - `backfill` runs stages 1 to 6 over an acquisition date range and skips
   items already in the ledger. It does not score changes.
 - `score` scores stored observations in a date range and writes change files.
@@ -198,8 +208,16 @@ uv run wetland-change freshness
   given with `--run-id`, and writes the JSON and Markdown reports. It exits 5
   and names the manifest path when a run manifest cannot be read, rather than
   checking an older run.
-- `build-catalogue` rebuilds the STAC catalogue from the ledger. Run it after
-  `verify` so the catalogue links the verification report.
+- `build-catalogue` builds the STAC catalogue from the ledger, writing only
+  objects that are new or changed (`0 files written` is the correct output
+  when nothing changed). Run it after `verify` so the catalogue links the
+  verification report.
+- `compact-ledger` merges every ledger part into one file,
+  `ledger/compacted/ledger_compact_<run_id>.parquet`, and prints its path and
+  `N parts merged` (or `nothing to compact` when there are fewer than two
+  parts). The merged file is read back before any part is deleted. `run` and
+  `backfill` already do this automatically at 25 parts; use the command to do
+  it by hand, preferably when no workflow is running.
 - `freshness` checks that the newest processed item is under 7 days old and
   that ledger counts match Earth Search and Copernicus per tile over 30 days.
   It also fails (`freshness_exhausted_items`) while any item has exhausted its

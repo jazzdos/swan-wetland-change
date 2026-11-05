@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import copy
+import dataclasses
 import hashlib
 import json
 import shutil
@@ -23,7 +24,7 @@ from shapely.ops import transform as shapely_transform
 
 from tests.conftest import REQUIRED_ASSETS
 from wetland_change.aoi import AoiPolygon
-from wetland_change.catalogue.item import parse_timestamp
+from wetland_change.catalogue.item import SceneItem, parse_timestamp
 from wetland_change.config import (
     AoiConfig,
     OutputConfig,
@@ -33,11 +34,16 @@ from wetland_change.config import (
 )
 from wetland_change.ledger import (
     attempts_so_far,
+    compact_ledger,
+    entry_for,
     exhausted_ids,
     latest_entries,
     read_ledger,
+    read_ledger_parts,
     retry_ids,
+    seen_keys,
     watermark,
+    write_ledger,
 )
 from wetland_change.manifest import KIND_REQUEUE, KIND_SCORE, RunManifest
 from wetland_change.outputs.changes import CHANGE_COLUMNS, change_path
@@ -176,6 +182,8 @@ def _run(
     *,
     cfg: PipelineConfig | None = None,
     reader: RasterioReader | None = None,
+    store: OutputStore | None = None,
+    build_catalogue: bool = True,
 ) -> RunManifest:
     cfg = cfg or _config(tmp_path)
     config_path = tmp_path / "pipeline.toml"
@@ -184,10 +192,11 @@ def _run(
         cfg,
         client=client,
         reader=reader or RasterioReader(),
-        store=OutputStore(cfg.output.root),
+        store=store or OutputStore(cfg.output.root),
         polygons=polygons,
         now=now,
         config_path=config_path,
+        build_catalogue=build_catalogue,
     )
 
 
@@ -586,6 +595,79 @@ def test_run_once_writes_change_file_for_flagged_item(
     assert second.change_rows == 0
     assert second.change_files == []
     assert (out / expected).read_bytes() == before
+
+
+class _ReadRecordingStore(OutputStore):
+    def __init__(self, root: str) -> None:
+        super().__init__(root)
+        self.read_paths: list[str] = []
+
+    def read_bytes(self, relpath: str) -> bytes:
+        self.read_paths.append(relpath)
+        return super().read_bytes(relpath)
+
+
+def test_run_once_scoring_skips_observation_files_from_other_months(
+    fixture_item: dict[str, Any],
+    fixture_scene: SceneItem,
+    fixture_polygon: BaseGeometry,
+    tmp_path: Path,
+) -> None:
+    probe = _probe(tmp_path, fixture_item, fixture_polygon)
+    store = _ReadRecordingStore(str(tmp_path / "out"))
+    off_month = probe["datetime"].replace(
+        month=4 if probe["datetime"].month != 4 else 5
+    )
+    geometry = _polygons(fixture_polygon)[0].geometry_4326
+    off_path = write_observations(
+        [
+            ObservationRow(
+                polygon_id="ramsar-52",
+                site=probe["site"],
+                aoi_layer=probe["aoi_layer"],
+                item_id="off-month",
+                product_uri=probe["product_uri"],
+                datetime=off_month,
+                tile=probe["tile"],
+                processing_baseline=probe["processing_baseline"],
+                scene_coverage=1.0,
+                n_pixels=1000,
+                n_clear=950,
+                valid_fraction=0.95,
+                cloud_fraction=0.05,
+                water_ha_index=probe["water_ha_index"],
+                water_ha_scl=probe["water_ha_scl"],
+                ndwi_median=probe["ndwi_median"],
+                mndwi_median=probe["mndwi_median"],
+                ndvi_median=probe["ndvi_median"],
+                dea_wo_agreement=None,
+                geometry_4326=geometry,
+                run_id="seed",
+            )
+        ],
+        store,
+    )
+    seeded = entry_for(
+        dataclasses.replace(fixture_scene, item_id="off-month", datetime=off_month),
+        status="succeeded",
+        attempts=1,
+        run_id="seed",
+        processed_at=NOW - timedelta(days=30),
+        n_rows=1,
+        observation_path=off_path,
+    )
+    write_ledger([seeded], store, run_id="seed")
+    store.read_paths.clear()
+    manifest = _run(
+        tmp_path,
+        FakeClient([fixture_item]),
+        _polygons(fixture_polygon),
+        NOW,
+        store=store,
+    )
+    (new_path,) = manifest.observation_files
+    assert new_path in store.read_paths
+    assert off_path not in store.read_paths
 
 
 def _stored_frame(rows: list[tuple[str, str]]) -> pd.DataFrame:
@@ -1035,3 +1117,275 @@ def test_requeued_scene_behind_the_watermark_exhausts_again(
     assert client.id_searches == [[broken["id"]]] * 3
     assert all(returned == [late["id"]] for returned in client.main_returned)
     assert exhausted_ids(read_ledger(store)) == [broken["id"]]
+
+
+# --- one ledger read per run, one catalogue build, bounded part count ---------
+
+
+class LedgerCountingStore(OutputStore):
+    """Counts `list_files("ledger")` calls and `read_bytes` under `ledger/`."""
+
+    def __init__(self, root: str) -> None:
+        super().__init__(root)
+        self.ledger_listings = 0
+        self.ledger_reads: list[str] = []
+        self.writes: list[str] = []
+
+    def list_files(self, prefix: str) -> list[str]:
+        if prefix.strip("/") == "ledger":
+            self.ledger_listings += 1
+        return super().list_files(prefix)
+
+    def read_bytes(self, relpath: str) -> bytes:
+        if relpath.startswith("ledger/"):
+            self.ledger_reads.append(relpath)
+        return super().read_bytes(relpath)
+
+    def write_bytes(self, relpath: str, data: bytes) -> str:
+        self.writes.append(relpath)
+        return super().write_bytes(relpath, data)
+
+    def reset(self) -> None:
+        self.ledger_listings = 0
+        self.ledger_reads.clear()
+        self.writes.clear()
+
+
+def _parts(store: OutputStore) -> list[str]:
+    return [p for p in store.list_files("ledger") if p.endswith(".parquet")]
+
+
+def _assert_one_ledger_read(store: LedgerCountingStore, parts_before: int) -> None:
+    assert store.ledger_listings == 1
+    assert len(store.ledger_reads) == parts_before
+    assert len(set(store.ledger_reads)) == parts_before
+
+
+def _counting_store(tmp_path: Path) -> LedgerCountingStore:
+    return LedgerCountingStore(str(tmp_path / "out"))
+
+
+def test_run_once_lists_and_reads_the_ledger_once_on_a_processed_day(
+    fixture_item: dict[str, Any], fixture_polygon: BaseGeometry, tmp_path: Path
+) -> None:
+    items = _four_scenes(fixture_item)
+    polygons = _polygons(fixture_polygon)
+    store = _counting_store(tmp_path)
+    _run(tmp_path, FakeClient(items[:2]), polygons, NOW, store=store)
+    before = len(_parts(store))
+    assert before == 2
+    store.reset()
+    manifest = _run(
+        tmp_path, FakeClient(items), polygons, NOW + timedelta(days=1), store=store
+    )
+    assert manifest.processed == 2
+    _assert_one_ledger_read(store, before)
+
+
+def test_run_once_lists_and_reads_the_ledger_once_on_a_no_op_day(
+    fixture_item: dict[str, Any], fixture_polygon: BaseGeometry, tmp_path: Path
+) -> None:
+    polygons = _polygons(fixture_polygon)
+    store = _counting_store(tmp_path)
+    client = FakeClient([fixture_item])
+    _run(tmp_path, client, polygons, NOW, store=store)
+    store.reset()
+    manifest = _run(tmp_path, client, polygons, NOW + timedelta(days=1), store=store)
+    assert manifest.processed == 0
+    _assert_one_ledger_read(store, 1)
+
+
+def test_run_once_lists_and_reads_the_ledger_once_with_a_rejected_item(
+    fixture_item: dict[str, Any], fixture_polygon: BaseGeometry, tmp_path: Path
+) -> None:
+    polygons = _polygons(fixture_polygon)
+    store = _counting_store(tmp_path)
+    _run(tmp_path, FakeClient([fixture_item]), polygons, NOW, store=store)
+    store.reset()
+    manifest = _run(
+        tmp_path,
+        FakeClient([_wrong_collection(fixture_item), fixture_item]),
+        polygons,
+        NOW + timedelta(days=1),
+        store=store,
+    )
+    assert manifest.rejected == 1
+    _assert_one_ledger_read(store, 1)
+
+
+def test_backfill_once_lists_and_reads_the_ledger_once(
+    fixture_item: dict[str, Any], fixture_polygon: BaseGeometry, tmp_path: Path
+) -> None:
+    polygons = _polygons(fixture_polygon)
+    store = _counting_store(tmp_path)
+    other = copy.deepcopy(fixture_item)
+    other["id"] = f"{fixture_item['id']}_B"
+    other["properties"]["s2:product_uri"] = f"B_{other['id']}.SAFE"
+    _run(tmp_path, FakeClient([other]), polygons, NOW, store=store)
+    store.reset()
+    config_path = tmp_path / "pipeline.toml"
+    manifest = backfill_once(
+        _config(tmp_path),
+        start=datetime(2026, 10, 26, tzinfo=UTC),
+        end=datetime(2026, 10, 28, 23, 59, 59, tzinfo=UTC),
+        client=FakeClient([_wrong_collection(fixture_item), fixture_item]),
+        reader=RasterioReader(),
+        store=store,
+        polygons=polygons,
+        now=NOW + timedelta(days=1),
+        config_path=config_path,
+    )
+    assert (manifest.processed, manifest.rejected) == (1, 1)
+    _assert_one_ledger_read(store, 1)
+
+
+def test_requeue_once_lists_and_reads_the_ledger_once(
+    fixture_item: dict[str, Any], fixture_polygon: BaseGeometry, tmp_path: Path
+) -> None:
+    broken = copy.deepcopy(fixture_item)
+    broken["assets"]["green"]["href"] = str(tmp_path / "missing.tif")
+    _exhaust(tmp_path, broken, _polygons(fixture_polygon))
+    store = _counting_store(tmp_path)
+    before = len(_parts(store))
+    store.reset()
+    manifest = _requeue(
+        tmp_path, store, NOW + timedelta(days=10), item_ids=[], all_exhausted=True
+    )
+    assert manifest.exhausted == 0
+    _assert_one_ledger_read(store, before)
+
+
+def test_run_once_without_catalogue_writes_no_stac_files(
+    fixture_item: dict[str, Any], fixture_polygon: BaseGeometry, tmp_path: Path
+) -> None:
+    store = _counting_store(tmp_path)
+    manifest = _run(
+        tmp_path,
+        FakeClient([fixture_item]),
+        _polygons(fixture_polygon),
+        NOW,
+        store=store,
+        build_catalogue=False,
+    )
+    assert manifest.processed == 1
+    assert not [p for p in store.writes if p.startswith("stac/")]
+    assert not (tmp_path / "out" / "stac").exists()
+
+
+def test_a_second_no_op_run_writes_no_stac_objects(
+    fixture_item: dict[str, Any], fixture_polygon: BaseGeometry, tmp_path: Path
+) -> None:
+    polygons = _polygons(fixture_polygon)
+    store = _counting_store(tmp_path)
+    client = FakeClient([fixture_item])
+    _run(tmp_path, client, polygons, NOW, store=store)
+    assert [p for p in store.writes if p.startswith("stac/")]
+    store.reset()
+    _run(tmp_path, client, polygons, NOW + timedelta(days=1), store=store)
+    assert store.writes
+    assert not [p for p in store.writes if p.startswith("stac/")]
+
+
+def _compacted(store: OutputStore) -> list[str]:
+    return [p for p in _parts(store) if p.startswith("ledger/compacted/")]
+
+
+def test_compaction_bounds_the_part_count_without_reprocessing_scenes(
+    monkeypatch: pytest.MonkeyPatch,
+    fixture_item: dict[str, Any],
+    fixture_polygon: BaseGeometry,
+    tmp_path: Path,
+) -> None:
+    items = _four_scenes(fixture_item)
+    polygons = _polygons(fixture_polygon)
+    reference = tmp_path / "reference"
+    reference.mkdir()
+    for count in (1, 2, 3, 4):
+        _run(
+            reference,
+            FakeClient(items[:count]),
+            polygons,
+            NOW + timedelta(days=count),
+        )
+    expected = read_ledger(OutputStore(str(reference / "out")))
+
+    monkeypatch.setattr("wetland_change.pipeline.COMPACT_MIN_PARTS", 2)
+    store = OutputStore(str(tmp_path / "out"))
+    for count in (1, 2, 3, 4):
+        manifest = _run(
+            tmp_path,
+            FakeClient(items[:count]),
+            polygons,
+            NOW + timedelta(days=count),
+            store=store,
+        )
+        assert manifest.processed == 1
+        compacted = _compacted(store)
+        fresh = [p for p in _parts(store) if p not in compacted]
+        assert len(compacted) <= 1
+        assert len(fresh) < 2
+    assert len(_compacted(store)) == 1
+
+    ledger = read_ledger(store)
+    assert seen_keys(ledger) == seen_keys(expected)
+    assert sorted(ledger["item_id"].to_pylist()) == sorted(
+        expected["item_id"].to_pylist()
+    )
+    again = _run(
+        tmp_path, FakeClient(items), polygons, NOW + timedelta(days=5), store=store
+    )
+    assert (again.discovered, again.processed, again.skipped_seen) == (0, 0, 4)
+
+
+class FailingLedgerDeleteStore(OutputStore):
+    def delete(self, relpath: str) -> bool:
+        if relpath.startswith("ledger/"):
+            raise OSError("delete refused")
+        return super().delete(relpath)
+
+
+def test_a_failed_compaction_delete_does_not_fail_the_run(
+    monkeypatch: pytest.MonkeyPatch,
+    fixture_item: dict[str, Any],
+    fixture_polygon: BaseGeometry,
+    tmp_path: Path,
+) -> None:
+    items = _four_scenes(fixture_item)
+    polygons = _polygons(fixture_polygon)
+    monkeypatch.setattr("wetland_change.pipeline.COMPACT_MIN_PARTS", 2)
+    store = FailingLedgerDeleteStore(str(tmp_path / "out"))
+    _run(tmp_path, FakeClient(items[:1]), polygons, NOW, store=store)
+    manifest = _run(
+        tmp_path, FakeClient(items[:2]), polygons, NOW + timedelta(days=1), store=store
+    )
+    assert manifest.processed == 1
+    assert store.exists(f"runs/{manifest.run_id}.json")
+    assert len(_compacted(store)) == 1
+    ledger = read_ledger(store)
+    assert sorted(ledger["item_id"].to_pylist()) == sorted(
+        [items[0]["id"], items[1]["id"]]
+    )
+
+
+def test_run_once_refuses_a_run_id_whose_parts_were_compacted_away(
+    fixture_item: dict[str, Any], fixture_polygon: BaseGeometry, tmp_path: Path
+) -> None:
+    items = _four_scenes(fixture_item)
+    polygons = _polygons(fixture_polygon)
+    store = OutputStore(str(tmp_path / "out"))
+    with pytest.raises(KeyboardInterrupt):
+        _run(
+            tmp_path,
+            FakeClient(items),
+            polygons,
+            NOW,
+            reader=InterruptingReader(interrupt_on=3),
+        )
+    table, paths = read_ledger_parts(store)
+    compact_ledger(store, table, paths, run_id="20261101T000000Z", min_parts=1)
+    assert not any("ledger_20261029T100000Z_" in p for p in store.list_files("ledger"))
+    assert not store.exists("runs/20261029T100000Z.json")
+    before = store.list_files("")
+    with pytest.raises(ValueError, match="run id"):
+        _run(tmp_path, FakeClient(items), polygons, NOW)
+    assert store.list_files("") == before

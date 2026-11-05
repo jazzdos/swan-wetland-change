@@ -1,5 +1,5 @@
 """Command line: discover, run, backfill, score, requeue, verify, freshness,
-build-catalogue.
+build-catalogue, compact-ledger.
 """
 
 from __future__ import annotations
@@ -22,12 +22,15 @@ from wetland_change.catalogue.search import StacClient, open_client
 from wetland_change.catalogue.search import discover as discover_items
 from wetland_change.config import PipelineConfig, load_config
 from wetland_change.ledger import (
+    compact_ledger,
     exhausted_keys,
     read_ledger,
+    read_ledger_parts,
     retry_ids,
     seen_keys,
     watermark,
 )
+from wetland_change.manifest import new_run_id
 from wetland_change.pipeline import (
     backfill_once,
     discovery_created_from,
@@ -124,6 +127,14 @@ def run(
     config: ConfigOption = Path("config/pipeline.toml"),
     output_root: OutputRootOption = None,
     now: Annotated[datetime | None, typer.Option(help=NOW_HELP)] = None,
+    catalogue: Annotated[
+        bool,
+        typer.Option(
+            "--catalogue/--no-catalogue",
+            help="Build the STAC catalogue at the end of the run (default), or "
+            "leave it to a later build-catalogue",
+        ),
+    ] = True,
 ) -> None:
     """One incremental run against the configured output root."""
     cfg, polygons = _load(config)
@@ -138,6 +149,7 @@ def run(
             now=when,
             config_path=config,
             output_root_override=output_root,
+            build_catalogue=catalogue,
         )
     except PlaceholderBaseUrlError as exc:
         raise typer.BadParameter(str(exc)) from exc
@@ -395,3 +407,28 @@ def build_catalogue_command(
     for path in written:
         typer.echo(path)
     typer.echo(f"{len(written)} files written")
+
+
+@app.command("compact-ledger")
+def compact_ledger_command(
+    config: ConfigOption = Path("config/pipeline.toml"),
+    output_root: OutputRootOption = None,
+    now: Annotated[datetime | None, typer.Option(help=NOW_HELP)] = None,
+) -> None:
+    """Merge every ledger part into one file under ledger/compacted/.
+
+    The merged file is written and read back before any part is deleted. Run
+    it when no workflow is running: a run that lists the ledger while parts are
+    being deleted re-reads once, but a second miss fails that run.
+    """
+    cfg = load_config(config)
+    when = (now or datetime.now(UTC)).astimezone(UTC)
+    store = _store(cfg, output_root)
+    ledger, paths = read_ledger_parts(store)
+    if len(paths) < 2:
+        typer.echo("nothing to compact")
+        return
+    written = compact_ledger(store, ledger, paths, run_id=new_run_id(when), min_parts=1)
+    for path in written:
+        typer.echo(path)
+    typer.echo(f"{len(paths)} parts merged")

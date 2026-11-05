@@ -9,6 +9,14 @@ backfill). The daily watermark ignores backfill rows, since backfilled items
 can carry recent `created` values that would otherwise make the daily search
 skip items it has never processed. Files written before a column existed
 read it as null; a null `run_kind` counts as a daily row.
+
+Compaction merges many small parts into one file under `ledger/compacted/`
+so a read costs a bounded number of requests. It keeps every row and edits
+none. The compacted file is written and read back (row count checked) before
+any part is deleted, because the bucket is public and unversioned and a
+delete is permanent. A crash between the write and the deletes therefore
+leaves duplicates, never losses, and `read_ledger` drops whole-row
+duplicates whenever a compacted file is listed beside other parts.
 """
 
 from __future__ import annotations
@@ -29,6 +37,8 @@ from wetland_change.catalogue.item import SceneItem
 from wetland_change.store import OutputStore
 
 MAX_ATTEMPTS = 3
+COMPACT_MIN_PARTS = 25
+COMPACTED_PREFIX = "ledger/compacted/"
 RUN_KIND_RUN = "run"
 RUN_KIND_BACKFILL = "backfill"
 _TS = pa.timestamp("us", tz="UTC")
@@ -178,14 +188,119 @@ def _conform(table: pa.Table) -> pa.Table:
     return table.select(LEDGER_SCHEMA.names).cast(LEDGER_SCHEMA)
 
 
-def read_ledger(store: OutputStore) -> pa.Table:
-    paths = [p for p in store.list_files("ledger") if p.endswith(".parquet")]
-    if not paths:
-        return LEDGER_SCHEMA.empty_table()
+def _list_parts(store: OutputStore) -> list[str]:
+    return [p for p in store.list_files("ledger") if p.endswith(".parquet")]
+
+
+def _read_parts(store: OutputStore, paths: list[str]) -> pa.Table:
     tables = [
         _conform(pq.read_table(BytesIO(store.read_bytes(path)))) for path in paths
     ]
     return pa.concat_tables(tables)
+
+
+def _drop_duplicate_rows(table: pa.Table) -> pa.Table:
+    """Drop rows equal across every column, keeping the first occurrence.
+
+    Rows are keyed on `repr` of the whole row so null and NaN compare equal.
+    Never a subset of columns: rows of one run share `processed_at`.
+    """
+    columns = [table[name].to_pylist() for name in table.schema.names]
+    seen: set[str] = set()
+    keep: list[bool] = []
+    for row in zip(*columns, strict=True):
+        key = repr(row)
+        keep.append(key not in seen)
+        seen.add(key)
+    if all(keep):
+        return table
+    return table.filter(pa.array(keep, type=pa.bool_()))
+
+
+def read_ledger_parts(store: OutputStore) -> tuple[pa.Table, list[str]]:
+    """The whole ledger plus the part paths it was read from.
+
+    A concurrent compaction can delete a listed part, so a missing part
+    triggers one re-list and re-read; a second miss propagates.
+    """
+    for attempt in range(2):
+        paths = _list_parts(store)
+        if not paths:
+            return LEDGER_SCHEMA.empty_table(), []
+        try:
+            table = _read_parts(store, paths)
+        except FileNotFoundError:
+            if attempt == 1:
+                raise
+            continue
+        if len(paths) > 1 and any(p.startswith(COMPACTED_PREFIX) for p in paths):
+            table = _drop_duplicate_rows(table)
+        return table, paths
+    raise AssertionError("unreachable")  # pragma: no cover
+
+
+def read_ledger(store: OutputStore) -> pa.Table:
+    return read_ledger_parts(store)[0]
+
+
+def ledger_with(ledger: pa.Table, entries: Sequence[LedgerEntry]) -> pa.Table:
+    """`ledger` plus `entries`, as a fresh read would give after they were written."""
+    if not entries:
+        return ledger
+    return pa.concat_tables([ledger, entries_to_table(entries)])
+
+
+def compact_ledger(
+    store: OutputStore,
+    ledger: pa.Table,
+    paths: Sequence[str],
+    *,
+    run_id: str,
+    min_parts: int = COMPACT_MIN_PARTS,
+) -> list[str]:
+    """Merge the listed parts into one compacted file; returns its path or [].
+
+    `ledger` must be the table read from exactly `paths`. Every row is kept.
+    The new file is written and read back before any delete, and only paths
+    in `paths` are deleted, so a part written after the listing survives. A
+    failed read-back removes the new file (unless it was already listed), so
+    a bad compacted file never stays in the ledger.
+    """
+    if len(paths) < min_parts or ledger.num_rows == 0:
+        return []
+    new_path = f"{COMPACTED_PREFIX}ledger_compact_{run_id}.parquet"
+    buffer = BytesIO()
+    pq.write_table(ledger, buffer)
+    store.write_bytes(new_path, buffer.getvalue())
+    try:
+        written = pq.read_metadata(BytesIO(store.read_bytes(new_path))).num_rows
+        if written != ledger.num_rows:
+            raise ValueError(
+                f"compacted ledger {new_path} read back {written} rows, expected "
+                f"{ledger.num_rows}; no part was deleted"
+            )
+    except Exception:
+        if new_path not in paths:
+            store.delete(new_path)
+        raise
+    for path in paths:
+        if path != new_path:
+            store.delete(path)
+    return [new_path]
+
+
+def observation_months(ledger: pa.Table) -> dict[str, set[int]]:
+    """UTC months of each observation file's rows (non-null datetimes only)."""
+    months: dict[str, set[int]] = {}
+    paths = ledger["observation_path"].to_pylist()
+    stamps = ledger["datetime"].to_pylist()
+    for path, stamp in zip(paths, stamps, strict=True):
+        if path is None:
+            continue
+        found = months.setdefault(path, set())
+        if stamp is not None:
+            found.add(stamp.astimezone(dt.UTC).month)
+    return months
 
 
 def watermark(ledger: pa.Table) -> dt.datetime | None:
@@ -314,8 +429,9 @@ def requeue_entries(
     """Fresh-attempt copies of the latest rows of exhausted items.
 
     Each copy keeps status 'failed' with attempts reset to 0, so `retry_ids`
-    returns the item and the next daily run retries it. Existing ledger files
-    are never edited; the copies are appended. `processed_at` must be after the
+    returns the item and the next daily run retries it. Requeue edits no
+    existing row; the copies are appended as new rows, and compaction later
+    merges parts without changing any row. `processed_at` must be after the
     item's latest row, otherwise the copy would sort before it and be ignored.
     """
     exhausted = set(exhausted_ids(ledger, max_attempts=max_attempts))

@@ -7,7 +7,7 @@ buffer, which makes a rewrite byte-identical.
 
 from __future__ import annotations
 
-from collections.abc import Sequence
+from collections.abc import Collection, Sequence
 from io import BytesIO
 
 import geopandas as gpd
@@ -82,12 +82,20 @@ def _empty_observations() -> gpd.GeoDataFrame:
     return gpd.GeoDataFrame(frame, geometry=[], crs="EPSG:4326")
 
 
-def read_observations(store: OutputStore) -> gpd.GeoDataFrame:
-    """Every stored observation, sorted by item then polygon."""
+def read_observations(
+    store: OutputStore, exclude: Collection[str] = ()
+) -> gpd.GeoDataFrame:
+    """Every stored observation, sorted by item then polygon.
+
+    The store is listed once; files named in `exclude` are not read.
+    """
+    skipped = set(exclude)
     paths = [
         path
         for path in store.list_files("observations")
-        if path.rsplit("/", 1)[-1].startswith("obs_") and path.endswith(".parquet")
+        if path.rsplit("/", 1)[-1].startswith("obs_")
+        and path.endswith(".parquet")
+        and path not in skipped
     ]
     if not paths:
         return _empty_observations()

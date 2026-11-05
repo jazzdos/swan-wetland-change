@@ -22,7 +22,12 @@ from tests.test_verify_freshness import row
 from wetland_change import cli
 from wetland_change.aoi import AoiPolygon
 from wetland_change.cli import app
-from wetland_change.ledger import MAX_ATTEMPTS, write_ledger
+from wetland_change.ledger import (
+    MAX_ATTEMPTS,
+    latest_entries,
+    read_ledger,
+    write_ledger,
+)
 from wetland_change.store import OutputStore
 from wetland_change.verify import freshness as freshness_module
 from wetland_change.verify.copernicus import CDSE_STAC
@@ -63,6 +68,7 @@ def test_help_lists_commands() -> None:
         "verify",
         "freshness",
         "build-catalogue",
+        "compact-ledger",
     ):
         assert command in click.unstyle(result.output)
 
@@ -78,6 +84,20 @@ def test_build_catalogue_help_exits_zero() -> None:
     assert result.exit_code == 0
 
 
+def test_run_help_lists_the_catalogue_switch() -> None:
+    result = runner.invoke(app, ["run", "--help"])
+    assert result.exit_code == 0
+    assert "--no-catalogue" in click.unstyle(result.output)
+
+
+def test_compact_ledger_help_lists_options() -> None:
+    result = runner.invoke(app, ["compact-ledger", "--help"])
+    assert result.exit_code == 0
+    text = click.unstyle(result.output)
+    for option in ("--config", "--output-root", "--now"):
+        assert option in text
+
+
 def test_backfill_help_lists_range_and_output_root() -> None:
     result = runner.invoke(app, ["backfill", "--help"])
     assert result.exit_code == 0
@@ -87,7 +107,16 @@ def test_backfill_help_lists_range_and_output_root() -> None:
 
 @pytest.mark.parametrize(
     "command",
-    ["run", "verify", "freshness", "discover", "score", "requeue", "build-catalogue"],
+    [
+        "run",
+        "verify",
+        "freshness",
+        "discover",
+        "score",
+        "requeue",
+        "build-catalogue",
+        "compact-ledger",
+    ],
 )
 def test_output_root_listed_on_every_command(command: str) -> None:
     result = runner.invoke(app, [command, "--help"])
@@ -173,6 +202,103 @@ def test_run_output_root_override_writes_manifest_there(
     assert payload["processed"] == 1
     assert payload["config_sha256"] == hashlib.sha256(cfgfile.read_bytes()).hexdigest()
     assert not (tmp_path / "configured").exists()
+
+
+def test_run_no_catalogue_leaves_no_stac_directory(
+    monkeypatch: pytest.MonkeyPatch,
+    fixture_item: dict[str, Any],
+    fixture_polygon: BaseGeometry,
+    tmp_path: Path,
+) -> None:
+    cfgfile = _patch_cli(
+        monkeypatch, tmp_path, FakeClient([fixture_item]), _polygons(fixture_polygon)
+    )
+    skipped = tmp_path / "skipped"
+    built = tmp_path / "built"
+    result = runner.invoke(
+        app,
+        [
+            "run",
+            "--config",
+            str(cfgfile),
+            "--output-root",
+            str(skipped),
+            "--no-catalogue",
+        ],
+    )
+    assert result.exit_code == 0, (result.output, result.exception)
+    assert _only_manifest(skipped)["processed"] == 1
+    assert not (skipped / "stac").exists()
+    result = runner.invoke(
+        app, ["run", "--config", str(cfgfile), "--output-root", str(built)]
+    )
+    assert result.exit_code == 0, (result.output, result.exception)
+    assert (built / "stac" / "catalog.json").exists()
+
+
+def _seed_parts(root: Path, count: int) -> OutputStore:
+    """`count` single-scene ledger parts from separate runs, none compacted."""
+    store = OutputStore(str(root))
+    for day in range(count):
+        write_ledger(
+            [
+                row(
+                    f"2026-10-{day + 1:02d}",
+                    item_id=f"item-{day}",
+                    run_id=f"seed{day:02d}",
+                )
+            ],
+            store,
+            run_id=f"seed{day:02d}",
+        )
+    return store
+
+
+def test_compact_ledger_merges_parts_and_keeps_the_latest_entries(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    cfgfile = _patch_cli(monkeypatch, tmp_path, FakeClient([]), [])
+    monkeypatch.setattr(cli, "load_config", lambda config: _config(tmp_path / "unused"))
+    root = tmp_path / "root"
+    store = _seed_parts(root, 3)
+    before = latest_entries(read_ledger(store)).reset_index(drop=True)
+    result = runner.invoke(
+        app,
+        [
+            "compact-ledger",
+            "--config",
+            str(cfgfile),
+            "--output-root",
+            str(root),
+            "--now",
+            "2026-10-30T12:00:00",
+        ],
+    )
+    assert result.exit_code == 0, (result.output, result.exception)
+    remaining = [p for p in store.list_files("ledger") if p.endswith(".parquet")]
+    assert len(remaining) == 1
+    assert remaining[0].startswith("ledger/compacted/ledger_compact_2026103")
+    assert remaining[0] in result.output
+    assert "3 parts merged" in result.output
+    after = latest_entries(read_ledger(store)).reset_index(drop=True)
+    assert after.equals(before)
+    assert not (tmp_path / "unused").exists()
+
+
+def test_compact_ledger_with_fewer_than_two_parts_changes_nothing(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    cfgfile = _patch_cli(monkeypatch, tmp_path, FakeClient([]), [])
+    monkeypatch.setattr(cli, "load_config", lambda config: _config(tmp_path / "unused"))
+    root = tmp_path / "root"
+    store = _seed_parts(root, 1)
+    files = store.list_files("ledger")
+    result = runner.invoke(
+        app, ["compact-ledger", "--config", str(cfgfile), "--output-root", str(root)]
+    )
+    assert result.exit_code == 0, (result.output, result.exception)
+    assert "nothing to compact" in result.output
+    assert store.list_files("ledger") == files
 
 
 def test_backfill_cli_day_range_is_inclusive(

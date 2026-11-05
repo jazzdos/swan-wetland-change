@@ -45,6 +45,8 @@ class RunManifest:
     skipped_seen: int = 0
     skipped_filter: int = 0
     observation_files: list[str] = field(default_factory=list)
+    # Parts this run wrote. A later compaction may merge them into
+    # ledger/compacted/, so these paths can stop existing.
     ledger_files: list[str] = field(default_factory=list)
     kind: str = "run"
     datetime_start: datetime | None = None
