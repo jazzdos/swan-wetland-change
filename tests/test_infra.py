@@ -184,6 +184,17 @@ def test_pipeline_access_scopes_actions_to_bucket_and_objects() -> None:
     }
 
 
+def test_pipeline_role_max_session_duration_covers_the_job_timeout() -> None:
+    role = _block(_read("main.tf"), 'resource "aws_iam_role" "pipeline"')
+    match = re.search(r"max_session_duration\s*=\s*(\d+)", role)
+    assert match is not None
+    duration = int(match.group(1))
+    assert 3600 <= duration <= 43200
+    # The pipeline job's timeout-minutes in .github/workflows/pipeline.yml.
+    job_timeout_minutes = 120
+    assert duration >= job_timeout_minutes * 60
+
+
 def test_oidc_provider_is_optional_and_trust_uses_local_arn() -> None:
     main = _read("main.tf")
     assert "count = var.create_oidc_provider ? 1 : 0" in _block(

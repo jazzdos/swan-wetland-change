@@ -194,6 +194,27 @@ def test_aws_credentials_step_reads_role_and_region_from_variables() -> None:
     assert aws_steps[0]["with"]["aws-region"] == "${{ vars.AWS_REGION }}"
 
 
+def test_aws_credentials_step_requests_the_role_maximum_duration() -> None:
+    doc = _workflow()
+    aws_steps = [
+        step
+        for step in _steps(doc)
+        if str(step.get("uses", "")).startswith(
+            "aws-actions/configure-aws-credentials@"
+        )
+    ]
+    assert len(aws_steps) == 1
+    requested = int(aws_steps[0]["with"]["role-duration-seconds"])
+    assert requested >= int(_job(doc)["timeout-minutes"]) * 60
+
+    text = (REPO / "infra" / "main.tf").read_text(encoding="utf-8")
+    start = text.index('resource "aws_iam_role" "pipeline"')
+    end = text.index("\n}\n", start)
+    match = re.search(r"max_session_duration\s*=\s*(\d+)", text[start:end])
+    assert match is not None
+    assert requested == int(match.group(1))
+
+
 def test_workflow_text_contains_no_secret_literals() -> None:
     text = WORKFLOW.read_text(encoding="utf-8")
     assert not re.search(r"AKIA[0-9A-Z]{16}", text)

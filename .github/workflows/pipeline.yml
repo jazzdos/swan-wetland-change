@@ -70,6 +70,8 @@ jobs:
         with:
           role-to-assume: ${{ vars.AWS_ROLE_ARN }}
           aws-region: ${{ vars.AWS_REGION }}
+          # Must equal max_session_duration on the role in infra/main.tf.
+          role-duration-seconds: 10800
 
       - name: Fetch the AOI
         run: uv run --no-sync python scripts/fetch_aoi.py
