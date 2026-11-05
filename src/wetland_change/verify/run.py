@@ -80,13 +80,33 @@ def scenes_for_run(
     ]
 
 
+class ManifestReadError(OSError):
+    """A run manifest exists but could not be read (permissions, credentials, I/O)."""
+
+
+def read_manifest_bytes(store: OutputStore, path: str) -> bytes:
+    """Read one run manifest, raising ManifestReadError naming the path."""
+    try:
+        return store.read_bytes(path)
+    except OSError as exc:
+        raise ManifestReadError(
+            f"cannot read run manifest {path} under {store.uri}: {exc}"
+        ) from exc
+
+
 def latest_run_id(store: OutputStore) -> str | None:
-    """Newest run that processed at least one scene (no-op runs are skipped)."""
+    """Newest run that processed at least one scene (no-op runs are skipped).
+
+    A manifest that is not valid JSON is skipped. A manifest that cannot be
+    read raises ManifestReadError, so an access failure never falls back to an
+    older run.
+    """
     runs = sorted(p for p in store.list_files("runs") if p.endswith(".json"))
     for path in reversed(runs):
+        raw = read_manifest_bytes(store, path)
         try:
-            processed = int(json.loads(store.read_bytes(path)).get("processed", 0))
-        except (ValueError, TypeError, OSError):
+            processed = int(json.loads(raw).get("processed", 0))
+        except (ValueError, TypeError):
             continue
         if processed > 0:
             return path.rsplit("/", 1)[-1].removesuffix(".json")
