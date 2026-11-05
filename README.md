@@ -89,16 +89,20 @@ on later runs; it does not abort the run.
 
 ### Scheduled jobs
 
-- `.github/workflows/pipeline.yml`: daily at 10:00 UTC and on manual
+- `.github/workflows/pipeline.yml`: daily at 10:17 UTC and on manual
   dispatch. Fetches the AOI, runs `wetland-change run --no-catalogue`, then
   `verify` when the run processed scenes, then `build-catalogue` on every day
   that is not cancelled (so the catalogue links the run's report, and reports
   from `verify.yml` or a CLI backfill, even on a day with no processed
   scenes), and commits the verification report. The commit keeps the
   repository active so GitHub does not disable the schedule after 60 days.
-- `.github/workflows/verify.yml`: Sundays at 22:00 UTC and on manual
+- `.github/workflows/verify.yml`: Sundays at 22:43 UTC and on manual
   dispatch. Runs the live contract tests, `verify` on the latest daily run and
-  `freshness`, and opens a GitHub issue on any failure.
+  `freshness`.
+- `.github/workflows/alert.yml`: runs after `pipeline` or `verify`
+  completes. When a scheduled run did not succeed (failure, cancelled, timed
+  out) it opens an issue titled `<workflow> workflow did not succeed` or
+  comments on the open one. Manual dispatch runs are not alerted.
 - `.github/workflows/test.yml`: ruff, mypy and pytest on every push to
   `main` and every pull request targeting it.
 
@@ -141,7 +145,7 @@ recorded in `LEARNINGS.md`, and the Collection 1 backfill
 | STAC catalogue | stac-validator (through stac-check 1.14), stac-check, pystac validate, stac-browser | `src/wetland_change/stac/catalogue.py`; `tests/test_catalogue.py`, `tests/test_run_catalogue.py`; CORS in `infra/main.tf`, `tests/test_infra.py` | Implemented offline: pystac `validate_all` and stac-check pass, and all hrefs are absolute https. The live checks (bucket returns `Access-Control-Allow-Origin`, catalogue opens in stac-browser) are not implemented because the infrastructure has not been applied and no bucket exists. |
 | Incremental and idempotent | pytest-regressions golden run; watermark replay | `tests/test_golden_run.py`, `tests/test_pipeline.py`, `tests/test_ledger.py`, `tests/test_catalogue.py` | Implemented: byte-identical outputs on rerun, no duplicates after watermark replay, golden observation rows. The ledger-against-Copernicus count is covered per tile over 30 days by the freshness row; the backfill reached coverage 1.0 against a fresh Earth Search reference. |
 | Change detection | DEA Waterbodies Forrestdale record | `src/wetland_change/change.py`, `src/wetland_change/outputs/changes.py`; `tests/test_change.py`, `tests/test_change_outputs.py` | Implemented. Backfill 2022-12-01 to 2026-11-02 (1147 items): H1 supported, H2 untestable, H3 not supported, H4 not supported. See below. |
-| Scheduled job alive | Earth Search and Copernicus counts per tile per 30 days | `src/wetland_change/verify/freshness.py` (`freshness_*`); `tests/test_verify_freshness.py`; issue step in `.github/workflows/verify.yml`, `tests/test_workflows.py` | Implemented. Not yet run on a schedule (see Limitations). |
+| Scheduled job alive | Earth Search and Copernicus counts per tile per 30 days | `src/wetland_change/verify/freshness.py` (`freshness_*`); `tests/test_verify_freshness.py`; alert workflow `.github/workflows/alert.yml`, `tests/test_workflows.py` | Implemented. Not yet run on a schedule (see Limitations). |
 | End to end | `verify` over the latest daily run | `src/wetland_change/verify/run.py`, `src/wetland_change/verify/checks.py`; `tests/test_verify.py`, `tests/test_workflows.py` | Implemented and run locally (first live run: 127 checks, 115 passed, 12 failed, all 12 explained in `docs/handoffs/2026-10-29-milestone-1.md`). A green weekly `verify.yml` run has not happened (see Limitations). |
 
 ### Backfill results

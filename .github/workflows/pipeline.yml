@@ -8,7 +8,8 @@
 # incremental: a day with nothing new costs one ledger read and writes no
 # catalogue objects.
 #
-# Runs at 10:00 UTC every day and on manual dispatch.
+# Runs at 10:17 UTC every day and on manual dispatch. The minute is not zero
+# because GitHub delays scheduled runs at the top of the hour.
 #
 # Why it commits the verification report: GitHub disables scheduled
 # workflows after 60 days without repository activity. The daily commit of
@@ -21,12 +22,15 @@
 # refs/heads/main, so the workflow only works from main. The role ARN, region
 # and bucket name come from repository variables (not secrets); no
 # long-lived credentials are stored anywhere.
+#
+# When a scheduled run does not succeed, alert.yml opens or updates a GitHub
+# issue.
 
 name: pipeline
 
 on:
   schedule:
-    - cron: "0 10 * * *"
+    - cron: "17 10 * * *"
   workflow_dispatch:
 
 permissions:
