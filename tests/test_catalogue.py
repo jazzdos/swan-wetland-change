@@ -328,13 +328,30 @@ class RecordingStore(OutputStore):
         self.writes: list[str] = []
         self.reads: list[str] = []
 
-    def write_bytes(self, relpath: str, data: bytes) -> str:
+    def write_bytes(self, relpath: str, data: bytes, **kwargs: Any) -> str:
         self.writes.append(relpath)
-        return super().write_bytes(relpath, data)
+        return super().write_bytes(relpath, data, **kwargs)
 
     def read_bytes(self, relpath: str) -> bytes:
         self.reads.append(relpath)
         return super().read_bytes(relpath)
+
+
+class _MetadataRecorder:
+    """Wraps a filesystem and records the Content-Type of each output stream."""
+
+    def __init__(self, inner: Any) -> None:
+        self.inner = inner
+        self.paths: list[str] = []
+        self.metadata: list[dict[str, str] | None] = []
+
+    def open_output_stream(self, path: str, *args: Any, **kwargs: Any) -> Any:
+        self.paths.append(path)
+        self.metadata.append(kwargs.get("metadata"))
+        return self.inner.open_output_stream(path, *args, **kwargs)
+
+    def __getattr__(self, name: str) -> Any:
+        return getattr(self.inner, name)
 
 
 def _item_key(item_id: str) -> str:
@@ -355,6 +372,29 @@ def _all_objects() -> list[str]:
 def _built(store: OutputStore) -> RecordingStore:
     build_and_write(store, base_url=BASE_URL)
     return RecordingStore(store.uri)
+
+
+def test_catalogue_objects_are_written_with_their_content_types(
+    tmp_path: Path, store: OutputStore
+) -> None:
+    fresh = OutputStore(str(tmp_path / "fresh"))
+    rec = _MetadataRecorder(fresh.fs)
+    fresh.fs = rec  # type: ignore[assignment]
+    catalog = build_catalogue(read_ledger(store), base_url=BASE_URL)
+    write_catalogue(catalog, fresh, base_url=BASE_URL)
+    base = fresh.root.rstrip("/") + "/"
+    types = {
+        path.removeprefix(base): (meta or {}).get("Content-Type")
+        for path, meta in zip(rec.paths, rec.metadata, strict=True)
+    }
+    expected = {
+        CATALOG_KEY: "application/json",
+        COLLECTION_KEY: "application/json",
+        INDEX_KEY: "application/json",
+        PARQUET_KEY: "application/vnd.apache.parquet",
+        **{_item_key(i): "application/geo+json" for i in SUCCEEDED_IDS},
+    }
+    assert types == expected
 
 
 def test_index_records_base_url_and_digests(store: OutputStore) -> None:
