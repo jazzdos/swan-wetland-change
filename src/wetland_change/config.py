@@ -29,6 +29,9 @@ class StacConfig(BaseModel):
     collection: str
     cloud_cover_max: float = Field(ge=0.0, le=100.0)
     watermark_overlap_days: int = Field(default=1, ge=0)
+    # Bounds the `created` filter of a run with no daily watermark, so a first
+    # run does not page through every scene Earth Search holds.
+    initial_lookback_days: int = Field(default=30, ge=1)
     required_assets: list[str] = Field(
         default_factory=lambda: [
             "green",

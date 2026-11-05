@@ -72,6 +72,29 @@ gh variable set OUTPUT_BUCKET --body "<bucket>"
 gh variable set AWS_REGION --body "<region>"
 ```
 
+## Seeding the output root before the first scheduled run
+
+With an empty output root the daily run has no watermark, so its search is bounded only by `stac.initial_lookback_days` in `config/pipeline.toml` (default 30 days of `created`). The scheduled job is cancelled at 120 minutes. Seed the root from the backfill so the first scheduled run does not start from nothing.
+
+Run these once, as an operator whose AWS identity can write the bucket (not through the pipeline role). Replace `<today>` with the current UTC date and `<bucket>` with the bucket name.
+
+```sh
+uv run python scripts/fetch_aoi.py
+uv run wetland-change backfill --start 2022-12-01 --end <today> --output-root s3://<bucket>/
+uv run wetland-change score --start 2022-12-01 --end <today> --output-root s3://<bucket>/
+uv run wetland-change build-catalogue --output-root s3://<bucket>/
+```
+
+The backfill is resumable because it checkpoints per scene. Rerun the same command if it is interrupted.
+
+Choose `--end` no earlier than today minus `initial_lookback_days`. Otherwise scenes acquired after the backfill end but created before the lookback start are never seen by either command.
+
+Backfill rows are tagged `backfill`, so the daily watermark stays empty after seeding. The first scheduled run therefore applies the lookback window and skips every item already in the ledger. From the second run on it uses the watermark.
+
+A cancelled or timed-out daily run keeps the scenes it finished, because the ledger is written after each scene. Rerun the workflow (`workflow_dispatch`) to continue. The next run does not score the observation files of the finished scenes, so run `wetland-change score --start <date> --end <date> --output-root s3://<bucket>/` over their acquisition dates.
+
+A bucket that is not seeded still converges: each run does at most what fits in 120 minutes and the next run resumes. The first runs are bounded by the lookback window, and older history needs `backfill`.
+
 ## Notes
 
 - State is local by default. `terraform.tfstate` is gitignored; keep it safe or add a remote backend.

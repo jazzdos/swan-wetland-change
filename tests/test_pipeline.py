@@ -14,6 +14,7 @@ import geopandas as gpd
 import pyarrow.parquet as pq
 import pyproj
 import pytest
+from pydantic import ValidationError
 from shapely.geometry import box
 from shapely.geometry.base import BaseGeometry
 from shapely.ops import transform as shapely_transform
@@ -27,12 +28,12 @@ from wetland_change.config import (
     StacConfig,
     WaterConfig,
 )
-from wetland_change.ledger import read_ledger, retry_ids
+from wetland_change.ledger import read_ledger, retry_ids, watermark
 from wetland_change.manifest import KIND_SCORE, RunManifest
 from wetland_change.outputs.changes import CHANGE_COLUMNS, change_path
 from wetland_change.outputs.geoparquet import observation_path, write_observations
 from wetland_change.pipeline import backfill_once, run_once, score_changes, score_once
-from wetland_change.raster.read import RasterioReader
+from wetland_change.raster.read import Grid, RasterioReader
 from wetland_change.stats import ObservationRow
 from wetland_change.store import OutputStore
 
@@ -95,16 +96,50 @@ def _polygons(fixture_polygon: BaseGeometry) -> list[AoiPolygon]:
     return [lake, far]
 
 
+class RecordingClient(FakeClient):
+    """Keeps the kwargs of every search that is not an `ids` retry lookup."""
+
+    def __init__(self, items: list[dict[str, Any]]) -> None:
+        super().__init__(items)
+        self.main_searches: list[dict[str, Any]] = []
+
+    def search(self, **kwargs: Any) -> FakeSearch:
+        if "ids" not in kwargs:
+            self.main_searches.append(kwargs)
+        return super().search(**kwargs)
+
+
+class InterruptingReader(RasterioReader):
+    """Raises KeyboardInterrupt in `open_grid` on the Nth call (1-based)."""
+
+    def __init__(self, interrupt_on: int) -> None:
+        super().__init__()
+        self._interrupt_on = interrupt_on
+        self._calls = 0
+
+    def open_grid(self, href: str) -> Grid:
+        self._calls += 1
+        if self._calls == self._interrupt_on:
+            raise KeyboardInterrupt
+        return super().open_grid(href)
+
+
 def _run(
-    tmp_path: Path, client: FakeClient, polygons: list[AoiPolygon], now: datetime
+    tmp_path: Path,
+    client: FakeClient,
+    polygons: list[AoiPolygon],
+    now: datetime,
+    *,
+    cfg: PipelineConfig | None = None,
+    reader: RasterioReader | None = None,
 ) -> RunManifest:
-    cfg = _config(tmp_path)
+    cfg = cfg or _config(tmp_path)
     config_path = tmp_path / "pipeline.toml"
     config_path.write_text("# test\n")
     return run_once(
         cfg,
         client=client,
-        reader=RasterioReader(),
+        reader=reader or RasterioReader(),
         store=OutputStore(cfg.output.root),
         polygons=polygons,
         now=now,
@@ -193,6 +228,52 @@ def test_rejected_items_are_ledgered(
     assert ledger["status"].tolist() == ["rejected"]
 
 
+def _wrong_collection(fixture_item: dict[str, Any]) -> dict[str, Any]:
+    wrong = copy.deepcopy(fixture_item)
+    wrong["id"] = f"{fixture_item['id']}_L2A"
+    wrong["collection"] = "sentinel-2-l2a"
+    return wrong
+
+
+def test_rejected_items_and_scenes_get_separate_ledger_parts(
+    fixture_item: dict[str, Any], fixture_polygon: BaseGeometry, tmp_path: Path
+) -> None:
+    wrong = _wrong_collection(fixture_item)
+    manifest = _run(
+        tmp_path,
+        FakeClient([wrong, fixture_item]),
+        _polygons(fixture_polygon),
+        NOW,
+    )
+    assert (manifest.rejected, manifest.processed) == (1, 1)
+    assert manifest.ledger_files == [
+        f"ledger/year=2026/ledger_{manifest.run_id}_00000.parquet",
+        f"ledger/year=2026/ledger_{manifest.run_id}_00001.parquet",
+    ]
+    ledger = read_ledger(OutputStore(str(tmp_path / "out"))).to_pandas()
+    by_item = dict(zip(ledger["item_id"], ledger["status"], strict=True))
+    assert by_item == {wrong["id"]: "rejected", fixture_item["id"]: "succeeded"}
+
+
+def test_rejected_rows_survive_an_interrupt_on_the_first_scene(
+    fixture_item: dict[str, Any], fixture_polygon: BaseGeometry, tmp_path: Path
+) -> None:
+    wrong = _wrong_collection(fixture_item)
+    out = tmp_path / "out"
+    with pytest.raises(KeyboardInterrupt):
+        _run(
+            tmp_path,
+            FakeClient([wrong, fixture_item]),
+            _polygons(fixture_polygon),
+            NOW,
+            reader=InterruptingReader(interrupt_on=1),
+        )
+    ledger = read_ledger(OutputStore(str(out))).to_pandas()
+    assert ledger["status"].tolist() == ["rejected"]
+    assert ledger["item_id"].tolist() == [wrong["id"]]
+    assert len(list((out / "ledger").rglob("*.parquet"))) == 1
+
+
 def test_run_once_tags_rows_and_manifest_as_run(
     fixture_item: dict[str, Any], fixture_polygon: BaseGeometry, tmp_path: Path
 ) -> None:
@@ -205,8 +286,136 @@ def test_run_once_tags_rows_and_manifest_as_run(
     assert manifest.output_root_override is None
     assert manifest.datetime_start is None
     assert manifest.ledger_files == [
-        f"ledger/year=2026/ledger_{manifest.run_id}.parquet"
+        f"ledger/year=2026/ledger_{manifest.run_id}_00000.parquet"
     ]
+
+
+def _four_scenes(fixture_item: dict[str, Any]) -> list[dict[str, Any]]:
+    items = []
+    for i, suffix in enumerate("ABCD"):
+        item = copy.deepcopy(fixture_item)
+        stamp = f"2026-10-28T08:{i}0:00.000Z"
+        item["id"] = f"{fixture_item['id']}_{suffix}"
+        item["properties"]["s2:product_uri"] = f"{suffix}_{item['id']}.SAFE"
+        item["properties"]["created"] = stamp
+        item["properties"]["updated"] = stamp
+        items.append(item)
+    return items
+
+
+def _z(value: datetime) -> str:
+    return value.isoformat().replace("+00:00", "Z")
+
+
+def test_run_once_interrupted_keeps_finished_scenes_and_resumes(
+    fixture_item: dict[str, Any], fixture_polygon: BaseGeometry, tmp_path: Path
+) -> None:
+    items = _four_scenes(fixture_item)
+    polygons = _polygons(fixture_polygon)
+    out = tmp_path / "out"
+    store = OutputStore(str(out))
+    with pytest.raises(KeyboardInterrupt):
+        _run(
+            tmp_path,
+            FakeClient(items),
+            polygons,
+            NOW,
+            reader=InterruptingReader(interrupt_on=3),
+        )
+    ledger = read_ledger(store).to_pandas()
+    assert sorted(ledger["item_id"]) == [items[0]["id"], items[1]["id"]]
+    assert set(ledger["status"]) == {"succeeded"}
+    assert len(list((out / "ledger").rglob("*.parquet"))) == 2
+    first_files = sorted((out / "observations").rglob("*.parquet"))
+    assert len(first_files) == 2
+    first_bytes = {f: f.read_bytes() for f in first_files}
+    assert not (out / "runs" / "20261029T100000Z.json").exists()
+    b_created = datetime(2026, 10, 28, 8, 10, tzinfo=UTC)
+    assert watermark(read_ledger(store)) == b_created
+
+    client = RecordingClient(items)
+    second = _run(tmp_path, client, polygons, NOW + timedelta(days=1))
+    assert (second.skipped_seen, second.processed) == (2, 2)
+    assert sorted(second.observation_files) == [
+        f"observations/year=2026/tile=50HLK/obs_{items[2]['id']}.parquet",
+        f"observations/year=2026/tile=50HLK/obs_{items[3]['id']}.parquet",
+    ]
+    for f, data in first_bytes.items():
+        assert f.read_bytes() == data
+    (search,) = client.main_searches
+    assert search["query"]["created"]["gte"] == _z(b_created - timedelta(days=1))
+    final = read_ledger(store).to_pandas()
+    assert len(final) == 4
+    assert set(final["status"]) == {"succeeded"}
+
+
+def test_run_without_watermark_bounds_discovery_to_lookback(
+    fixture_item: dict[str, Any], fixture_polygon: BaseGeometry, tmp_path: Path
+) -> None:
+    polygons = _polygons(fixture_polygon)
+    client = RecordingClient([fixture_item])
+    _run(tmp_path, client, polygons, NOW)
+    (search,) = client.main_searches
+    assert search["query"]["created"]["gte"] == _z(NOW - timedelta(days=30))
+
+    short = tmp_path / "short"
+    short.mkdir()
+    cfg = _config(short)
+    cfg = cfg.model_copy(
+        update={"stac": cfg.stac.model_copy(update={"initial_lookback_days": 7})}
+    )
+    client = RecordingClient([fixture_item])
+    _run(short, client, polygons, NOW, cfg=cfg)
+    (search,) = client.main_searches
+    assert search["query"]["created"]["gte"] == _z(NOW - timedelta(days=7))
+
+
+def test_run_after_backfill_only_ledger_uses_lookback_and_skips_seeded_items(
+    fixture_item: dict[str, Any], fixture_polygon: BaseGeometry, tmp_path: Path
+) -> None:
+    polygons = _polygons(fixture_polygon)
+    cfg = _config(tmp_path)
+    config_path = tmp_path / "pipeline.toml"
+    config_path.write_text("# test\n")
+    store = OutputStore(cfg.output.root)
+    backfill_once(
+        cfg,
+        start=datetime(2026, 10, 26, tzinfo=UTC),
+        end=datetime(2026, 10, 28, 23, 59, 59, tzinfo=UTC),
+        client=FakeClient([fixture_item]),
+        reader=RasterioReader(),
+        store=store,
+        polygons=polygons,
+        now=NOW,
+        config_path=config_path,
+    )
+    later = NOW + timedelta(days=1)
+    client = RecordingClient([fixture_item])
+    manifest = _run(tmp_path, client, polygons, later)
+    assert manifest.watermark_before is None
+    (search,) = client.main_searches
+    assert search["query"]["created"]["gte"] == _z(later - timedelta(days=30))
+    assert (manifest.processed, manifest.skipped_seen) == (0, 1)
+
+
+def test_stac_config_rejects_zero_lookback() -> None:
+    with pytest.raises(ValidationError):
+        StacConfig(
+            endpoint="https://example.invalid",
+            collection="sentinel-2-c1-l2a",
+            cloud_cover_max=20.0,
+            initial_lookback_days=0,
+        )
+
+
+def test_run_once_refuses_reused_run_id(
+    fixture_item: dict[str, Any], fixture_polygon: BaseGeometry, tmp_path: Path
+) -> None:
+    polygons = _polygons(fixture_polygon)
+    client = FakeClient([fixture_item])
+    _run(tmp_path, client, polygons, NOW)
+    with pytest.raises(ValueError, match="run id"):
+        _run(tmp_path, client, polygons, NOW)
 
 
 def test_run_once_records_output_root_override(
