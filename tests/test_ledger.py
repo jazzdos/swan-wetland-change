@@ -3,7 +3,7 @@ from __future__ import annotations
 import dataclasses
 import io
 import math
-from datetime import UTC, datetime, timedelta, timezone
+from datetime import UTC, date, datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any
 
@@ -34,7 +34,9 @@ from wetland_change.ledger import (
     rejected_entry,
     requeue_entries,
     retry_ids,
+    scored_dates,
     seen_keys,
+    unfinished_runs,
     watermark,
     write_ledger,
 )
@@ -829,3 +831,136 @@ def test_observation_months_uses_utc_and_skips_nulls(
     months = observation_months(entries_to_table(entries))
     assert months == {"obs/a.parquet": {1, 3}, "obs/nodate.parquet": set()}
     assert observation_months(LEDGER_SCHEMA.empty_table()) == {}
+
+
+# --- unfinished runs ------------------------------------------------------
+
+
+def test_unfinished_runs_empty_ledger_is_empty() -> None:
+    assert unfinished_runs(entries_to_table([]), set()) == {}
+
+
+def test_unfinished_run_returns_all_its_rows(fixture_scene: SceneItem) -> None:
+    entries = [
+        _one(fixture_scene, "a", run_id="r1"),
+        _one(fixture_scene, "b", run_id="r1", status="failed"),
+        rejected_entry("bad", "collection mismatch", run_id="r1", processed_at=T0),
+    ]
+    found = unfinished_runs(entries_to_table(entries), set())
+    assert list(found) == ["r1"]
+    assert sorted(found["r1"]["item_id"]) == ["a", "b", "bad"]
+    assert sorted(found["r1"]["status"]) == ["failed", "rejected", "succeeded"]
+
+
+def test_finished_run_is_not_returned(fixture_scene: SceneItem) -> None:
+    entries = [
+        _one(fixture_scene, "a", run_id="r1"),
+        _one(fixture_scene, "b", run_id="r2"),
+    ]
+    found = unfinished_runs(entries_to_table(entries), {"r1"})
+    assert list(found) == ["r2"]
+
+
+def test_backfill_rows_are_never_unfinished(fixture_scene: SceneItem) -> None:
+    entries = [
+        _one(fixture_scene, "a", run_id="b1", run_kind=RUN_KIND_BACKFILL),
+        _one(fixture_scene, "b", run_id="r1"),
+    ]
+    found = unfinished_runs(entries_to_table(entries), set())
+    assert list(found) == ["r1"]
+
+
+def test_run_with_only_backfill_rows_is_absent(fixture_scene: SceneItem) -> None:
+    entries = [_one(fixture_scene, "a", run_id="b1", run_kind=RUN_KIND_BACKFILL)]
+    assert unfinished_runs(entries_to_table(entries), set()) == {}
+
+
+def test_null_run_kind_counts_as_a_daily_row(fixture_scene: SceneItem) -> None:
+    table = entries_to_table([_one(fixture_scene, "a", run_id="old")])
+    nulls = pa.array([None], type=pa.string())
+    table = table.set_column(
+        table.schema.get_field_index("run_kind"), "run_kind", nulls
+    )
+    found = unfinished_runs(table, set())
+    assert list(found) == ["old"]
+    assert list(found["old"]["item_id"]) == ["a"]
+
+
+def test_later_success_under_another_run_does_not_hide_the_crashed_run(
+    fixture_scene: SceneItem,
+) -> None:
+    entries = [
+        _one(fixture_scene, "a", run_id="r1", status="failed", hours=0),
+        _one(fixture_scene, "a", run_id="r2", hours=1),
+    ]
+    found = unfinished_runs(entries_to_table(entries), {"r2"})
+    assert list(found) == ["r1"]
+    assert list(found["r1"]["item_id"]) == ["a"]
+    assert list(found["r1"]["status"]) == ["failed"]
+
+
+def test_unfinished_runs_are_ordered_by_run_id(fixture_scene: SceneItem) -> None:
+    entries = [
+        _one(fixture_scene, "a", run_id="20261029T000000Z"),
+        _one(fixture_scene, "b", run_id="20261027T000000Z"),
+        _one(fixture_scene, "c", run_id="20261028T000000Z"),
+    ]
+    found = unfinished_runs(entries_to_table(entries), set())
+    assert list(found) == [
+        "20261027T000000Z",
+        "20261028T000000Z",
+        "20261029T000000Z",
+    ]
+
+
+def test_unfinished_runs_accepts_any_collection_of_ids(
+    fixture_scene: SceneItem,
+) -> None:
+    table = entries_to_table([_one(fixture_scene, "a", run_id="r1")])
+    assert unfinished_runs(table, frozenset({"r1"})) == {}
+    assert unfinished_runs(table, ["r1"]) == {}
+
+
+# --- scored dates ---------------------------------------------------------
+
+
+def test_scored_dates_uses_utc_and_skips_unscored_rows(
+    fixture_scene: SceneItem,
+) -> None:
+    perth = timezone(timedelta(hours=8))
+    entries = [
+        # 2026-02-01 05:00 +08:00 is 2026-01-31 21:00 UTC.
+        _one(
+            fixture_scene,
+            "a",
+            observation_path="obs/a.parquet",
+            datetime=datetime(2026, 2, 1, 5, 0, tzinfo=perth),
+        ),
+        # Just before UTC midnight stays on its own UTC date.
+        _one(
+            fixture_scene,
+            "b",
+            observation_path="obs/b.parquet",
+            datetime=datetime(2026, 3, 5, 23, 59, 59, tzinfo=UTC),
+        ),
+        _one(
+            fixture_scene,
+            "failed",
+            status="failed",
+            observation_path="obs/f.parquet",
+            datetime=datetime(2026, 4, 1, tzinfo=UTC),
+        ),
+        _one(
+            fixture_scene,
+            "nopath",
+            observation_path=None,
+            datetime=datetime(2026, 5, 1, tzinfo=UTC),
+        ),
+        _one(fixture_scene, "nodate", observation_path="obs/n.parquet", datetime=None),
+    ]
+    frame = entries_to_table(entries).to_pandas()
+    assert scored_dates(frame) == {date(2026, 1, 31), date(2026, 3, 5)}
+
+
+def test_scored_dates_of_an_empty_frame_is_empty() -> None:
+    assert scored_dates(entries_to_table([]).to_pandas()) == set()

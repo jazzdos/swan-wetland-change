@@ -33,7 +33,9 @@ from wetland_change.ledger import (
     rejected_entry,
     requeue_entries,
     retry_ids,
+    scored_dates,
     seen_keys,
+    unfinished_runs,
     watermark,
     write_ledger,
 )
@@ -333,6 +335,15 @@ def run_once(
 
     The ledger is listed and read once; the final table is that read plus the
     entries this run wrote, and scoring, the catalogue and compaction use it.
+
+    A daily run that raised after checkpointing scenes leaves ledger rows and
+    no `runs/<run_id>.json`. This run finds such runs from the ledger as read
+    at its start and a single listing of `runs/`, adds their dates to the one
+    `score_changes` call after the scene loop, and writes a manifest for each
+    (`recovered_by` set, skipped tallies and watermarks empty) before its own.
+    Backfill rows are never recovered. Scoring runs after the loop so new
+    scenes are still processed and checkpointed when an old date cannot be
+    scored.
     `build_catalogue=False` skips the catalogue build. Compaction runs last and
     a failure there is logged, not raised.
     """
@@ -340,6 +351,7 @@ def run_once(
     run_id = new_run_id(now)
     ledger, paths = read_ledger_parts(store)
     _refuse_reused_run_id(store, run_id, ledger=ledger, paths=paths)
+    unfinished = unfinished_runs(ledger, _finished_run_ids(store))
     before = watermark(ledger)
     created_from = discovery_created_from(cfg.stac, before=before, now=now)
     if before is not None:
@@ -414,23 +426,89 @@ def run_once(
     manifest.watermark_after = watermark(final)
     manifest.exhausted_items = exhausted_ids(final)
     manifest.exhausted = len(manifest.exhausted_items)
-    if written_dates:
+    score_dates = set(written_dates)
+    for crashed_id, rows in unfinished.items():
+        crashed_dates = scored_dates(rows)
+        logger.info(
+            "run %s has ledger rows and no manifest; finishing it (%d dates to score)",
+            crashed_id,
+            len(crashed_dates),
+        )
+        score_dates |= crashed_dates
+    scored: ScoreResult | None = None
+    if score_dates:
         scored = score_changes(
             store,
             min_valid_fraction=cfg.water.min_valid_fraction,
-            dates=written_dates,
+            dates=score_dates,
             rescore_later=True,
             ledger=final,
         )
         manifest.change_rows = scored.rows
         manifest.change_files = scored.files
         manifest.change_files_removed = scored.removed
+    for crashed_id, rows in unfinished.items():
+        write_manifest(
+            _recovered_manifest(manifest, crashed_id, rows, now, scored, paths),
+            store,
+        )
+    manifest.recovered_runs = sorted(unfinished)
     manifest.finished_at = now
     write_manifest(manifest, store)
     if build_catalogue:
         build_and_write(store, base_url=cfg.catalogue.base_url, ledger=final)
     _compact_after_run(store, final, paths, manifest)
     return manifest
+
+
+def _finished_run_ids(store: OutputStore) -> set[str]:
+    """Run ids that have a manifest under `runs/` (empty before the first run)."""
+    return {Path(p).stem for p in store.list_files("runs") if p.endswith(".json")}
+
+
+def _recovered_manifest(
+    current: RunManifest,
+    run_id: str,
+    rows: pd.DataFrame,
+    now: datetime,
+    scored: ScoreResult | None,
+    paths: Sequence[str],
+) -> RunManifest:
+    """Manifest of a daily run that raised before writing its own.
+
+    Only what the ledger knows is filled in. skipped_seen, skipped_filter and
+    both watermarks, package_version and config_sha256 stay empty, because
+    only the crashed process knew them; `recovered_by` marks the manifest.
+    Scoring fields come from the combined scoring result of the run that
+    recovered it.
+    """
+    status = rows["status"]
+    processed = int((status == "succeeded").sum())
+    failed = int((status == "failed").sum())
+    succeeded = rows[(status == "succeeded") & rows["observation_path"].notna()]
+    return RunManifest(
+        run_id=run_id,
+        started_at=rows["processed_at"].min().to_pydatetime(),
+        finished_at=now,
+        package_version=None,
+        config_sha256=None,
+        endpoint=current.endpoint,
+        collection=current.collection,
+        watermark_before=None,
+        watermark_after=None,
+        discovered=processed + failed,
+        processed=processed,
+        failed=failed,
+        rejected=int((status == "rejected").sum()),
+        observation_files=sorted(str(p) for p in succeeded["observation_path"]),
+        ledger_files=[p for p in paths if f"ledger_{run_id}" in Path(p).name],
+        change_rows=scored.rows if scored else 0,
+        change_files=list(scored.files) if scored else [],
+        change_files_removed=list(scored.removed) if scored else [],
+        kind=RUN_KIND_RUN,
+        output_root_override=current.output_root_override,
+        recovered_by=current.run_id,
+    )
 
 
 def _compact_after_run(
