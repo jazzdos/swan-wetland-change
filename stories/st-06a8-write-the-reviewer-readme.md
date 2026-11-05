@@ -7,7 +7,7 @@ depends_on: [st-a868, st-ec32, st-e766]
 touches: [README.md, tests/test_readme.py]
 exclusive: false
 created: 2026-10-29
-updated: 2026-10-29
+updated: 2026-11-05
 ---
 ## Description
 
@@ -27,5 +27,7 @@ Cover: what the pipeline does; architecture and run stages; data sources and lic
 ## Implementation Plan
 
 ## Implementation Notes
+
+- 2026-11-05T08:55:00.595Z: Implemented by cloud session https://claude.ai/code/session_01FNRugN6kQycKSHYeD5rakG as dd58765. Same local gates as st-7432 on the combined merge. Restoring the old README fails all 6 collected tests in tests/test_readme.py. Backfill verdicts, H4 rhos, ADR 0002 and 0005 figures, the S9 and dea-tools figures, the first verify counts, cron times and SCL classes were checked by hand against their cited sources.
 
 ## Questions

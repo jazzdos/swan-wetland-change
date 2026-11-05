@@ -5,10 +5,10 @@ type: bug
 epic: st-f849
 priority: P2
 depends_on: []
-touches: [infra/main.tf, infra/variables.tf, infra/README.md, tests/test_infra.py]
+touches: [infra/README.md, infra/variables.tf, tests/test_infra.py]
 exclusive: false
 created: 2026-11-03
-updated: 2026-11-03
+updated: 2026-11-05
 ---
 
 ## Description
@@ -26,5 +26,7 @@ GitHub OIDC tokens for this repository carry an immutable subject. The API call 
 ## Implementation Plan
 
 ## Implementation Notes
+
+- 2026-11-05T08:54:04.990Z: Implemented by cloud session https://claude.ai/code/session_01FNRugMhxCk9NxsEcKHuGsF as 5f1c25a. Checked locally on main merged with all batch branches: ruff, ruff format, mypy pass; pytest 452 passed 1 skipped with and without GITHUB_ACTIONS=true; terraform validate rc 0; actionlint rc 0. Real Terraform regex evaluation accepts the immutable value and rejects owner/name, a missing repo id and a repo: prefix. gh api still returns sub_claim_prefix repo:jazzdos@33918812/swan-wetland-change@1438569874 on 2026-11-05. Restoring the old variables.tf fails 2 tests in tests/test_infra.py. Applying stays local and out of scope.
 
 ## Questions
