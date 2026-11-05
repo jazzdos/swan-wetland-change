@@ -71,6 +71,10 @@ output store, so reruns are safe.
    1.1 under `observations/year=YYYY/tile=<MGRS>/obs_<item_id>.parquet`,
    ledger parts under `ledger/year=YYYY/` (merged into `ledger/compacted/`
    once 25 or more accumulate), and a run manifest under `runs/`.
+   A later run finishes any daily run that has ledger rows and no manifest,
+   scoring its dates and writing its manifest with `recovered_by` set and its
+   skipped tallies, watermarks, `package_version` and `config_sha256` empty. The daily job does not verify a
+   recovered run; use `verify --run-id`.
 7. Change (`change.py`, `outputs/changes.py`). Score the daily aggregate per
    polygon against its month-of-year baseline; rows with absolute robust z
    above 3, valid fraction above 0.8 and at least 5 baseline samples go to
