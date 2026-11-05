@@ -12,6 +12,7 @@ from typing import Any
 from wetland_change.store import OutputStore
 
 KIND_SCORE = "score"
+KIND_REQUEUE = "requeue"
 
 
 def new_run_id(now: datetime) -> str:
@@ -52,6 +53,9 @@ class RunManifest:
     change_rows: int = 0
     change_files: list[str] = field(default_factory=list)
     change_files_removed: list[str] = field(default_factory=list)
+    exhausted: int = 0
+    exhausted_items: list[str] = field(default_factory=list)
+    requeued_items: list[str] = field(default_factory=list)
 
     def to_json(self) -> str:
         def _default(value: Any) -> str:

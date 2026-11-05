@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import dataclasses
 import hashlib
 import json
 import shutil
@@ -21,7 +22,7 @@ from tests.test_verify_freshness import row
 from wetland_change import cli
 from wetland_change.aoi import AoiPolygon
 from wetland_change.cli import app
-from wetland_change.ledger import write_ledger
+from wetland_change.ledger import MAX_ATTEMPTS, write_ledger
 from wetland_change.store import OutputStore
 from wetland_change.verify import freshness as freshness_module
 from wetland_change.verify.copernicus import CDSE_STAC
@@ -58,6 +59,7 @@ def test_help_lists_commands() -> None:
         "run",
         "backfill",
         "score",
+        "requeue",
         "verify",
         "freshness",
         "build-catalogue",
@@ -84,7 +86,8 @@ def test_backfill_help_lists_range_and_output_root() -> None:
 
 
 @pytest.mark.parametrize(
-    "command", ["run", "verify", "freshness", "discover", "score", "build-catalogue"]
+    "command",
+    ["run", "verify", "freshness", "discover", "score", "requeue", "build-catalogue"],
 )
 def test_output_root_listed_on_every_command(command: str) -> None:
     result = runner.invoke(app, [command, "--help"])
@@ -140,7 +143,9 @@ def test_now_without_zone_is_read_as_local_time(
     assert seen["now"].isoformat() == "2026-10-29T02:00:00+00:00"
 
 
-@pytest.mark.parametrize("command", ["run", "backfill", "score", "freshness"])
+@pytest.mark.parametrize(
+    "command", ["run", "backfill", "score", "freshness", "requeue"]
+)
 def test_now_help_states_local_time_reading(command: str) -> None:
     result = runner.invoke(app, [command, "--help"], env={"COLUMNS": "200"})
     assert result.exit_code == 0
@@ -331,6 +336,30 @@ def test_freshness_fails_when_newest_item_is_eight_days_old(
     assert any("freshness_newest_item" in line for line in lines)
 
 
+def test_freshness_fails_when_an_item_is_exhausted(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    config_file, root = _patch_freshness(
+        monkeypatch,
+        tmp_path,
+        [es_item(FRESH_SENSED_2D)],
+        FakeClient([cdse_item(FRESH_SENSED_2D)]),
+        FRESH_SENSED_2D,
+    )
+    exhausted = dataclasses.replace(
+        row(FRESH_SENSED_2D, status="failed", item_id="stuck", run_id="r2"),
+        attempts=MAX_ATTEMPTS,
+        error="boom",
+    )
+    write_ledger([exhausted], OutputStore(str(root)), run_id="r2")
+    result = _freshness(config_file, root)
+    assert result.exit_code == 3, result.output
+    lines = [line for line in result.output.splitlines() if line.startswith("FAIL")]
+    assert len(lines) == 1
+    assert "freshness_exhausted_items" in lines[0]
+    assert "pass\tfreshness_newest_item\t" in result.output
+
+
 def test_freshness_passes_when_ledger_and_catalogues_agree(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
@@ -345,6 +374,7 @@ def test_freshness_passes_when_ledger_and_catalogues_agree(
     assert result.exit_code == 0, result.output
     assert "FAIL" not in result.output
     assert "pass\tfreshness_newest_item\t" in result.output
+    assert "pass\tfreshness_exhausted_items\t0.0" in result.output
     assert "\t50HLK" in result.output
 
 
@@ -503,3 +533,103 @@ def test_corrupt_ledger_is_not_reported_as_bad_parameter(
     assert "Invalid value" not in result.output
     assert result.exception is not None
     assert not isinstance(result.exception, SystemExit)
+
+
+def test_corrupt_ledger_is_not_reported_as_bad_parameter_for_requeue(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    config_file, root = _requeue_setup(monkeypatch, tmp_path, exhausted=False)
+    part = root / "ledger" / "year=2026" / "ledger_bad.parquet"
+    part.parent.mkdir(parents=True)
+    part.write_bytes(b"not a parquet file")
+    result = runner.invoke(app, _requeue_args(config_file, root, "--all"))
+    assert result.exit_code != 0
+    assert result.exit_code != 2
+    assert "Invalid value" not in result.output
+    assert result.exception is not None
+    assert not isinstance(result.exception, SystemExit)
+
+
+def test_requeue_help_lists_options() -> None:
+    result = runner.invoke(app, ["requeue", "--help"], env={"COLUMNS": "200"})
+    assert result.exit_code == 0
+    text = click.unstyle(result.output)
+    for option in ("--all", "--config", "--output-root", "--now"):
+        assert option in text
+    assert "Requeue exhausted items" in " ".join(text.replace("│", " ").split())
+
+
+def _requeue_setup(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, *, exhausted: bool = True
+) -> tuple[Path, Path]:
+    config_file = tmp_path / "pipeline.toml"
+    config_file.write_text("# test config\n")
+    monkeypatch.setattr(cli, "load_config", lambda config: _config(tmp_path / "c"))
+    root = tmp_path / "out"
+    if exhausted:
+        stuck = dataclasses.replace(
+            row(FRESH_SENSED_2D, status="failed", item_id="stuck", run_id="r2"),
+            attempts=MAX_ATTEMPTS,
+            error="boom",
+        )
+        write_ledger([stuck], OutputStore(str(root)), run_id="r2")
+    return config_file, root
+
+
+def _requeue_args(config_file: Path, root: Path, *extra: str) -> list[str]:
+    return [
+        "requeue",
+        "--config",
+        str(config_file),
+        "--output-root",
+        str(root),
+        "--now",
+        "2026-12-01T10:00:00",
+        *extra,
+    ]
+
+
+def test_requeue_prints_manifest_and_requeues_the_item(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    config_file, root = _requeue_setup(monkeypatch, tmp_path)
+    result = runner.invoke(app, _requeue_args(config_file, root, "stuck"))
+    assert result.exit_code == 0, (result.output, result.exception)
+    payload = json.loads(result.output)
+    assert payload["kind"] == "requeue"
+    assert payload["requeued_items"] == ["stuck"]
+    assert payload["exhausted_items"] == []
+    assert (root / "runs" / f"{payload['run_id']}.json").exists()
+
+
+def test_requeue_all_requeues_every_exhausted_item(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    config_file, root = _requeue_setup(monkeypatch, tmp_path)
+    result = runner.invoke(app, _requeue_args(config_file, root, "--all"))
+    assert result.exit_code == 0, (result.output, result.exception)
+    assert json.loads(result.output)["requeued_items"] == ["stuck"]
+
+
+def test_requeue_without_ids_or_all_exits_two(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    config_file, root = _requeue_setup(monkeypatch, tmp_path)
+    result = runner.invoke(app, _requeue_args(config_file, root))
+    assert result.exit_code == 2, result.output
+
+
+def test_requeue_unknown_id_exits_two(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    config_file, root = _requeue_setup(monkeypatch, tmp_path)
+    result = runner.invoke(app, _requeue_args(config_file, root, "nope"))
+    assert result.exit_code == 2, result.output
+
+
+def test_requeue_all_with_nothing_exhausted_exits_two(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    config_file, root = _requeue_setup(monkeypatch, tmp_path, exhausted=False)
+    result = runner.invoke(app, _requeue_args(config_file, root, "--all"))
+    assert result.exit_code == 2, result.output

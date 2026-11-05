@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import logging
-from collections.abc import Collection
+from collections.abc import Collection, Sequence
 from dataclasses import dataclass
 from datetime import UTC, date, datetime, timedelta
 from pathlib import Path
@@ -23,15 +23,18 @@ from wetland_change.ledger import (
     LedgerEntry,
     attempts_so_far,
     entry_for,
+    exhausted_ids,
     exhausted_keys,
     read_ledger,
     rejected_entry,
+    requeue_entries,
     retry_ids,
     seen_keys,
     watermark,
     write_ledger,
 )
 from wetland_change.manifest import (
+    KIND_REQUEUE,
     KIND_SCORE,
     RunManifest,
     config_sha256,
@@ -190,12 +193,36 @@ class ScoreResult:
     removed: list[str]
 
 
+def _with_later_dates(frame: pd.DataFrame, dates: Collection[date]) -> list[date]:
+    """`dates` plus every stored later date that shares a polygon and month.
+
+    Month comes from `frame["datetime"].dt.month`, the same expression the
+    history filter in `score_changes` uses, and matches across years.
+    """
+    month = frame["datetime"].dt.month
+    chosen = frame[frame["acq_date"].isin(set(dates))]
+    earliest = (
+        chosen.assign(month=month)
+        .groupby(["polygon_id", "month"])["acq_date"]
+        .min()
+        .to_dict()
+    )
+    keys = list(zip(frame["polygon_id"], month, strict=True))
+    later = {
+        acq_date
+        for key, acq_date in zip(keys, frame["acq_date"], strict=True)
+        if key in earliest and acq_date > earliest[key]
+    }
+    return sorted(set(chosen["acq_date"]) | later)
+
+
 def score_changes(
     store: OutputStore,
     *,
     min_valid_fraction: float,
     dates: Collection[date] | None = None,
     date_range: tuple[date, date] | None = None,
+    rescore_later: bool = False,
 ) -> ScoreResult:
     """Score stored observations by UTC acquisition date and write change files.
 
@@ -203,6 +230,10 @@ def score_changes(
     strictly earlier UTC dates only (ADR 0004), so a rerun over an unchanged
     store is byte-identical. A change file whose item is no longer flagged is
     deleted. `dates` and the inclusive `date_range` narrow the stored dates.
+    With `rescore_later`, `dates` also takes in every stored later date that has
+    a row for the same polygon and month as one of them (any year), because a
+    newly stored earlier observation changes those dates' baselines. The
+    `date_range` narrowing applies after that widening.
     """
     observations = read_observations(store)
     frame = pd.DataFrame(observations.drop(columns="geometry"))
@@ -212,6 +243,8 @@ def score_changes(
     frame["acq_date"] = frame["datetime"].dt.tz_convert(UTC).dt.date
     wanted = sorted(set(frame["acq_date"]))
     if dates is not None:
+        if rescore_later:
+            dates = _with_later_dates(frame, dates)
         wanted = [d for d in wanted if d in set(dates)]
     if date_range is not None:
         first, last = date_range
@@ -348,12 +381,16 @@ def run_once(
         if path is not None and entry.datetime is not None:
             written_dates.add(entry.datetime.astimezone(UTC).date())
         _tally(manifest, entry, path)
-    manifest.watermark_after = watermark(read_ledger(store))
+    final = read_ledger(store)
+    manifest.watermark_after = watermark(final)
+    manifest.exhausted_items = exhausted_ids(final)
+    manifest.exhausted = len(manifest.exhausted_items)
     if written_dates:
         scored = score_changes(
             store,
             min_valid_fraction=cfg.water.min_valid_fraction,
             dates=written_dates,
+            rescore_later=True,
         )
         manifest.change_rows = scored.rows
         manifest.change_files = scored.files
@@ -464,7 +501,10 @@ def backfill_once(
             [entry], store, run_id=run_id, part=next_part
         )
         next_part += 1
-    manifest.watermark_after = watermark(read_ledger(store))
+    final = read_ledger(store)
+    manifest.watermark_after = watermark(final)
+    manifest.exhausted_items = exhausted_ids(final)
+    manifest.exhausted = len(manifest.exhausted_items)
     manifest.finished_at = now
     write_manifest(manifest, store)
     return manifest
@@ -518,6 +558,53 @@ def score_once(
         change_rows=scored.rows,
         change_files=scored.files,
         change_files_removed=scored.removed,
+    )
+    write_manifest(manifest, store)
+    return manifest
+
+
+def requeue_once(
+    cfg: PipelineConfig,
+    *,
+    item_ids: Sequence[str],
+    all_exhausted: bool,
+    store: OutputStore,
+    now: datetime,
+    config_path: Path,
+    output_root_override: str | None = None,
+) -> RunManifest:
+    """Append fresh-attempt ledger rows for exhausted items and write a manifest.
+
+    The next daily run retries them with a full set of attempts. Existing
+    ledger files are not edited, and no catalogue is built.
+    """
+    if all_exhausted == bool(item_ids):
+        raise ValueError("give either item ids or --all, not both or neither")
+    run_id = new_run_id(now)
+    _refuse_reused_run_id(store, run_id)
+    ledger = read_ledger(store)
+    selected = exhausted_ids(ledger) if all_exhausted else sorted(set(item_ids))
+    if not selected:
+        raise ValueError("nothing to requeue: no item has exhausted its attempts")
+    entries = requeue_entries(ledger, selected, run_id=run_id, processed_at=now)
+    ledger_files = write_ledger(entries, store, run_id=run_id, part=0)
+    remaining = exhausted_ids(read_ledger(store))
+    manifest = RunManifest(
+        run_id=run_id,
+        started_at=now,
+        finished_at=now,
+        package_version=__version__,
+        config_sha256=config_sha256(config_path),
+        endpoint=cfg.stac.endpoint,
+        collection=cfg.stac.collection,
+        watermark_before=None,
+        watermark_after=None,
+        ledger_files=ledger_files,
+        kind=KIND_REQUEUE,
+        output_root_override=output_root_override,
+        exhausted=len(remaining),
+        exhausted_items=remaining,
+        requeued_items=[entry.item_id for entry in entries],
     )
     write_manifest(manifest, store)
     return manifest

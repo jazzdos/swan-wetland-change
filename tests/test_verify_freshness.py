@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import dataclasses
 from datetime import UTC, datetime, timedelta
 from typing import Any
 
@@ -17,17 +18,19 @@ from tests.test_verify_copernicus import (
     es_item,
     name,
 )
-from wetland_change.ledger import LedgerEntry, entries_to_table
+from wetland_change.ledger import MAX_ATTEMPTS, LedgerEntry, entries_to_table
 from wetland_change.verify.checks import Check
 from wetland_change.verify.copernicus import CDSE_COLLECTION, CDSE_STAC
 from wetland_change.verify.freshness import (
     CHECK_CDSE,
     CHECK_ES,
+    CHECK_EXHAUSTED,
     CHECK_NEWEST,
     MAX_AGE,
     SWAN_TILES,
     WINDOW,
     count_checks,
+    exhausted_items_check,
     freshness_checks,
     list_tile_counts,
     newest_item_check,
@@ -383,7 +386,7 @@ def test_search_kwargs() -> None:
     assert "query" not in cdse_kwargs
 
 
-def test_freshness_checks_concatenates_newest_then_es_then_cdse() -> None:
+def test_freshness_checks_concatenates_newest_exhausted_es_then_cdse() -> None:
     recent = (NOW - timedelta(days=1)).strftime("%Y-%m-%dT%H:%M:%S")
     checks = freshness_checks(
         table(row(recent)),
@@ -396,8 +399,59 @@ def test_freshness_checks_concatenates_newest_then_es_then_cdse() -> None:
     )
     names = [c.name for c in checks]
     n = len(SWAN_TILES)
-    assert names == [CHECK_NEWEST] + [CHECK_ES] * n + [CHECK_CDSE] * n
+    assert names == [CHECK_NEWEST, CHECK_EXHAUSTED] + [CHECK_ES] * n + [CHECK_CDSE] * n
     assert all(c.passed is True for c in checks)
+
+
+# exhausted_items_check
+
+
+def failed_row(sensed: str, attempts: int, **kwargs: Any) -> LedgerEntry:
+    return dataclasses.replace(
+        row(sensed, status="failed", **kwargs), attempts=attempts, error="boom"
+    )
+
+
+def test_exhausted_check_fails_with_the_item_ids() -> None:
+    ledger = table(
+        failed_row(RECENT, MAX_ATTEMPTS, item_id="b"),
+        failed_row(RECENT, MAX_ATTEMPTS, item_id="a"),
+        failed_row(RECENT, MAX_ATTEMPTS - 1, item_id="retrying"),
+        row(RECENT, item_id="ok"),
+    )
+    check = exhausted_items_check(ledger)
+    assert check.name == CHECK_EXHAUSTED
+    assert check.passed is False
+    assert check.measured == 2.0
+    assert check.threshold == 0.0
+    assert check.detail == {"item_ids": ["a", "b"], "max_attempts": MAX_ATTEMPTS}
+    assert "tile" not in check.detail
+
+
+def test_exhausted_check_passes_without_exhausted_items() -> None:
+    check = exhausted_items_check(
+        table(row(RECENT), failed_row(RECENT, 1, item_id="retrying"))
+    )
+    assert check.passed is True
+    assert check.measured == 0.0
+    assert check.detail["item_ids"] == []
+
+
+def test_exhausted_check_passes_on_empty_ledger() -> None:
+    assert exhausted_items_check(table()).passed is True
+
+
+def test_exhausted_check_ignores_items_superseded_by_success() -> None:
+    ledger = table(
+        failed_row(RECENT, MAX_ATTEMPTS, item_id="x", processed_at=NOW),
+        row(
+            RECENT,
+            item_id="x",
+            run_id="r2",
+            processed_at=NOW + timedelta(hours=1),
+        ),
+    )
+    assert exhausted_items_check(ledger).passed is True
 
 
 # list_tile_counts

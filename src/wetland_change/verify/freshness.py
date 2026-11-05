@@ -15,6 +15,11 @@ generation time. A scene listed on only one side is not a mismatch while it
 was sensed less than `LATENCY` (24 h) before the check time; it is reported
 as `pending_latency`.
 
+`freshness_exhausted_items` fails when any ledger item failed `MAX_ATTEMPTS`
+times and has no later succeeded row. Such an item is no longer retried or
+re-discovered, so nothing else reports it. It is not windowed: it fails until
+the item succeeds or is requeued.
+
 All `SWAN_TILES` are always checked, plus any other tile seen on either side.
 A catalogue search that raises gives skipped checks for that source only.
 """
@@ -30,7 +35,7 @@ from shapely.geometry.base import BaseGeometry
 
 from wetland_change.catalogue.search import StacClient
 from wetland_change.config import StacConfig
-from wetland_change.ledger import latest_entries
+from wetland_change.ledger import MAX_ATTEMPTS, exhausted_ids, latest_entries
 from wetland_change.verify.checks import Check
 from wetland_change.verify.copernicus import (
     CDSE_COLLECTION,
@@ -43,6 +48,7 @@ from wetland_change.verify.copernicus import (
 )
 
 CHECK_NEWEST = "freshness_newest_item"
+CHECK_EXHAUSTED = "freshness_exhausted_items"
 CHECK_ES = "freshness_count_vs_earth_search"
 CHECK_CDSE = "freshness_count_vs_copernicus"
 WINDOW = timedelta(days=30)
@@ -83,6 +89,20 @@ def newest_item_check(ledger: pa.Table, now: datetime) -> Check:
         threshold=MAX_AGE.total_seconds() / 86400,
         reference=reference,
         detail={"newest_item_datetime": newest.isoformat(), "now": now.isoformat()},
+    )
+
+
+def exhausted_items_check(ledger: pa.Table) -> Check:
+    """Fail when any item failed `MAX_ATTEMPTS` times and has not succeeded since."""
+    item_ids = exhausted_ids(ledger)
+    return Check(
+        name=CHECK_EXHAUSTED,
+        passed=not item_ids,
+        measured=float(len(item_ids)),
+        threshold=0.0,
+        reference="ledger items failed MAX_ATTEMPTS times and not yet succeeded "
+        "or requeued",
+        detail={"item_ids": item_ids, "max_attempts": MAX_ATTEMPTS},
     )
 
 
@@ -299,9 +319,10 @@ def freshness_checks(
     polygons_4326: list[BaseGeometry],
     now: datetime,
 ) -> list[Check]:
-    """The newest-item check followed by the Earth Search and CDSE count checks."""
+    """Newest-item, exhausted-items, then Earth Search and CDSE count checks."""
     return [
         newest_item_check(ledger, now),
+        exhausted_items_check(ledger),
         *count_checks(
             ledger,
             es_client,

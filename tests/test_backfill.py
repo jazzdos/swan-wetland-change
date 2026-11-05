@@ -15,7 +15,13 @@ from wetland_change.aoi import AoiPolygon
 from wetland_change.catalogue.item import parse_timestamp
 from wetland_change.cli import app
 from wetland_change.config import load_config
-from wetland_change.ledger import attempts_so_far, read_ledger, watermark
+from wetland_change.ledger import (
+    attempts_so_far,
+    exhausted_ids,
+    read_ledger,
+    retry_ids,
+    watermark,
+)
 from wetland_change.manifest import RunManifest
 from wetland_change.pipeline import backfill_once
 from wetland_change.raster.read import RasterioReader, RasterReader
@@ -328,6 +334,31 @@ def test_backfill_retries_failed_scene_on_rerun(
     assert (second.discovered, second.failed) == (1, 1)
     store = OutputStore(str(tmp_path / "out"))
     assert attempts_so_far(read_ledger(store), "broken") == 2
+
+
+def test_backfill_reports_scene_exhausted_on_third_attempt(
+    fixture_item: dict[str, Any], fixture_polygon: BaseGeometry, tmp_path: Path
+) -> None:
+    broken = _item(
+        fixture_item,
+        "broken",
+        acquired=datetime(2026, 10, 27, 2, 0, tzinfo=UTC),
+        created=datetime(2026, 10, 29, 8, 0, tzinfo=UTC),
+    )
+    broken["assets"]["green"]["href"] = str(tmp_path / "missing.tif")
+    client = ServiceClient([broken])
+    polygons = _polygons(fixture_polygon)
+    store = OutputStore(str(tmp_path / "out"))
+    for attempt in range(1, 4):
+        manifest = _backfill(tmp_path, client, polygons, NOW + timedelta(hours=attempt))
+        assert manifest.failed == 1
+        exhausted = ["broken"] if attempt == 3 else []
+        assert manifest.exhausted_items == exhausted
+        assert manifest.exhausted == len(exhausted)
+        written = json.loads(store.read_bytes(f"runs/{manifest.run_id}.json"))
+        assert written["exhausted_items"] == exhausted
+    assert exhausted_ids(read_ledger(store)) == ["broken"]
+    assert retry_ids(read_ledger(store)) == []
 
 
 def test_backfill_rejects_naive_or_reversed_range(

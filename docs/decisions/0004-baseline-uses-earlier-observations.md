@@ -38,3 +38,10 @@ The earliest dates have fewer than the minimum samples
 
 All observation files are listed and read on each scoring call, which is
 acceptable at current store size.
+
+## Addendum 2026-11-05
+
+`run_once` also rescores the later stored dates of the same polygon and month
+whenever it stores an earlier-dated observation
+(`score_changes(..., rescore_later=True)`). Their baselines gain the new
+observation, so the incremental change files equal a full rescore.

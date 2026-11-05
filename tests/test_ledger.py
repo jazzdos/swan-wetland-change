@@ -6,19 +6,24 @@ from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
 import pyarrow.parquet as pq
+import pytest
 
 from wetland_change.catalogue.item import SceneItem
 from wetland_change.ledger import (
     LEDGER_SCHEMA,
     MAX_ATTEMPTS,
     RUN_KIND_BACKFILL,
+    RUN_KIND_RUN,
+    LedgerEntry,
     attempts_so_far,
     entries_to_table,
     entry_for,
+    exhausted_ids,
     exhausted_keys,
     ledger_path,
     read_ledger,
     rejected_entry,
+    requeue_entries,
     retry_ids,
     seen_keys,
     watermark,
@@ -242,3 +247,184 @@ def test_reads_ledger_files_written_before_run_kind(
     kinds = ledger.column("run_kind").to_pylist()
     assert sorted(v or "" for v in kinds) == ["", "backfill"]
     assert watermark(ledger) == fixture_scene.created
+
+
+def _failed(scene: SceneItem, attempts: int, run_id: str, hours: int) -> LedgerEntry:
+    return entry_for(
+        scene,
+        status="failed",
+        attempts=attempts,
+        run_id=run_id,
+        processed_at=T0 + timedelta(hours=hours),
+        error="boom",
+    )
+
+
+def test_exhausted_ids_empty_ledger() -> None:
+    assert exhausted_ids(LEDGER_SCHEMA.empty_table()) == []
+
+
+def test_exhausted_ids_only_after_max_attempts(
+    fixture_scene: SceneItem, tmp_path: Path
+) -> None:
+    store = OutputStore(str(tmp_path))
+    for attempt in range(1, MAX_ATTEMPTS + 1):
+        write_ledger(
+            [_failed(fixture_scene, attempt, f"r{attempt}", attempt)],
+            store,
+            run_id=f"r{attempt}",
+        )
+        expected = [fixture_scene.item_id] if attempt == MAX_ATTEMPTS else []
+        assert exhausted_ids(read_ledger(store)) == expected
+    assert exhausted_ids(read_ledger(store), max_attempts=MAX_ATTEMPTS + 1) == []
+
+
+def test_exhausted_ids_drops_item_with_later_success(
+    fixture_scene: SceneItem, tmp_path: Path
+) -> None:
+    store = OutputStore(str(tmp_path))
+    write_ledger([_failed(fixture_scene, MAX_ATTEMPTS, "r1", 0)], store, run_id="r1")
+    assert exhausted_ids(read_ledger(store)) == [fixture_scene.item_id]
+    ok = entry_for(
+        fixture_scene,
+        status="succeeded",
+        attempts=MAX_ATTEMPTS + 1,
+        run_id="r2",
+        processed_at=T0 + timedelta(hours=1),
+        n_rows=1,
+    )
+    write_ledger([ok], store, run_id="r2")
+    assert exhausted_ids(read_ledger(store)) == []
+
+
+def test_exhausted_ids_are_sorted(fixture_scene: SceneItem, tmp_path: Path) -> None:
+    store = OutputStore(str(tmp_path))
+    entries = [
+        dataclasses.replace(
+            _failed(fixture_scene, MAX_ATTEMPTS, "r1", 0), item_id=item_id
+        )
+        for item_id in ("b", "a", "c")
+    ]
+    write_ledger(entries, store, run_id="r1")
+    assert exhausted_ids(read_ledger(store)) == ["a", "b", "c"]
+
+
+def _exhausted_store(scene: SceneItem, tmp_path: Path) -> OutputStore:
+    store = OutputStore(str(tmp_path))
+    for attempt in range(1, MAX_ATTEMPTS + 1):
+        write_ledger(
+            [_failed(scene, attempt, f"r{attempt}", attempt)],
+            store,
+            run_id=f"r{attempt}",
+        )
+    return store
+
+
+def test_requeue_entries_make_an_exhausted_item_retryable(
+    fixture_scene: SceneItem, tmp_path: Path
+) -> None:
+    store = _exhausted_store(fixture_scene, tmp_path)
+    ledger = read_ledger(store)
+    assert exhausted_ids(ledger) == [fixture_scene.item_id]
+    when = T0 + timedelta(days=1)
+    entries = requeue_entries(
+        ledger, [fixture_scene.item_id], run_id="rq", processed_at=when
+    )
+    assert len(entries) == 1
+    write_ledger(entries, store, run_id="rq", part=0)
+    after = read_ledger(store)
+    assert retry_ids(after) == [fixture_scene.item_id]
+    assert exhausted_keys(after) == set()
+    assert exhausted_ids(after) == []
+    assert attempts_so_far(after, fixture_scene.item_id) == 0
+    row = entries[0]
+    assert row.status == "failed"
+    assert row.run_id == "rq"
+    assert row.processed_at == when
+    assert row.error == "requeued; previous error: boom"
+    assert row.run_kind == RUN_KIND_RUN
+    assert row.updated == fixture_scene.updated
+    assert row.cloud_cover == fixture_scene.cloud_cover
+
+
+def test_requeue_entries_preserve_run_kind_and_nulls(
+    fixture_scene: SceneItem, tmp_path: Path
+) -> None:
+    store = OutputStore(str(tmp_path))
+    bare = dataclasses.replace(
+        _failed(fixture_scene, MAX_ATTEMPTS, "r1", 0),
+        run_kind=RUN_KIND_BACKFILL,
+        cloud_cover=None,
+        error=None,
+        product_uri=None,
+    )
+    write_ledger([bare], store, run_id="r1")
+    (entry,) = requeue_entries(
+        read_ledger(store),
+        [fixture_scene.item_id],
+        run_id="rq",
+        processed_at=T0 + timedelta(days=1),
+    )
+    assert entry.run_kind == RUN_KIND_BACKFILL
+    assert entry.cloud_cover is None
+    assert entry.product_uri is None
+    assert entry.error == "requeued; previous error: None"
+    assert isinstance(entry.attempts, int)
+    assert isinstance(entry.n_rows, int)
+    assert entry.created is not None and entry.created.tzinfo is not None
+
+
+def test_requeue_entries_reject_ids_that_are_not_exhausted(
+    fixture_scene: SceneItem, tmp_path: Path
+) -> None:
+    store = OutputStore(str(tmp_path))
+    write_ledger(
+        [_failed(fixture_scene, MAX_ATTEMPTS - 1, "r1", 0)], store, run_id="r1"
+    )
+    ledger = read_ledger(store)
+    with pytest.raises(ValueError, match="not exhausted") as excinfo:
+        requeue_entries(
+            ledger,
+            [fixture_scene.item_id, "unknown"],
+            run_id="rq",
+            processed_at=T0 + timedelta(days=1),
+        )
+    assert fixture_scene.item_id in str(excinfo.value)
+    assert "unknown" in str(excinfo.value)
+
+
+def test_requeue_entries_reject_a_succeeded_item(
+    fixture_scene: SceneItem, tmp_path: Path
+) -> None:
+    store = OutputStore(str(tmp_path))
+    ok = entry_for(
+        fixture_scene,
+        status="succeeded",
+        attempts=1,
+        run_id="r1",
+        processed_at=T0,
+        n_rows=1,
+    )
+    write_ledger([ok], store, run_id="r1")
+    with pytest.raises(ValueError, match=fixture_scene.item_id):
+        requeue_entries(
+            read_ledger(store),
+            [fixture_scene.item_id],
+            run_id="rq",
+            processed_at=T0 + timedelta(days=1),
+        )
+
+
+@pytest.mark.parametrize("offset", [timedelta(0), timedelta(hours=-1)])
+def test_requeue_entries_need_a_strictly_later_processed_at(
+    fixture_scene: SceneItem, tmp_path: Path, offset: timedelta
+) -> None:
+    store = _exhausted_store(fixture_scene, tmp_path)
+    latest = T0 + timedelta(hours=MAX_ATTEMPTS)
+    with pytest.raises(ValueError, match="processed_at"):
+        requeue_entries(
+            read_ledger(store),
+            [fixture_scene.item_id],
+            run_id="rq",
+            processed_at=latest + offset,
+        )
