@@ -25,7 +25,12 @@ from wetland_change.ledger import (
     seen_keys,
     watermark,
 )
-from wetland_change.pipeline import backfill_once, run_once, score_once
+from wetland_change.pipeline import (
+    backfill_once,
+    discovery_created_from,
+    run_once,
+    score_once,
+)
 from wetland_change.raster.read import RasterioReader
 from wetland_change.stac import build_and_write
 from wetland_change.store import OutputStore
@@ -94,8 +99,8 @@ def discover(
         cfg.stac,
         bbox=union_bbox_4326(polygons),
         polygons_4326=[p.geometry_4326 for p in polygons],
-        created_from=(
-            before - timedelta(days=cfg.stac.watermark_overlap_days) if before else None
+        created_from=discovery_created_from(
+            cfg.stac, before=before, now=datetime.now(UTC)
         ),
         seen=seen_keys(ledger) | exhausted_keys(ledger),
         retry_ids=retry_ids(ledger),

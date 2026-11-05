@@ -3,6 +3,7 @@ endpoint = "https://earth-search.aws.element84.com/v1"
 collection = "sentinel-2-c1-l2a"
 cloud_cover_max = 20.0
 watermark_overlap_days = 1
+initial_lookback_days = 30
 required_assets = ["green", "red", "nir", "swir16", "scl", "product_metadata"]
 
 [aoi]

@@ -202,3 +202,10 @@ def test_gitignore_covers_terraform_state() -> None:
     assert "infra/.terraform/" in lines
     assert "*.tfstate" in lines
     assert ".terraform.lock.hcl" not in "".join(lines)
+
+
+def test_readme_documents_seeding_from_backfill() -> None:
+    readme = _read("README.md")
+    assert "backfill" in readme
+    assert "initial_lookback_days" in readme
+    assert "--output-root s3://" in readme

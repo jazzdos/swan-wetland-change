@@ -16,7 +16,7 @@ from wetland_change.aoi import AoiPolygon, union_bbox_4326
 from wetland_change.catalogue.item import SceneItem
 from wetland_change.catalogue.search import Discovery, StacClient, discover
 from wetland_change.change import build_baseline, score_observations
-from wetland_change.config import PipelineConfig, WaterConfig
+from wetland_change.config import PipelineConfig, StacConfig, WaterConfig
 from wetland_change.ledger import (
     RUN_KIND_BACKFILL,
     RUN_KIND_RUN,
@@ -250,6 +250,16 @@ def score_changes(
     return ScoreResult(files=sorted(files), rows=rows, removed=sorted(removed))
 
 
+def discovery_created_from(
+    stac: StacConfig, *, before: datetime | None, now: datetime
+) -> datetime:
+    """Lower `created` bound for a daily run: the watermark less the overlap, or
+    the initial lookback before `now` when there is no daily watermark."""
+    if before is not None:
+        return before - timedelta(days=stac.watermark_overlap_days)
+    return now - timedelta(days=stac.initial_lookback_days)
+
+
 def run_once(
     cfg: PipelineConfig,
     *,
@@ -261,14 +271,27 @@ def run_once(
     config_path: Path,
     output_root_override: str | None = None,
 ) -> RunManifest:
-    """Process everything new since the ledger watermark. Never aborts on a
-    single scene; failures go to the ledger and are retried next run."""
+    """Process everything new since the ledger watermark, or since the initial
+    lookback when the ledger has no daily rows. Never aborts on a single scene;
+    failures go to the ledger and are retried next run. The ledger is
+    checkpointed after every scene, so an interrupted run resumes after its
+    last finished scene.
+    """
     run_id = new_run_id(now)
+    _refuse_reused_run_id(store, run_id)
     ledger = read_ledger(store)
     before = watermark(ledger)
-    created_from = (
-        before - timedelta(days=cfg.stac.watermark_overlap_days) if before else None
-    )
+    created_from = discovery_created_from(cfg.stac, before=before, now=now)
+    if before is not None:
+        logger.info(
+            "discovery bound: watermark less overlap, created >= %s", created_from
+        )
+    else:
+        logger.info(
+            "discovery bound: no daily watermark, %d day lookback, created >= %s",
+            cfg.stac.initial_lookback_days,
+            created_from,
+        )
     discovery = discover(
         client,
         cfg.stac,
@@ -288,7 +311,22 @@ def run_once(
         kind=RUN_KIND_RUN,
         output_root_override=output_root_override,
     )
-    entries: list[LedgerEntry] = []
+    next_part = 0
+    if discovery.rejected:
+        rejected = [
+            rejected_entry(
+                item_id,
+                reason,
+                run_id=run_id,
+                processed_at=now,
+                run_kind=RUN_KIND_RUN,
+            )
+            for item_id, reason in discovery.rejected
+        ]
+        manifest.ledger_files += write_ledger(
+            rejected, store, run_id=run_id, part=next_part
+        )
+        next_part += 1
     written_dates: set[date] = set()
     for scene in discovery.scenes:
         entry, path = _process_one(
@@ -302,21 +340,13 @@ def run_once(
             now=now,
             run_kind=RUN_KIND_RUN,
         )
-        entries.append(entry)
+        manifest.ledger_files += write_ledger(
+            [entry], store, run_id=run_id, part=next_part
+        )
+        next_part += 1
         if path is not None and entry.datetime is not None:
             written_dates.add(entry.datetime.astimezone(UTC).date())
         _tally(manifest, entry, path)
-    for item_id, reason in discovery.rejected:
-        entries.append(
-            rejected_entry(
-                item_id,
-                reason,
-                run_id=run_id,
-                processed_at=now,
-                run_kind=RUN_KIND_RUN,
-            )
-        )
-    manifest.ledger_files = write_ledger(entries, store, run_id=run_id)
     manifest.watermark_after = watermark(read_ledger(store))
     if written_dates:
         scored = score_changes(

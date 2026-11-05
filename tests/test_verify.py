@@ -701,7 +701,9 @@ def test_verify_run_scores_ndvi_against_injected_nbart_item(
 def test_verify_run_correlation_is_skipped_not_errored_on_a_mismatched_grid(
     fixture_item: dict[str, Any], fixture_polygon: BaseGeometry, tmp_path: Path
 ) -> None:
-    cfg, store, run_id, _ = _built_run(fixture_item, fixture_polygon, tmp_path)
+    probe = tmp_path / "probe"
+    probe.mkdir()
+    cfg, store, run_id, _ = _built_run(fixture_item, fixture_polygon, probe)
     scene = scenes_for_run(cfg, store, run_id)[0]
     _, _, _, grid = _stack_and_window(scene, fixture_polygon)
     wrong = dataclasses.replace(grid, epsg=grid.epsg + 1)
