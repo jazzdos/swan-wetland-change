@@ -78,6 +78,23 @@ resource "aws_s3_bucket_cors_configuration" "outputs" {
   }
 }
 
+# A killed or failed write leaves multipart parts that S3 keeps and bills
+# until they are aborted. The empty filter applies the rule to the whole bucket.
+resource "aws_s3_bucket_lifecycle_configuration" "outputs" {
+  bucket = aws_s3_bucket.outputs.id
+
+  rule {
+    id     = "abort-incomplete-multipart-uploads"
+    status = "Enabled"
+
+    filter {}
+
+    abort_incomplete_multipart_upload {
+      days_after_initiation = 1
+    }
+  }
+}
+
 # An AWS account holds one GitHub OIDC provider and other repositories usually
 # share it. Set create_oidc_provider = false to look up the existing provider
 # instead of managing it, so destroying this module never deletes it.

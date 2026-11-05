@@ -1141,9 +1141,9 @@ class LedgerCountingStore(OutputStore):
             self.ledger_reads.append(relpath)
         return super().read_bytes(relpath)
 
-    def write_bytes(self, relpath: str, data: bytes) -> str:
+    def write_bytes(self, relpath: str, data: bytes, **kwargs: Any) -> str:
         self.writes.append(relpath)
-        return super().write_bytes(relpath, data)
+        return super().write_bytes(relpath, data, **kwargs)
 
     def reset(self) -> None:
         self.ledger_listings = 0

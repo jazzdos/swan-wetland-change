@@ -251,3 +251,24 @@ def test_readme_documents_catalogue_base_url_step() -> None:
     assert "catalogue.base_url" in readme
     assert "bucket_url" in readme
     assert "config/pipeline.toml" in readme
+
+
+def test_lifecycle_aborts_incomplete_multipart_uploads_after_one_day() -> None:
+    block = _block(
+        _read("main.tf"),
+        'resource "aws_s3_bucket_lifecycle_configuration" "outputs"',
+    )
+    assert re.search(r"bucket\s*=\s*aws_s3_bucket\.outputs\.id", block)
+    rules = _blocks(block, r"^\s*rule\s*\{")
+    assert len(rules) == 1
+    rule = rules[0]
+    assert re.search(r'status\s*=\s*"Enabled"', rule)
+    abort = _blocks(rule, r"^\s*abort_incomplete_multipart_upload\s*\{")
+    assert len(abort) == 1
+    assert re.search(r"days_after_initiation\s*=\s*1\b", abort[0])
+    assert "expiration" not in block
+    assert "transition" not in block
+
+
+def test_readme_documents_multipart_lifecycle() -> None:
+    assert "multipart" in _read("README.md")
