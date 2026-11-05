@@ -188,7 +188,9 @@ uv run wetland-change freshness
 - `score` scores stored observations in a date range and writes change files.
   Run it after a backfill.
 - `verify` scores the verification matrix for the latest run, or the run
-  given with `--run-id`, and writes the JSON and Markdown reports.
+  given with `--run-id`, and writes the JSON and Markdown reports. It exits 5
+  and names the manifest path when a run manifest cannot be read, rather than
+  checking an older run.
 - `build-catalogue` rebuilds the STAC catalogue from the ledger. Run it after
   `verify` so the catalogue links the verification report.
 - `freshness` checks that the newest processed item is under 7 days old and

@@ -242,6 +242,84 @@ def test_verify_reads_the_override_root(
     assert seen == [(OutputStore(str(override)).uri, "20261029T100000Z")]
 
 
+def test_verify_exits_nonzero_when_a_manifest_cannot_be_read(
+    monkeypatch: pytest.MonkeyPatch,
+    fixture_item: dict[str, Any],
+    fixture_polygon: BaseGeometry,
+    tmp_path: Path,
+) -> None:
+    cfgfile = _patch_cli(
+        monkeypatch, tmp_path, FakeClient([fixture_item]), _polygons(fixture_polygon)
+    )
+    override = tmp_path / "override"
+    (override / "runs").mkdir(parents=True)
+    (override / "runs" / "20261029T100000Z.json").write_text('{"processed": 1}')
+    (override / "runs" / "20261030T100000Z.json").write_text('{"processed": 1}')
+    original = OutputStore.read_bytes
+
+    def flaky(self: OutputStore, relpath: str) -> bytes:
+        if relpath == "runs/20261030T100000Z.json":
+            raise PermissionError("denied")
+        return original(self, relpath)
+
+    def must_not_run(*args: Any, **kwargs: Any) -> list[Any]:
+        raise AssertionError("verify_run must not run when a manifest is unreadable")
+
+    monkeypatch.setattr(OutputStore, "read_bytes", flaky)
+    monkeypatch.setattr("wetland_change.verify.run.verify_run", must_not_run)
+    result = runner.invoke(
+        app, ["verify", "--config", str(cfgfile), "--output-root", str(override)]
+    )
+    assert result.exit_code == 5, (result.output, result.exception)
+    assert "runs/20261030T100000Z.json" in result.output, (
+        result.output,
+        result.exception,
+    )
+
+
+def test_verify_run_id_exits_nonzero_when_its_manifest_cannot_be_read(
+    monkeypatch: pytest.MonkeyPatch,
+    fixture_item: dict[str, Any],
+    fixture_polygon: BaseGeometry,
+    tmp_path: Path,
+) -> None:
+    cfgfile = _patch_cli(
+        monkeypatch, tmp_path, FakeClient([fixture_item]), _polygons(fixture_polygon)
+    )
+    override = tmp_path / "override"
+    (override / "runs").mkdir(parents=True)
+    (override / "runs" / "20261030T100000Z.json").write_text('{"processed": 1}')
+    original = OutputStore.read_bytes
+
+    def flaky(self: OutputStore, relpath: str) -> bytes:
+        if relpath == "runs/20261030T100000Z.json":
+            raise PermissionError("denied")
+        return original(self, relpath)
+
+    def must_not_run(*args: Any, **kwargs: Any) -> list[Any]:
+        raise AssertionError("verify_run must not run when a manifest is unreadable")
+
+    monkeypatch.setattr(OutputStore, "read_bytes", flaky)
+    monkeypatch.setattr("wetland_change.verify.run.verify_run", must_not_run)
+    result = runner.invoke(
+        app,
+        [
+            "verify",
+            "--config",
+            str(cfgfile),
+            "--output-root",
+            str(override),
+            "--run-id",
+            "20261030T100000Z",
+        ],
+    )
+    assert result.exit_code == 5, (result.output, result.exception)
+    assert "runs/20261030T100000Z.json" in result.output, (
+        result.output,
+        result.exception,
+    )
+
+
 def test_build_catalogue_rebuilds_stac_in_output_root(
     monkeypatch: pytest.MonkeyPatch,
     fixture_item: dict[str, Any],

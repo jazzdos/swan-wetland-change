@@ -158,6 +158,7 @@ from wetland_change.raster.read import RasterioReader, read_stack  # noqa: E402
 from wetland_change.stats import rasterise  # noqa: E402
 from wetland_change.verify.ndvi import NbartItem  # noqa: E402
 from wetland_change.verify.run import (  # noqa: E402
+    ManifestReadError,
     latest_run_id,
     scenes_for_run,
     stored_ndvi,
@@ -511,6 +512,32 @@ def test_scenes_for_run_and_latest_run_id(
     store.write_bytes("runs/99991231T000000Z.json", b'{"processed": 0}')
     assert latest_run_id(store) == run_id
     assert latest_run_id(OutputStore(str(tmp_path / "empty"))) is None
+
+
+def test_latest_run_id_raises_on_manifest_oserror(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    store = OutputStore(str(tmp_path / "store"))
+    store.write_bytes("runs/20261029T100000Z.json", b'{"processed": 1}')
+    store.write_bytes("runs/20261030T100000Z.json", b'{"processed": 1}')
+    original = OutputStore.read_bytes
+
+    def flaky(self: OutputStore, relpath: str) -> bytes:
+        if relpath == "runs/20261030T100000Z.json":
+            raise PermissionError("denied")
+        return original(self, relpath)
+
+    monkeypatch.setattr(OutputStore, "read_bytes", flaky)
+    with pytest.raises(ManifestReadError) as excinfo:
+        latest_run_id(store)
+    assert "runs/20261030T100000Z.json" in str(excinfo.value)
+
+
+def test_latest_run_id_skips_a_malformed_manifest(tmp_path: Path) -> None:
+    store = OutputStore(str(tmp_path / "store"))
+    store.write_bytes("runs/20261029T100000Z.json", b'{"processed": 1}')
+    store.write_bytes("runs/20261030T100000Z.json", b"not json")
+    assert latest_run_id(store) == "20261029T100000Z"
 
 
 def test_verify_run_with_injected_dependencies(

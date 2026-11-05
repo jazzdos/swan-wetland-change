@@ -244,15 +244,31 @@ def verify(
     ] = None,
 ) -> None:
     """Score the known-good checks for one run and write the report."""
-    from wetland_change.verify.run import latest_run_id, run_exists, verify_run
+    from wetland_change.manifest import manifest_path
+    from wetland_change.verify.run import (
+        ManifestReadError,
+        latest_run_id,
+        read_manifest_bytes,
+        run_exists,
+        verify_run,
+    )
 
     cfg, polygons = _load(config)
     store = _store(cfg, output_root)
-    target = run_id or latest_run_id(store)
+    try:
+        target = run_id or latest_run_id(store)
+    except ManifestReadError as exc:
+        typer.echo(str(exc), err=True)
+        raise typer.Exit(code=5) from exc
     if target is None:
         raise typer.BadParameter("no run with processed scenes in the output root")
     if not run_exists(store, target):
         raise typer.BadParameter(f"no run {target!r} in the output root")
+    try:
+        read_manifest_bytes(store, manifest_path(target))
+    except ManifestReadError as exc:
+        typer.echo(str(exc), err=True)
+        raise typer.Exit(code=5) from exc
     checks = verify_run(cfg, store, target, polygons=polygons)
     for check in checks:
         status = (
