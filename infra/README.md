@@ -72,7 +72,21 @@ gh variable set OUTPUT_BUCKET --body "<bucket>"
 gh variable set AWS_REGION --body "<region>"
 ```
 
+## Set the catalogue base URL
+
+`catalogue.base_url` in `config/pipeline.toml` ships as a placeholder on the `.invalid` host. Every link and asset href in the published catalogue starts with it, so it must be the real bucket URL before anything is published.
+
+After `apply`, read the value:
+
+```sh
+terraform -chdir=infra output -raw bucket_url
+```
+
+Set `base_url` under `[catalogue]` in `config/pipeline.toml` to exactly that value, with no trailing slash, and commit it to `main` before the first scheduled run or any seeding command. `wetland-change run`, `backfill`, `score` and `build-catalogue` refuse an `s3://` output root while the placeholder `.invalid` host remains.
+
 ## Seeding the output root before the first scheduled run
+
+Do the base URL step above first: seeding commands refuse an `s3://` output root until `catalogue.base_url` is set.
 
 With an empty output root the daily run has no watermark, so its search is bounded only by `stac.initial_lookback_days` in `config/pipeline.toml` (default 30 days of `created`). The scheduled job is cancelled at 120 minutes. Seed the root from the backfill so the first scheduled run does not start from nothing.
 

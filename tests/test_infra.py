@@ -209,3 +209,10 @@ def test_readme_documents_seeding_from_backfill() -> None:
     assert "backfill" in readme
     assert "initial_lookback_days" in readme
     assert "--output-root s3://" in readme
+
+
+def test_readme_documents_catalogue_base_url_step() -> None:
+    readme = _read("README.md")
+    assert "catalogue.base_url" in readme
+    assert "bucket_url" in readme
+    assert "config/pipeline.toml" in readme

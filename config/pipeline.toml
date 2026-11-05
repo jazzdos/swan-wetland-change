@@ -44,6 +44,9 @@ agreement_min = 0.95
 root = "outputs"
 
 [catalogue]
+# Replace with the `bucket_url` output of infra at deploy time (no trailing
+# slash). `run` and `build-catalogue` refuse an s3:// output root while this is
+# a `.invalid` host.
 base_url = "https://example.invalid/swan-wetland-change"
 
 # Water extent, history: LEARNINGS.md "S9 historical tolerance" chose 10 pp.
