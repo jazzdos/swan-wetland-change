@@ -295,6 +295,29 @@ Report: [docs/research/2026-11-03-backfill-hypotheses.md](docs/research/2026-11-
 - H3: not supported. ramsar-56 median delta -14.38 ha over 1 scored date (0.0 share at or above baseline) with a low flag on 2025-08-23 (z -3.39); ramsar-52 has 0 of 5 dates scored.
 - H4: not supported. Spearman rho and n pairs: Forrestdale 0.870 (93), Thomsons 0.897 (99), Lake Clifton 0.858 (98), Lake Preston 0.861 (98); all below 0.9.
 
+### Wet area clause (2026-11-05)
+
+Rows: [docs/research/2026-11-05-wet-area-gap.csv](docs/research/2026-11-05-wet-area-gap.csv), written by [docs/research/2026-11-05-wet-area-measure.py](docs/research/2026-11-05-wet-area-measure.py), summarised in [docs/research/2026-11-05-wet-area-summary.txt](docs/research/2026-11-05-wet-area-summary.txt). 253 rows with at least 100 mutually clear pixels, over 35 scenes and the 27 polygons `load_ramsar` keeps for the configured `site_prefixes`: every polygon on the 6 newest dates (2026-09-12 to 2026-10-29), and ramsar-28 on all 12. 2 rows fall under 100 pixels and are left out, ramsar-14 with 0 and ramsar-22 with 22, both on `S2B_T50HLJ_20260912T022111_L2A`. DEA held WO for every scene. `agreement` was checked against `wo_check`'s `measured` on every row, and the two never differed.
+
+- H1: held. 251 rows pass agreement and 242 of them are within 5 pp, rate 0.9641.
+- H2: held. 22 ramsar-28 rows pass agreement and 21 of them are within 5 pp, rate 0.9545.
+- Per scene: 2 of 35 (0.0571) have at least one polygon failing agreement. 10 of 35 (0.2857) have at least one failing agreement or the clause.
+- Decision rule: both hold, so the clause goes into `Check.passed`.
+
+| group | rows | pass agreement | within 5 pp | rate | median abs gap (pp) | p95 abs gap (pp) |
+|---|---|---|---|---|---|---|
+| ramsar-15 | 6 | 5 | 5 | 1.0000 | 0.445 | 4.533 |
+| ramsar-28 | 22 | 22 | 21 | 0.9545 | 2.326 | 4.967 |
+| ramsar-56 | 10 | 10 | 10 | 1.0000 | 0.717 | 1.709 |
+| other 24 polygons | 215 | 214 | 206 | 0.9626 | 0.000 | 4.839 |
+
+Not pre-registered, found after the rule was applied:
+
+- H1 and H2 count rows, and verify's exit code depends on the whole run. A date has 29 to 45 rows, and `verify` exits 3 if any check fails. On the 6 dates with every polygon measured, 2 have a row failing agreement (ramsar-15 on 2026-09-17, ramsar-16 on 2026-09-12). All 6 have a row failing agreement or the clause. A daily run holding all of one of these dates' scenes would exit 3 on 2 of 6 dates today and on 6 of 6 with the clause, and the pipeline job then ends red. This sample is 6 dates from one season.
+- ramsar-12 is 5 of the 9 rows that fail only the clause. The pipeline is wetter than WO on both tiles on all 6 dates, by 3.12 to 4.83 pp through 2026-10-02, 4.86 and 5.38 pp on 2026-10-12, and 5.90 to 6.82 pp on 2026-10-27 and 2026-10-29. The cause was not investigated.
+- 124 of the 253 rows are dry in both sources and pass the clause trivially. Of the 104 rows that pass agreement with at least 1 percent wet in either source, 95 are within 5 pp, rate 0.9135.
+- The clause can bind on 30 of the 251 rows that pass agreement, those with 1 minus agreement above 5 pp. 9 of the 30 fail it.
+
 ## Live run findings
 
 ### SCL overview resampling (2026-10-29)
