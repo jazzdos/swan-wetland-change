@@ -1,6 +1,10 @@
 # Daily pipeline: fetch the AOI, run the incremental change-detection run
-# against the S3 output store, rebuild the catalogue, verify the run against
-# the independent references, and commit the verification report.
+# against the S3 output store, verify the run against the independent
+# references, rebuild the catalogue, and commit the verification report.
+# `run` builds the catalogue too, but verify writes the report afterwards, so
+# the catalogue is rebuilt after verify to link this run's report; the step
+# does not depend on verify's outcome, so a red verify still gets a
+# catalogue.
 #
 # Runs at 10:00 UTC every day and on manual dispatch.
 #
@@ -95,19 +99,23 @@ jobs:
           fi
           echo "processed=${processed}" >> "$GITHUB_OUTPUT"
 
-      # Catalogue, verify and commit all hang on the same condition: the run
+      # Verify, catalogue and commit all hang on the same condition: the run
       # processed scenes, even if some other scenes failed. Otherwise verify
       # would re-check an old run (or fail when no processed run exists yet).
-      - name: Build the catalogue
-        if: ${{ !cancelled() && steps.manifest.outputs.processed > 0 }}
-        run: >-
-          uv run --no-sync wetland-change build-catalogue
-          --output-root s3://${{ vars.OUTPUT_BUCKET }}/
-
       - name: Verify the run
         if: ${{ !cancelled() && steps.manifest.outputs.processed > 0 }}
         run: >-
           uv run --no-sync wetland-change verify
+          --output-root s3://${{ vars.OUTPUT_BUCKET }}/
+
+      # `run` builds the catalogue too, but verify writes the report
+      # afterwards, so the catalogue is rebuilt after verify to link this
+      # run's report. The condition does not reference verify's outcome, so a
+      # red verify still gets a catalogue.
+      - name: Rebuild the catalogue so it links the verification report
+        if: ${{ !cancelled() && steps.manifest.outputs.processed > 0 }}
+        run: >-
+          uv run --no-sync wetland-change build-catalogue
           --output-root s3://${{ vars.OUTPUT_BUCKET }}/
 
       # The condition does not reference verify's outcome, so this step still

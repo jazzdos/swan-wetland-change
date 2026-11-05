@@ -444,3 +444,62 @@ def test_load_without_waterbodies_file_keeps_ramsar(
 ) -> None:
     polygons = _load_polygons(monkeypatch, tmp_path, tmp_path / "absent.geojson")
     assert {p.layer for p in polygons} == {"ramsar"}
+
+
+def _s3_placeholder_stub(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, polygons: list[Any]
+) -> Path:
+    config_file = _patch_cli(monkeypatch, tmp_path, FakeClient([]), polygons)
+    cfg = _config(tmp_path / "configured")
+    assert "invalid" in cfg.catalogue.base_url
+    monkeypatch.setattr(cli, "load_config", lambda config: cfg)
+    monkeypatch.setattr(cli, "_store", lambda cfg, root: SimpleNamespace(uri="s3://x/"))
+    return config_file
+
+
+def test_build_catalogue_refuses_placeholder_base_url_on_s3(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    config_file = _s3_placeholder_stub(monkeypatch, tmp_path, [])
+    result = runner.invoke(
+        app,
+        ["build-catalogue", "--config", str(config_file), "--output-root", "s3://x/"],
+    )
+    assert result.exit_code != 0
+    assert "base_url" in result.output
+
+
+def test_run_refuses_placeholder_base_url_on_s3(
+    monkeypatch: pytest.MonkeyPatch,
+    fixture_polygon: BaseGeometry,
+    tmp_path: Path,
+) -> None:
+    config_file = _s3_placeholder_stub(
+        monkeypatch, tmp_path, _polygons(fixture_polygon)
+    )
+    result = runner.invoke(
+        app, ["run", "--config", str(config_file), "--output-root", "s3://x/"]
+    )
+    assert result.exit_code != 0
+    assert "base_url" in result.output
+
+
+def test_corrupt_ledger_is_not_reported_as_bad_parameter(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    config_file = _patch_cli(monkeypatch, tmp_path, FakeClient([]), [])
+    cfg = _config(tmp_path / "configured")
+    monkeypatch.setattr(cli, "load_config", lambda config: cfg)
+    root = tmp_path / "corrupt"
+    part = root / "ledger" / "year=2026" / "ledger_bad.parquet"
+    part.parent.mkdir(parents=True)
+    part.write_bytes(b"not a parquet file")
+    result = runner.invoke(
+        app,
+        ["build-catalogue", "--config", str(config_file), "--output-root", str(root)],
+    )
+    assert result.exit_code != 0
+    assert result.exit_code != 2
+    assert "Invalid value" not in result.output
+    assert result.exception is not None
+    assert not isinstance(result.exception, SystemExit)

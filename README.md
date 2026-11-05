@@ -86,9 +86,9 @@ on later runs; it does not abort the run.
 ### Scheduled jobs
 
 - `.github/workflows/pipeline.yml`: daily at 10:00 UTC and on manual
-  dispatch. Fetches the AOI, runs `wetland-change run`, then
-  `build-catalogue` and `verify` when the run processed scenes, and commits
-  the verification report. The commit keeps the repository active so GitHub
+  dispatch. Fetches the AOI, runs `wetland-change run`, then `verify`, then
+  `build-catalogue` (so the catalogue links the run's report) when the run
+  processed scenes, and commits the verification report. The commit keeps the repository active so GitHub
   does not disable the schedule after 60 days.
 - `.github/workflows/verify.yml`: Sundays at 22:00 UTC and on manual
   dispatch. Runs the live contract tests, `verify` on the latest run and

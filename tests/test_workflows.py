@@ -97,14 +97,14 @@ def test_job_permissions_are_exactly_contents_write_and_id_token_write() -> None
     }
 
 
-def test_steps_run_fetch_run_catalogue_verify_commit_in_order() -> None:
+def test_steps_run_fetch_run_verify_catalogue_commit_in_order() -> None:
     steps = _steps(_workflow())
     fetch = _index(steps, r"scripts/fetch_aoi\.py")
     run = _index(steps, RUN_PATTERN)
     catalogue = _index(steps, r"wetland-change build-catalogue")
     verify = _index(steps, r"wetland-change verify")
     commit = _index(steps, r"git commit")
-    assert fetch < run < catalogue < verify < commit
+    assert fetch < run < verify < catalogue < commit
 
     for position in (run, catalogue, verify):
         command = steps[position]["run"]
@@ -126,6 +126,19 @@ def test_commit_step_still_runs_when_verify_fails() -> None:
         assert forbidden not in condition
 
     assert "continue-on-error" not in steps[verify]
+
+
+def test_catalogue_is_rebuilt_after_verify_and_survives_a_failed_verify() -> None:
+    steps = _steps(_workflow())
+    verify = _index(steps, r"wetland-change verify")
+    catalogue = _index(steps, r"wetland-change build-catalogue")
+    assert verify < catalogue
+
+    condition = _normalised_condition(steps[catalogue])
+    assert condition == PROCESSED_CONDITION
+    for forbidden in ("steps.verify", "success()", "failure()"):
+        assert forbidden not in condition
+    assert "continue-on-error" not in steps[catalogue]
 
 
 def test_manifest_step_reads_the_count_after_a_failed_run_step() -> None:

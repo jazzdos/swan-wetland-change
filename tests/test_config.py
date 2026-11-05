@@ -48,9 +48,10 @@ def test_rejects_cloud_cover_out_of_range(tmp_path: Path) -> None:
         load_config(bad)
 
 
-def test_repo_config_catalogue_placeholder() -> None:
-    cfg = load_config(REPO_CONFIG)
-    assert cfg.catalogue.base_url == "https://example.invalid/swan-wetland-change"
+def test_repo_config_catalogue_base_url_is_https_without_trailing_slash() -> None:
+    base_url = load_config(REPO_CONFIG).catalogue.base_url
+    assert base_url.startswith("https://")
+    assert not base_url.endswith("/")
 
 
 @pytest.mark.parametrize("url", ["http://x.test", "s3://bucket"])

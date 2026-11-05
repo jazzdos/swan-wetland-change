@@ -12,6 +12,7 @@ import tempfile
 from collections.abc import Collection
 from pathlib import Path
 from typing import Any
+from urllib.parse import urlsplit
 
 import pyarrow as pa
 import pystac
@@ -272,7 +273,29 @@ def write_catalogue(
     return sorted(written)
 
 
+class PlaceholderBaseUrlError(ValueError):
+    """The configured base_url is a placeholder and the store is remote."""
+
+
+def ensure_publishable_base_url(base_url: str, store: OutputStore) -> None:
+    """Refuse a placeholder `.invalid` base_url when the store is not local.
+
+    Local roots are never rejected, so tests and dry runs can keep the
+    placeholder. A remote root would publish links that cannot resolve.
+    """
+    if store.uri.startswith("file://"):
+        return
+    host = urlsplit(base_url).hostname or ""
+    if host == "invalid" or host.endswith(".invalid"):
+        raise PlaceholderBaseUrlError(
+            f"catalogue.base_url {base_url!r} is a placeholder; set it in "
+            "config/pipeline.toml to the bucket_url output of infra before "
+            f"publishing to {store.uri}"
+        )
+
+
 def build_and_write(store: OutputStore, *, base_url: str) -> list[str]:
+    ensure_publishable_base_url(base_url, store)
     available = set(store.list_files("changes")) | set(store.list_files("verification"))
     catalog = build_catalogue(
         read_ledger(store), base_url=base_url, available=available

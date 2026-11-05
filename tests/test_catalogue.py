@@ -7,6 +7,7 @@ import json
 from collections.abc import Iterator
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
+from types import SimpleNamespace
 from typing import Any
 from urllib.parse import urlparse
 
@@ -36,7 +37,10 @@ from wetland_change.stac import (
     validate_catalogue,
     write_catalogue,
 )
-from wetland_change.stac.catalogue import processed_entries
+from wetland_change.stac.catalogue import (
+    ensure_publishable_base_url,
+    processed_entries,
+)
 from wetland_change.store import OutputStore
 from wetland_change.verify.checks import write_report
 
@@ -333,3 +337,36 @@ def test_write_catalogue_rejects_mismatched_base_url(store: OutputStore) -> None
     with pytest.raises(ValueError, match="base_url"):
         write_catalogue(catalog, store, base_url="https://other.example/stac-x")
     assert _stac_files(store) == []
+
+
+PLACEHOLDER_URL = "https://example.invalid/swan-wetland-change"
+BUCKET_URL = "https://bucket.s3.ap-southeast-2.amazonaws.com"
+
+
+def _stub_store(uri: str) -> OutputStore:
+    return SimpleNamespace(uri=uri)  # type: ignore[return-value]
+
+
+def test_ensure_publishable_rejects_placeholder_on_s3() -> None:
+    with pytest.raises(ValueError, match="base_url") as excinfo:
+        ensure_publishable_base_url(PLACEHOLDER_URL, _stub_store("s3://bucket/"))
+    assert "config/pipeline.toml" in str(excinfo.value)
+    assert "bucket_url" in str(excinfo.value)
+
+
+def test_ensure_publishable_rejects_bare_invalid_host_on_s3() -> None:
+    with pytest.raises(ValueError, match="base_url"):
+        ensure_publishable_base_url("https://invalid/x", _stub_store("s3://bucket/"))
+
+
+def test_ensure_publishable_accepts_real_bucket_url_on_s3() -> None:
+    ensure_publishable_base_url(BUCKET_URL, _stub_store("s3://bucket/"))
+
+
+def test_ensure_publishable_accepts_placeholder_on_local_store() -> None:
+    ensure_publishable_base_url(PLACEHOLDER_URL, _stub_store("file:///tmp/out"))
+
+
+def test_build_and_write_refuses_placeholder_on_s3_before_reading() -> None:
+    with pytest.raises(ValueError, match="base_url"):
+        build_and_write(_stub_store("s3://bucket/"), base_url=PLACEHOLDER_URL)

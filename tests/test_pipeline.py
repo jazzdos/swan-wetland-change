@@ -8,7 +8,8 @@ import subprocess
 from collections.abc import Iterator
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
-from typing import Any
+from types import SimpleNamespace
+from typing import Any, cast
 
 import geopandas as gpd
 import pyarrow.parquet as pq
@@ -34,6 +35,7 @@ from wetland_change.outputs.changes import CHANGE_COLUMNS, change_path
 from wetland_change.outputs.geoparquet import observation_path, write_observations
 from wetland_change.pipeline import backfill_once, run_once, score_changes, score_once
 from wetland_change.raster.read import Grid, RasterioReader
+from wetland_change.stac import PlaceholderBaseUrlError
 from wetland_change.stats import ObservationRow
 from wetland_change.store import OutputStore
 
@@ -658,3 +660,32 @@ def test_score_once_rejects_reversed_and_naive_ranges(tmp_path: Path) -> None:
         _score_once(tmp_path, datetime(2026, 10, 26), end, NOW)
     with pytest.raises(ValueError, match="timezone-aware"):
         _score_once(tmp_path, start, datetime(2026, 10, 29), NOW)
+
+
+def test_backfill_and_score_refuse_placeholder_base_url_on_s3(tmp_path: Path) -> None:
+    cfg = _config(tmp_path)
+    assert "invalid" in cfg.catalogue.base_url
+    store = cast(OutputStore, SimpleNamespace(uri="s3://bucket/"))
+    start = datetime(2026, 10, 26, tzinfo=UTC)
+    end = datetime(2026, 10, 28, tzinfo=UTC)
+    with pytest.raises(PlaceholderBaseUrlError, match="base_url"):
+        backfill_once(
+            cfg,
+            start=start,
+            end=end,
+            client=FakeClient([]),
+            reader=RasterioReader(),
+            store=store,
+            polygons=[],
+            now=NOW,
+            config_path=tmp_path / "pipeline.toml",
+        )
+    with pytest.raises(PlaceholderBaseUrlError, match="base_url"):
+        score_once(
+            cfg,
+            start=start,
+            end=end,
+            store=store,
+            now=NOW,
+            config_path=tmp_path / "pipeline.toml",
+        )

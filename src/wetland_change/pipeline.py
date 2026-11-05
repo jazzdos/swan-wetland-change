@@ -43,7 +43,7 @@ from wetland_change.outputs.changes import change_path, write_changes
 from wetland_change.outputs.geoparquet import read_observations, write_observations
 from wetland_change.raster.read import RasterReader, read_stack
 from wetland_change.raster.scaling import check_band_scaling, parse_product_metadata
-from wetland_change.stac import build_and_write
+from wetland_change.stac import build_and_write, ensure_publishable_base_url
 from wetland_change.stats import ObservationRow, summarise
 from wetland_change.store import OutputStore
 from wetland_change.windows import plan_window
@@ -277,6 +277,7 @@ def run_once(
     checkpointed after every scene, so an interrupted run resumes after its
     last finished scene.
     """
+    ensure_publishable_base_url(cfg.catalogue.base_url, store)
     run_id = new_run_id(now)
     _refuse_reused_run_id(store, run_id)
     ledger = read_ledger(store)
@@ -403,6 +404,7 @@ def backfill_once(
         raise ValueError("backfill start and end must be timezone-aware")
     if start > end:
         raise ValueError(f"backfill start {start} is after end {end}")
+    ensure_publishable_base_url(cfg.catalogue.base_url, store)
     run_id = new_run_id(now)
     _refuse_reused_run_id(store, run_id)
     ledger = read_ledger(store)
@@ -487,6 +489,7 @@ def score_once(
         raise ValueError("score start and end must be timezone-aware")
     if start > end:
         raise ValueError(f"score start {start} is after end {end}")
+    ensure_publishable_base_url(cfg.catalogue.base_url, store)
     run_id = new_run_id(now)
     if store.exists(manifest_path(run_id)):
         raise ValueError(

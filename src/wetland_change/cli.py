@@ -32,7 +32,7 @@ from wetland_change.pipeline import (
     score_once,
 )
 from wetland_change.raster.read import RasterioReader
-from wetland_change.stac import build_and_write
+from wetland_change.stac import PlaceholderBaseUrlError, build_and_write
 from wetland_change.store import OutputStore
 
 app = typer.Typer(add_completion=False, no_args_is_help=True)
@@ -124,16 +124,19 @@ def run(
     """One incremental run against the configured output root."""
     cfg, polygons = _load(config)
     when = (now or datetime.now(UTC)).astimezone(UTC)
-    manifest = run_once(
-        cfg,
-        client=open_client(cfg.stac.endpoint),
-        reader=RasterioReader(),
-        store=_store(cfg, output_root),
-        polygons=polygons,
-        now=when,
-        config_path=config,
-        output_root_override=output_root,
-    )
+    try:
+        manifest = run_once(
+            cfg,
+            client=open_client(cfg.stac.endpoint),
+            reader=RasterioReader(),
+            store=_store(cfg, output_root),
+            polygons=polygons,
+            now=when,
+            config_path=config,
+            output_root_override=output_root,
+        )
+    except PlaceholderBaseUrlError as exc:
+        raise typer.BadParameter(str(exc)) from exc
     typer.echo(manifest.to_json())
     if manifest.failed:
         raise typer.Exit(code=2)
@@ -325,7 +328,12 @@ def build_catalogue_command(
 ) -> None:
     """Rebuild the STAC catalogue and items.parquet from the ledger."""
     cfg = load_config(config)
-    written = build_and_write(_store(cfg, output_root), base_url=cfg.catalogue.base_url)
+    try:
+        written = build_and_write(
+            _store(cfg, output_root), base_url=cfg.catalogue.base_url
+        )
+    except PlaceholderBaseUrlError as exc:
+        raise typer.BadParameter(str(exc)) from exc
     for path in written:
         typer.echo(path)
     typer.echo(f"{len(written)} files written")
