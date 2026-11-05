@@ -7,6 +7,12 @@ call clear. Each polygon is scored with its own water setting and
 agreement_min (`WaterConfig.for_polygon`,
 docs/decisions/0005-per-polygon-water-settings.md), and `Check.threshold` is
 that agreement_min.
+
+`Check.passed` needs agreement at or above agreement_min and the wet area
+within `WET_AREA_MAX_PP` percentage points of WO's (design line 226). Wet area
+is the wet share of mutually clear pixels for each product. The two shares
+differ by at most 1 - agreement, so the clause is implied by a 0.95 floor but
+binds at the lower per-polygon floors. `Check.measured` stays the agreement.
 """
 
 from __future__ import annotations
@@ -31,6 +37,8 @@ WO_COLLECTION = "ga_s2_wo_provisional_3"
 WO_WET = 128
 # Only WO values 0 and 128 are clear, so every flag bit below 128 excludes.
 WO_EXCLUDE = 1 | 2 | 4 | 8 | 16 | 32 | 64
+# Largest allowed gap between pipeline and WO wet share, in percentage points.
+WET_AREA_MAX_PP = 5.0
 _S3 = "s3://dea-public-data/"
 _HTTPS = "https://dea-public-data.s3.ap-southeast-2.amazonaws.com/"
 
@@ -46,6 +54,23 @@ def wo_agreement(
         return float("nan"), 0
     wo_water = (wo & WO_WET) > 0
     return float(np.mean(pipeline_water[both] == wo_water[both])), n
+
+
+def wo_wet_area(
+    pipeline_water: np.ndarray, pipeline_clear: np.ndarray, wo: np.ndarray
+) -> tuple[int, int, int]:
+    """(pipeline wet count, WO wet count, count) over mutually clear pixels.
+
+    Integer counts, so the gap in percentage points is computed as
+    `100 * (pipeline - wo) / n` and is exact at the 5 pp limit.
+    """
+    wo_clear = (wo & WO_EXCLUDE) == 0
+    both = pipeline_clear & wo_clear
+    n = int(both.sum())
+    if n == 0:
+        return 0, 0, 0
+    wo_water = (wo & WO_WET) > 0
+    return int(pipeline_water[both].sum()), int(wo_water[both].sum()), n
 
 
 def find_wo_href(
@@ -166,11 +191,27 @@ def wo_check(
     pipeline_water = water_pixels(setting, stack, clear)
     agreement, n = wo_agreement(pipeline_water, clear, wo)
     scl_agreement, _ = wo_agreement(clear & (stack.scl == 6), clear, wo)
+    wet_pipeline, wet_wo, wet_n = wo_wet_area(pipeline_water, clear, wo)
+    if wet_n:
+        wet_diff_pp = 100 * (wet_pipeline - wet_wo) / wet_n
+        wet_share_pipeline, wet_share_wo = wet_pipeline / wet_n, wet_wo / wet_n
+    else:
+        wet_diff_pp = wet_share_pipeline = wet_share_wo = float("nan")
+    wet_passed = bool(abs(wet_diff_pp) <= WET_AREA_MAX_PP)
     return Check(
         name,
-        passed=bool(agreement >= agreement_min) if n else None,
+        passed=bool(agreement >= agreement_min and wet_passed) if n else None,
         measured=agreement if n else None,
         threshold=agreement_min,
         reference=wo_href,
-        detail={**base, "n_mutually_clear": n, "scl_agreement": scl_agreement},
+        detail={
+            **base,
+            "n_mutually_clear": n,
+            "scl_agreement": scl_agreement,
+            "wet_area_pipeline": wet_share_pipeline,
+            "wet_area_wo": wet_share_wo,
+            "wet_area_diff_pp": wet_diff_pp,
+            "wet_area_max_pp": WET_AREA_MAX_PP,
+            "wet_area_passed": wet_passed if n else None,
+        },
     )
