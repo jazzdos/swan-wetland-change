@@ -113,6 +113,7 @@ def test_steps_run_fetch_run_verify_catalogue_commit_in_order() -> None:
 
 
 PROCESSED_CONDITION: Final = "!cancelled() && steps.manifest.outputs.processed > 0"
+CATALOGUE_CONDITION: Final = "!cancelled()"
 
 
 def test_commit_step_still_runs_when_verify_fails() -> None:
@@ -128,17 +129,31 @@ def test_commit_step_still_runs_when_verify_fails() -> None:
     assert "continue-on-error" not in steps[verify]
 
 
-def test_catalogue_is_rebuilt_after_verify_and_survives_a_failed_verify() -> None:
+def test_catalogue_is_built_after_verify_and_survives_a_failed_verify() -> None:
     steps = _steps(_workflow())
     verify = _index(steps, r"wetland-change verify")
     catalogue = _index(steps, r"wetland-change build-catalogue")
     assert verify < catalogue
 
     condition = _normalised_condition(steps[catalogue])
-    assert condition == PROCESSED_CONDITION
-    for forbidden in ("steps.verify", "success()", "failure()"):
+    assert condition == CATALOGUE_CONDITION
+    for forbidden in ("steps.verify", "success()", "failure()", "processed"):
         assert forbidden not in condition
     assert "continue-on-error" not in steps[catalogue]
+
+
+def test_run_step_skips_the_catalogue_and_keeps_its_redirect() -> None:
+    steps = _steps(_workflow())
+    command = " ".join(str(steps[_index(steps, RUN_PATTERN)]["run"]).split())
+    assert "--no-catalogue" in command
+    assert command.index("--output-root") < command.index("--no-catalogue")
+    assert re.search(r'--no-catalogue > "\$RUNNER_TEMP/run-manifest\.json"$', command)
+
+
+def test_exactly_one_step_builds_the_catalogue() -> None:
+    steps = _steps(_workflow())
+    builders = [step for step in steps if "build-catalogue" in str(step.get("run", ""))]
+    assert len(builders) == 1
 
 
 def test_manifest_step_reads_the_count_after_a_failed_run_step() -> None:
@@ -157,16 +172,12 @@ def test_manifest_step_reads_the_count_after_a_failed_run_step() -> None:
     assert "processed" in step["run"]
 
 
-def test_catalogue_verify_and_commit_run_whenever_scenes_were_processed() -> None:
+def test_verify_and_commit_run_whenever_scenes_were_processed() -> None:
     steps = _steps(_workflow())
     manifest = next(
         position for position, step in enumerate(steps) if step.get("id") == "manifest"
     )
-    for pattern in (
-        r"wetland-change build-catalogue",
-        r"wetland-change verify",
-        r"git commit",
-    ):
+    for pattern in (r"wetland-change verify", r"git commit"):
         position = _index(steps, pattern)
         assert position > manifest
         assert _normalised_condition(steps[position]) == PROCESSED_CONDITION

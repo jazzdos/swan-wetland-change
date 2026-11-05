@@ -1,10 +1,12 @@
 # Daily pipeline: fetch the AOI, run the incremental change-detection run
 # against the S3 output store, verify the run against the independent
-# references, rebuild the catalogue, and commit the verification report.
-# `run` builds the catalogue too, but verify writes the report afterwards, so
-# the catalogue is rebuilt after verify to link this run's report; the step
-# does not depend on verify's outcome, so a red verify still gets a
-# catalogue.
+# references, build the catalogue, and commit the verification report.
+# `run` is called with --no-catalogue, so the single catalogue build is the
+# step after verify. It runs on every day that is not cancelled, including a
+# day with no processed scenes and a day when verify failed, so the catalogue
+# links reports written by verify.yml and by any CLI backfill. The build is
+# incremental: a day with nothing new costs one ledger read and writes no
+# catalogue objects.
 #
 # Runs at 10:00 UTC every day and on manual dispatch.
 #
@@ -84,6 +86,7 @@ jobs:
         run: >-
           uv run --no-sync wetland-change run
           --output-root s3://${{ vars.OUTPUT_BUCKET }}/
+          --no-catalogue
           > "$RUNNER_TEMP/run-manifest.json"
 
       # `!cancelled()` drops the implicit success(), so this step runs after a
@@ -101,21 +104,23 @@ jobs:
           fi
           echo "processed=${processed}" >> "$GITHUB_OUTPUT"
 
-      # Verify, catalogue and commit all hang on the same condition: the run
-      # processed scenes, even if some other scenes failed. Otherwise verify
-      # would re-check an old run (or fail when no processed run exists yet).
+      # Verify and commit hang on the same condition: the run processed
+      # scenes, even if some other scenes failed. Otherwise verify would
+      # re-check an old run (or fail when no processed run exists yet). The
+      # catalogue step below does not, so it also runs on a zero-processed day.
       - name: Verify the run
         if: ${{ !cancelled() && steps.manifest.outputs.processed > 0 }}
         run: >-
           uv run --no-sync wetland-change verify
           --output-root s3://${{ vars.OUTPUT_BUCKET }}/
 
-      # `run` builds the catalogue too, but verify writes the report
-      # afterwards, so the catalogue is rebuilt after verify to link this
-      # run's report. The condition does not reference verify's outcome, so a
-      # red verify still gets a catalogue.
-      - name: Rebuild the catalogue so it links the verification report
-        if: ${{ !cancelled() && steps.manifest.outputs.processed > 0 }}
+      # The only catalogue build in the workflow: `run` skips it, so the
+      # catalogue is built once, after verify has written its report. The
+      # condition does not reference verify's outcome or the processed count,
+      # so a red verify or a day with no processed scenes still gets a
+      # catalogue that links any report written since the last build.
+      - name: Build the catalogue so it links the verification report
+        if: ${{ !cancelled() }}
         run: >-
           uv run --no-sync wetland-change build-catalogue
           --output-root s3://${{ vars.OUTPUT_BUCKET }}/

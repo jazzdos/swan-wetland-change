@@ -18,14 +18,18 @@ from wetland_change.catalogue.search import Discovery, StacClient, discover
 from wetland_change.change import build_baseline, score_observations
 from wetland_change.config import PipelineConfig, StacConfig, WaterConfig
 from wetland_change.ledger import (
+    COMPACT_MIN_PARTS,
     RUN_KIND_BACKFILL,
     RUN_KIND_RUN,
     LedgerEntry,
     attempts_so_far,
+    compact_ledger,
     entry_for,
     exhausted_ids,
     exhausted_keys,
-    read_ledger,
+    ledger_with,
+    observation_months,
+    read_ledger_parts,
     rejected_entry,
     requeue_entries,
     retry_ids,
@@ -223,6 +227,7 @@ def score_changes(
     dates: Collection[date] | None = None,
     date_range: tuple[date, date] | None = None,
     rescore_later: bool = False,
+    ledger: pa.Table | None = None,
 ) -> ScoreResult:
     """Score stored observations by UTC acquisition date and write change files.
 
@@ -234,8 +239,23 @@ def score_changes(
     a row for the same polygon and month as one of them (any year), because a
     newly stored earlier observation changes those dates' baselines. The
     `date_range` narrowing applies after that widening.
+
+    With `ledger` and `dates`, an observation file is not read when the ledger
+    shows that all its rows fall in UTC months outside the months of `dates`.
+    Both the later-date widening and the history filter match on polygon and
+    calendar month, so those months are closed under them. A file with no
+    ledger row (a test fixture or an interrupted attempt) is always read.
+    `dates=None` reads every file, and `date_range` alone excludes nothing.
     """
-    observations = read_observations(store)
+    exclude: set[str] = set()
+    if ledger is not None and dates is not None:
+        months = {d.month for d in dates}
+        exclude = {
+            path
+            for path, found in observation_months(ledger).items()
+            if found and not found & months
+        }
+    observations = read_observations(store, exclude=exclude)
     frame = pd.DataFrame(observations.drop(columns="geometry"))
     geometry_by_polygon = dict(
         zip(observations["polygon_id"], observations.geometry, strict=True)
@@ -303,17 +323,23 @@ def run_once(
     now: datetime,
     config_path: Path,
     output_root_override: str | None = None,
+    build_catalogue: bool = True,
 ) -> RunManifest:
     """Process everything new since the ledger watermark, or since the initial
     lookback when the ledger has no daily rows. Never aborts on a single scene;
     failures go to the ledger and are retried next run. The ledger is
     checkpointed after every scene, so an interrupted run resumes after its
     last finished scene.
+
+    The ledger is listed and read once; the final table is that read plus the
+    entries this run wrote, and scoring, the catalogue and compaction use it.
+    `build_catalogue=False` skips the catalogue build. Compaction runs last and
+    a failure there is logged, not raised.
     """
     ensure_publishable_base_url(cfg.catalogue.base_url, store)
     run_id = new_run_id(now)
-    _refuse_reused_run_id(store, run_id)
-    ledger = read_ledger(store)
+    ledger, paths = read_ledger_parts(store)
+    _refuse_reused_run_id(store, run_id, ledger=ledger, paths=paths)
     before = watermark(ledger)
     created_from = discovery_created_from(cfg.stac, before=before, now=now)
     if before is not None:
@@ -346,6 +372,7 @@ def run_once(
         output_root_override=output_root_override,
     )
     next_part = 0
+    new_entries: list[LedgerEntry] = []
     if discovery.rejected:
         rejected = [
             rejected_entry(
@@ -360,6 +387,7 @@ def run_once(
         manifest.ledger_files += write_ledger(
             rejected, store, run_id=run_id, part=next_part
         )
+        new_entries += rejected
         next_part += 1
     written_dates: set[date] = set()
     for scene in discovery.scenes:
@@ -377,11 +405,12 @@ def run_once(
         manifest.ledger_files += write_ledger(
             [entry], store, run_id=run_id, part=next_part
         )
+        new_entries.append(entry)
         next_part += 1
         if path is not None and entry.datetime is not None:
             written_dates.add(entry.datetime.astimezone(UTC).date())
         _tally(manifest, entry, path)
-    final = read_ledger(store)
+    final = ledger_with(ledger, new_entries)
     manifest.watermark_after = watermark(final)
     manifest.exhausted_items = exhausted_ids(final)
     manifest.exhausted = len(manifest.exhausted_items)
@@ -391,23 +420,55 @@ def run_once(
             min_valid_fraction=cfg.water.min_valid_fraction,
             dates=written_dates,
             rescore_later=True,
+            ledger=final,
         )
         manifest.change_rows = scored.rows
         manifest.change_files = scored.files
         manifest.change_files_removed = scored.removed
     manifest.finished_at = now
     write_manifest(manifest, store)
-    build_and_write(store, base_url=cfg.catalogue.base_url)
+    if build_catalogue:
+        build_and_write(store, base_url=cfg.catalogue.base_url, ledger=final)
+    _compact_after_run(store, final, paths, manifest)
     return manifest
 
 
-def _refuse_reused_run_id(store: OutputStore, run_id: str) -> None:
+def _compact_after_run(
+    store: OutputStore, final: pa.Table, paths: Sequence[str], manifest: RunManifest
+) -> None:
+    """Merge the ledger parts when there are enough; a failure is logged only.
+
+    The run's work is already written, and compaction keeps every row, so a
+    failed merge only leaves more parts for the next run to merge.
+    """
+    try:
+        compact_ledger(
+            store,
+            final,
+            [*paths, *manifest.ledger_files],
+            run_id=manifest.run_id,
+            min_parts=COMPACT_MIN_PARTS,
+        )
+    except Exception:
+        logger.exception(
+            "ledger compaction failed; run %s is unaffected", manifest.run_id
+        )
+
+
+def _refuse_reused_run_id(
+    store: OutputStore, run_id: str, *, ledger: pa.Table, paths: Sequence[str]
+) -> None:
     """Part numbering restarts at 0, so a run id already on disk would have its
     manifest or ledger parts overwritten, losing the interrupted run's rows.
+
+    Compaction removes the part names of an interrupted run that has no
+    manifest, so the run id is also looked up in the ledger table.
     """
     prefix = f"ledger_{run_id}_"
-    reused = store.exists(manifest_path(run_id)) or any(
-        Path(p).name.startswith(prefix) for p in store.list_files("ledger")
+    reused = (
+        store.exists(manifest_path(run_id))
+        or any(Path(p).name.startswith(prefix) for p in paths)
+        or run_id in set(ledger["run_id"].to_pylist())
     )
     if reused:
         raise ValueError(
@@ -443,8 +504,8 @@ def backfill_once(
         raise ValueError(f"backfill start {start} is after end {end}")
     ensure_publishable_base_url(cfg.catalogue.base_url, store)
     run_id = new_run_id(now)
-    _refuse_reused_run_id(store, run_id)
-    ledger = read_ledger(store)
+    ledger, paths = read_ledger_parts(store)
+    _refuse_reused_run_id(store, run_id, ledger=ledger, paths=paths)
     before = watermark(ledger)
     discovery = discover(
         client,
@@ -469,6 +530,7 @@ def backfill_once(
         datetime_end=end,
     )
     next_part = 0
+    new_entries: list[LedgerEntry] = []
     if discovery.rejected:
         rejected = [
             rejected_entry(
@@ -483,6 +545,7 @@ def backfill_once(
         manifest.ledger_files += write_ledger(
             rejected, store, run_id=run_id, part=next_part
         )
+        new_entries += rejected
         next_part += 1
     for scene in discovery.scenes:
         entry, path = _process_one(
@@ -500,13 +563,15 @@ def backfill_once(
         manifest.ledger_files += write_ledger(
             [entry], store, run_id=run_id, part=next_part
         )
+        new_entries.append(entry)
         next_part += 1
-    final = read_ledger(store)
+    final = ledger_with(ledger, new_entries)
     manifest.watermark_after = watermark(final)
     manifest.exhausted_items = exhausted_ids(final)
     manifest.exhausted = len(manifest.exhausted_items)
     manifest.finished_at = now
     write_manifest(manifest, store)
+    _compact_after_run(store, final, paths, manifest)
     return manifest
 
 
@@ -581,14 +646,14 @@ def requeue_once(
     if all_exhausted == bool(item_ids):
         raise ValueError("give either item ids or --all, not both or neither")
     run_id = new_run_id(now)
-    _refuse_reused_run_id(store, run_id)
-    ledger = read_ledger(store)
+    ledger, paths = read_ledger_parts(store)
+    _refuse_reused_run_id(store, run_id, ledger=ledger, paths=paths)
     selected = exhausted_ids(ledger) if all_exhausted else sorted(set(item_ids))
     if not selected:
         raise ValueError("nothing to requeue: no item has exhausted its attempts")
     entries = requeue_entries(ledger, selected, run_id=run_id, processed_at=now)
     ledger_files = write_ledger(entries, store, run_id=run_id, part=0)
-    remaining = exhausted_ids(read_ledger(store))
+    remaining = exhausted_ids(ledger_with(ledger, entries))
     manifest = RunManifest(
         run_id=run_id,
         started_at=now,

@@ -2,11 +2,24 @@
 
 Items come from the ledger's `source_item` JSON, never a fresh fetch. Output
 is deterministic: no clock reads, sorted keys, items ordered by id.
+
+`write_catalogue` writes only objects that are new or changed. Every object's
+bytes are built in memory, then compared with `stac/write-index.json`, a
+sidecar mapping each object key to the sha256 of the bytes last written, plus
+the normalised `base_url`. One `list_files("stac")` call tells it which
+objects exist and whether the index exists, so there is no per-object
+request. An object is written when the index base_url differs, its key is
+missing from the listing, or its digest differs from the index entry. The
+index is written last, so a crash leaves a stale index that causes a rewrite,
+never a skip. A missing, unreadable or malformed index counts as empty. The
+index is not linked from the catalogue, so `validate_all` never sees it, and
+its key is never in the returned list.
 """
 
 from __future__ import annotations
 
 import datetime as dt
+import hashlib
 import json
 import tempfile
 from collections.abc import Collection
@@ -31,6 +44,7 @@ LICENSE = "CC-BY-SA-4.0"
 SWAN_COASTAL_PLAIN_BBOX = [114.9, -33.3, 115.9, -31.5]
 PARQUET_MEDIA_TYPE = "application/vnd.apache.parquet"
 ITEMS_PARQUET_KEY = f"stac/{COLLECTION_ID}/items.parquet"
+WRITE_INDEX_KEY = "stac/write-index.json"
 KEPT_PROPERTIES = (
     "created",
     "updated",
@@ -253,13 +267,13 @@ def write_catalogue(
                 "build_catalogue base_url"
             )
         items_key = items_asset.href.removeprefix(prefix)
-    written: list[str] = []
+    payloads: dict[str, bytes] = {}
     if items_key is not None:
         all_items = sorted(catalog.get_items(recursive=True), key=lambda i: i.id)
         dicts = [
             i.to_dict(include_self_link=True, transform_hrefs=False) for i in all_items
         ]
-        written.append(store.write_bytes(items_key, items_parquet_bytes(dicts)))
+        payloads[items_key] = items_parquet_bytes(dicts)
     for obj, key in zip(objects, keys, strict=True):
         text = (
             json.dumps(
@@ -269,8 +283,44 @@ def write_catalogue(
             )
             + "\n"
         )
-        written.append(store.write_bytes(key, text.encode()))
-    return sorted(written)
+        payloads[key] = text.encode()
+    digests = {key: hashlib.sha256(data).hexdigest() for key, data in payloads.items()}
+    normalised = prefix.rstrip("/")
+    listing = set(store.list_files("stac"))
+    old_url, old_digests = _read_write_index(store, listing)
+    same_url = old_url == normalised
+    written = sorted(
+        key
+        for key, digest in digests.items()
+        if not same_url or key not in listing or old_digests.get(key) != digest
+    )
+    for key in written:
+        store.write_bytes(key, payloads[key])
+    if written or not same_url or old_digests != digests:
+        index = {"base_url": normalised, "objects": digests}
+        store.write_bytes(
+            WRITE_INDEX_KEY,
+            (json.dumps(index, indent=2, sort_keys=True) + "\n").encode(),
+        )
+    return written
+
+
+def _read_write_index(
+    store: OutputStore, listing: Collection[str]
+) -> tuple[str | None, dict[str, str]]:
+    """The recorded base_url and digests; (None, {}) when absent or malformed."""
+    if WRITE_INDEX_KEY not in listing:
+        return None, {}
+    try:
+        doc = json.loads(store.read_bytes(WRITE_INDEX_KEY))
+    except (OSError, ValueError):
+        return None, {}
+    if not isinstance(doc, dict):
+        return None, {}
+    url, objects = doc.get("base_url"), doc.get("objects")
+    if not isinstance(url, str) or not isinstance(objects, dict):
+        return None, {}
+    return url, {k: v for k, v in objects.items() if isinstance(v, str)}
 
 
 class PlaceholderBaseUrlError(ValueError):
@@ -294,11 +344,19 @@ def ensure_publishable_base_url(base_url: str, store: OutputStore) -> None:
         )
 
 
-def build_and_write(store: OutputStore, *, base_url: str) -> list[str]:
+def build_and_write(
+    store: OutputStore, *, base_url: str, ledger: pa.Table | None = None
+) -> list[str]:
+    """Build, validate and write the catalogue; returns keys actually written.
+
+    A caller that already holds the ledger passes it to skip the store read.
+    """
     ensure_publishable_base_url(base_url, store)
     available = set(store.list_files("changes")) | set(store.list_files("verification"))
     catalog = build_catalogue(
-        read_ledger(store), base_url=base_url, available=available
+        read_ledger(store) if ledger is None else ledger,
+        base_url=base_url,
+        available=available,
     )
     validate_catalogue(catalog)
     return write_catalogue(catalog, store, base_url=base_url)

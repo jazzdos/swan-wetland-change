@@ -2,26 +2,35 @@ from __future__ import annotations
 
 import dataclasses
 import io
-from datetime import UTC, datetime, timedelta
+import math
+from datetime import UTC, datetime, timedelta, timezone
 from pathlib import Path
+from typing import Any
 
+import pyarrow as pa
 import pyarrow.parquet as pq
 import pytest
 
 from wetland_change.catalogue.item import SceneItem
 from wetland_change.ledger import (
+    COMPACT_MIN_PARTS,
     LEDGER_SCHEMA,
     MAX_ATTEMPTS,
     RUN_KIND_BACKFILL,
     RUN_KIND_RUN,
     LedgerEntry,
     attempts_so_far,
+    compact_ledger,
     entries_to_table,
     entry_for,
     exhausted_ids,
     exhausted_keys,
+    latest_entries,
     ledger_path,
+    ledger_with,
+    observation_months,
     read_ledger,
+    read_ledger_parts,
     rejected_entry,
     requeue_entries,
     retry_ids,
@@ -428,3 +437,395 @@ def test_requeue_entries_need_a_strictly_later_processed_at(
             run_id="rq",
             processed_at=latest + offset,
         )
+
+
+# --- compaction -----------------------------------------------------------
+
+
+def _one(
+    scene: SceneItem,
+    item_id: str,
+    *,
+    hours: int = 0,
+    status: str = "succeeded",
+    attempts: int = 1,
+    run_id: str | None = None,
+    **changes: Any,
+) -> LedgerEntry:
+    entry = entry_for(
+        dataclasses.replace(scene, item_id=item_id),
+        status=status,
+        attempts=attempts,
+        run_id=run_id or f"run-{item_id}",
+        processed_at=T0 + timedelta(hours=hours),
+        n_rows=1,
+    )
+    return dataclasses.replace(entry, **changes) if changes else entry
+
+
+def _many_parts(scene: SceneItem, store: OutputStore, count: int) -> list[LedgerEntry]:
+    entries = [
+        _one(
+            scene,
+            f"item-{i:03d}",
+            hours=i,
+            status="failed" if i % 7 == 0 else "succeeded",
+            attempts=1 + i % 3,
+        )
+        for i in range(count)
+    ]
+    for entry in entries:
+        write_ledger([entry], store, run_id=entry.run_id)
+    return entries
+
+
+def _sorted_rows(table: pa.Table) -> list[dict[str, Any]]:
+    return sorted(
+        table.to_pylist(), key=lambda r: (r["item_id"], r["processed_at"], r["status"])
+    )
+
+
+def _derived(table: pa.Table) -> tuple[Any, ...]:
+    latest = latest_entries(table)
+    ids = sorted(latest["item_id"]) if not latest.empty else []
+    return (
+        watermark(table),
+        seen_keys(table),
+        retry_ids(table),
+        exhausted_ids(table),
+        ids,
+    )
+
+
+class CountingStore(OutputStore):
+    def __init__(self, root: str) -> None:
+        super().__init__(root)
+        self.reads = 0
+
+    def read_bytes(self, relpath: str) -> bytes:
+        self.reads += 1
+        return super().read_bytes(relpath)
+
+
+def test_read_ledger_parts_returns_paths_and_the_same_table(
+    fixture_scene: SceneItem, tmp_path: Path
+) -> None:
+    store = OutputStore(str(tmp_path))
+    _many_parts(fixture_scene, store, 3)
+    table, paths = read_ledger_parts(store)
+    assert paths == [p for p in store.list_files("ledger") if p.endswith(".parquet")]
+    assert len(paths) == 3
+    assert table.equals(read_ledger(store))
+    empty, no_paths = read_ledger_parts(OutputStore(str(tmp_path / "nothing")))
+    assert empty.num_rows == 0
+    assert no_paths == []
+
+
+def test_ledger_with_matches_a_fresh_read(
+    fixture_scene: SceneItem, tmp_path: Path
+) -> None:
+    store = OutputStore(str(tmp_path))
+    _many_parts(fixture_scene, store, 3)
+    before = read_ledger(store)
+    entries = [
+        _one(fixture_scene, "new-a", hours=50),
+        _one(fixture_scene, "new-b", hours=51, status="failed", error="boom"),
+    ]
+    merged = ledger_with(before, entries)
+    write_ledger(entries, store, run_id="r-new")
+    assert _sorted_rows(merged) == _sorted_rows(read_ledger(store))
+    assert ledger_with(before, []) is before
+
+
+def test_compaction_leaves_one_file_and_identical_state(
+    fixture_scene: SceneItem, tmp_path: Path
+) -> None:
+    store = OutputStore(str(tmp_path))
+    _many_parts(fixture_scene, store, 30)
+    ledger, paths = read_ledger_parts(store)
+    assert len(paths) == 30
+    new = compact_ledger(store, ledger, paths, run_id="c1")
+    assert new == ["ledger/compacted/ledger_compact_c1.parquet"]
+    assert store.list_files("ledger") == new
+    after = read_ledger(store)
+    assert _sorted_rows(after) == _sorted_rows(ledger)
+    assert _derived(after) == _derived(ledger)
+
+
+def test_default_threshold_compacts_at_25_parts(
+    fixture_scene: SceneItem, tmp_path: Path
+) -> None:
+    assert COMPACT_MIN_PARTS == 25
+    store = OutputStore(str(tmp_path))
+    _many_parts(fixture_scene, store, 25)
+    ledger, paths = read_ledger_parts(store)
+    assert len(compact_ledger(store, ledger, paths, run_id="c1")) == 1
+    assert len(store.list_files("ledger")) == 1
+
+
+def test_compaction_is_a_noop_below_threshold_and_when_empty(
+    fixture_scene: SceneItem, tmp_path: Path
+) -> None:
+    store = OutputStore(str(tmp_path))
+    _many_parts(fixture_scene, store, 24)
+    ledger, paths = read_ledger_parts(store)
+    before = store.list_files("ledger")
+    assert compact_ledger(store, ledger, paths, run_id="c1") == []
+    assert store.list_files("ledger") == before
+    empty = LEDGER_SCHEMA.empty_table()
+    assert compact_ledger(store, empty, paths, run_id="c1", min_parts=1) == []
+    assert store.list_files("ledger") == before
+
+
+def _write_compacted_only(store: OutputStore, ledger: pa.Table, run_id: str) -> str:
+    buffer = io.BytesIO()
+    pq.write_table(ledger, buffer)
+    return store.write_bytes(
+        f"ledger/compacted/ledger_compact_{run_id}.parquet", buffer.getvalue()
+    )
+
+
+def test_crash_after_compacted_write_reads_without_duplicates(
+    fixture_scene: SceneItem, tmp_path: Path
+) -> None:
+    store = OutputStore(str(tmp_path))
+    _many_parts(fixture_scene, store, 5)
+    original = read_ledger(store)
+    _write_compacted_only(store, original, "c1")
+    table, paths = read_ledger_parts(store)
+    assert len(paths) == 6
+    assert paths[0].startswith("ledger/compacted/")
+    assert table.num_rows == original.num_rows
+    assert _sorted_rows(table) == _sorted_rows(original)
+
+
+def test_crash_dedupe_keeps_rows_that_share_run_and_time(
+    fixture_scene: SceneItem, tmp_path: Path
+) -> None:
+    store = OutputStore(str(tmp_path))
+    a = _one(fixture_scene, "same", run_id="r1", status="failed", error="x")
+    b = _one(fixture_scene, "same", run_id="r1", status="succeeded")
+    write_ledger([a, b], store, run_id="r1")
+    original = read_ledger(store)
+    _write_compacted_only(store, original, "c1")
+    table = read_ledger(store)
+    assert table.num_rows == 2
+    assert sorted(table["status"].to_pylist()) == ["failed", "succeeded"]
+
+
+def test_crash_dedupe_treats_null_and_nan_as_equal(
+    fixture_scene: SceneItem, tmp_path: Path
+) -> None:
+    store = OutputStore(str(tmp_path))
+    entry = _one(
+        fixture_scene,
+        "odd",
+        cloud_cover=math.nan,
+        error=None,
+        product_uri=None,
+        datetime=None,
+    )
+    write_ledger([entry], store, run_id="r1")
+    original = read_ledger(store)
+    _write_compacted_only(store, original, "c1")
+    table = read_ledger(store)
+    assert table.num_rows == 1
+    assert math.isnan(table["cloud_cover"].to_pylist()[0])
+
+
+def test_no_dedupe_without_a_compacted_file(
+    fixture_scene: SceneItem, tmp_path: Path
+) -> None:
+    store = OutputStore(str(tmp_path))
+    entry = _one(fixture_scene, "dup", run_id="r1")
+    write_ledger([entry], store, run_id="r1")
+    write_ledger([entry], store, run_id="r2")
+    assert read_ledger(store).num_rows == 2
+
+
+def test_reads_are_bounded_after_compaction(
+    fixture_scene: SceneItem, tmp_path: Path
+) -> None:
+    store = CountingStore(str(tmp_path))
+    _many_parts(fixture_scene, store, 100)
+    ledger, paths = read_ledger_parts(store)
+    compact_ledger(store, ledger, paths, run_id="c1")
+    for i in range(3):
+        write_ledger(
+            [_one(fixture_scene, f"late-{i}", hours=200 + i)],
+            store,
+            run_id=f"late-{i}",
+        )
+    store.reads = 0
+    table = read_ledger(store)
+    assert store.reads == 4
+    assert table.num_rows == 103
+
+
+class _VerifyStore(OutputStore):
+    """Read-back of the compacted object returns a file with fewer rows."""
+
+    def read_bytes(self, relpath: str) -> bytes:
+        data = super().read_bytes(relpath)
+        if "compacted" not in relpath:
+            return data
+        table = pq.read_table(io.BytesIO(data)).slice(0, 1)
+        buffer = io.BytesIO()
+        pq.write_table(table, buffer)
+        return buffer.getvalue()
+
+
+def test_compaction_refuses_to_delete_when_read_back_is_short(
+    fixture_scene: SceneItem, tmp_path: Path
+) -> None:
+    store = _VerifyStore(str(tmp_path))
+    _many_parts(fixture_scene, store, 5)
+    ledger, paths = read_ledger_parts(store)
+    with pytest.raises(ValueError, match="rows"):
+        compact_ledger(store, ledger, paths, run_id="c1", min_parts=1)
+    for path in paths:
+        assert store.exists(path)
+
+
+class _TruncatingStore(OutputStore):
+    """Truncates the first write under ledger/compacted/ (a partial upload)."""
+
+    truncate = True
+
+    def write_bytes(self, relpath: str, data: bytes) -> str:
+        if self.truncate and "compacted" in relpath:
+            data = data[: len(data) // 2]
+        return super().write_bytes(relpath, data)
+
+
+def test_failed_read_back_removes_the_bad_compacted_file(
+    fixture_scene: SceneItem, tmp_path: Path
+) -> None:
+    store = _TruncatingStore(str(tmp_path))
+    _many_parts(fixture_scene, store, 5)
+    ledger, paths = read_ledger_parts(store)
+    with pytest.raises(Exception):  # noqa: B017
+        compact_ledger(store, ledger, paths, run_id="c1", min_parts=1)
+    assert not store.exists("ledger/compacted/ledger_compact_c1.parquet")
+    for path in paths:
+        assert store.exists(path)
+    assert read_ledger(store).num_rows == ledger.num_rows
+    store.truncate = False
+    new = compact_ledger(store, ledger, paths, run_id="c2", min_parts=1)
+    assert len(new) == 1
+    assert store.list_files("ledger") == new
+    assert read_ledger(store).num_rows == ledger.num_rows
+
+
+def test_compaction_only_deletes_listed_paths(
+    fixture_scene: SceneItem, tmp_path: Path
+) -> None:
+    store = OutputStore(str(tmp_path))
+    _many_parts(fixture_scene, store, 5)
+    ledger, paths = read_ledger_parts(store)
+    (late,) = write_ledger([_one(fixture_scene, "late")], store, run_id="late")
+    new = compact_ledger(store, ledger, paths, run_id="c1", min_parts=1)
+    assert sorted(store.list_files("ledger")) == sorted([late, *new])
+    assert read_ledger(store).num_rows == 6
+
+
+class _RacingStore(OutputStore):
+    """Deletes a listed part right after the first listing (a concurrent compaction)."""
+
+    def __init__(self, root: str, victim: str) -> None:
+        super().__init__(root)
+        self.victim = victim
+        self.listings = 0
+
+    def list_files(self, prefix: str) -> list[str]:
+        files = super().list_files(prefix)
+        self.listings += 1
+        if self.listings == 1:
+            self.delete(self.victim)
+        return files
+
+
+def test_a_part_deleted_after_listing_is_recovered_by_one_relist(
+    fixture_scene: SceneItem, tmp_path: Path
+) -> None:
+    plain = OutputStore(str(tmp_path))
+    _many_parts(fixture_scene, plain, 5)
+    original = read_ledger(plain)
+    _write_compacted_only(plain, original, "c1")
+    victim = "ledger/year=2026/ledger_run-item-002.parquet"
+    store = _RacingStore(str(tmp_path), victim)
+    table, paths = read_ledger_parts(store)
+    assert store.listings == 2
+    assert victim not in paths
+    assert _sorted_rows(table) == _sorted_rows(original)
+
+
+class _AlwaysMissingStore(OutputStore):
+    def read_bytes(self, relpath: str) -> bytes:
+        raise FileNotFoundError(relpath)
+
+
+def test_a_second_missing_part_propagates(
+    fixture_scene: SceneItem, tmp_path: Path
+) -> None:
+    _many_parts(fixture_scene, OutputStore(str(tmp_path)), 2)
+    with pytest.raises(FileNotFoundError):
+        read_ledger(_AlwaysMissingStore(str(tmp_path)))
+
+
+def test_second_compaction_after_a_crash_leaves_one_file(
+    fixture_scene: SceneItem, tmp_path: Path
+) -> None:
+    store = OutputStore(str(tmp_path))
+    _many_parts(fixture_scene, store, 5)
+    original = read_ledger(store)
+    _write_compacted_only(store, original, "crashed")
+    ledger, paths = read_ledger_parts(store)
+    new = compact_ledger(store, ledger, paths, run_id="c2", min_parts=1)
+    assert store.list_files("ledger") == new
+    assert _sorted_rows(read_ledger(store)) == _sorted_rows(original)
+    again, again_paths = read_ledger_parts(store)
+    assert compact_ledger(store, again, again_paths, run_id="c2", min_parts=1) == new
+    assert store.list_files("ledger") == new
+
+
+def test_observation_months_uses_utc_and_skips_nulls(
+    fixture_scene: SceneItem,
+) -> None:
+    perth = timezone(timedelta(hours=8))
+    # 2026-02-01 05:00 +08:00 is 2026-01-31 21:00 UTC: month 1, not 2.
+    entries = [
+        _one(
+            fixture_scene,
+            "a",
+            observation_path="obs/a.parquet",
+            datetime=datetime(2026, 2, 1, 5, 0, tzinfo=perth),
+        ),
+        _one(
+            fixture_scene,
+            "b",
+            observation_path="obs/a.parquet",
+            datetime=datetime(2026, 3, 5, tzinfo=UTC),
+        ),
+        _one(
+            fixture_scene,
+            "c",
+            observation_path="obs/a.parquet",
+            datetime=None,
+        ),
+        _one(
+            fixture_scene,
+            "d",
+            observation_path=None,
+            datetime=datetime(2026, 7, 5, tzinfo=UTC),
+        ),
+        _one(
+            fixture_scene,
+            "e",
+            observation_path="obs/nodate.parquet",
+            datetime=None,
+        ),
+    ]
+    months = observation_months(entries_to_table(entries))
+    assert months == {"obs/a.parquet": {1, 3}, "obs/nodate.parquet": set()}
+    assert observation_months(LEDGER_SCHEMA.empty_table()) == {}
