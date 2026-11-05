@@ -8,6 +8,7 @@ from wetland_change.config import (
     DEFAULT_CATALOGUE_BASE_URL,
     CatalogueConfig,
     PipelineConfig,
+    VerifyConfig,
     WaterbodiesVerifyConfig,
     WaterConfig,
     WaterSetting,
@@ -198,7 +199,7 @@ def test_waterbodies_tolerance_matches_learnings() -> None:
 
 
 def test_missing_verify_section_uses_defaults(tmp_path: Path) -> None:
-    text = REPO_CONFIG.read_text().split("# Water extent, history")[0]
+    text = REPO_CONFIG.read_text().split("[verify]")[0]
     assert "[verify" not in text
     path = tmp_path / "pipeline.toml"
     path.write_text(text)
@@ -213,4 +214,33 @@ def test_waterbodies_tolerance_zero_rejected(tmp_path: Path) -> None:
     path = tmp_path / "pipeline.toml"
     path.write_text(text)
     with pytest.raises(ValidationError, match="tolerance_pp"):
+        load_config(path)
+
+
+def test_min_clear_pixels_default_and_repo_value() -> None:
+    assert VerifyConfig().min_clear_pixels == 100
+    assert load_config(REPO_CONFIG).verify.min_clear_pixels == 100
+
+
+def test_min_clear_pixels_zero_rejected(tmp_path: Path) -> None:
+    text = REPO_CONFIG.read_text().replace(
+        "min_clear_pixels = 100", "min_clear_pixels = 0"
+    )
+    path = tmp_path / "pipeline.toml"
+    path.write_text(text)
+    with pytest.raises(ValidationError, match="min_clear_pixels"):
+        load_config(path)
+
+
+def test_waterbodies_history_days_default_and_repo_value() -> None:
+    assert WaterbodiesVerifyConfig().history_days == 365
+    assert load_config(REPO_CONFIG).verify.waterbodies.history_days == 365
+
+
+def test_waterbodies_history_days_zero_rejected(tmp_path: Path) -> None:
+    text = REPO_CONFIG.read_text().replace("history_days = 365", "history_days = 0")
+    assert "history_days = 0" in text
+    path = tmp_path / "pipeline.toml"
+    path.write_text(text)
+    with pytest.raises(ValidationError, match="history_days"):
         load_config(path)

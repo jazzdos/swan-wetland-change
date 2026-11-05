@@ -240,6 +240,7 @@ def ndvi_median_check(
     tolerance: float = MEDIAN_TOLERANCE,
     reference: str = DEA_STAC,
     detail: dict[str, Any] | None = None,
+    min_pixels: int = 1,
 ) -> Check:
     dea_median, n_compared, n_nodata = dea_ndvi_median(red_dn, nir_dn, clear)
     abs_diff = abs(measured_median - dea_median)
@@ -259,6 +260,10 @@ def ndvi_median_check(
         return Check(CHECK_NAME, None, None, tolerance, reference, info)
     if n_compared == 0:
         info["reason"] = "no clear pixels with DEA data"
+        return Check(CHECK_NAME, None, None, tolerance, reference, info)
+    if n_compared < min_pixels:
+        info["reason"] = f"fewer than {min_pixels} compared pixels"
+        info["min_pixels"] = min_pixels
         return Check(CHECK_NAME, None, None, tolerance, reference, info)
     return Check(
         CHECK_NAME, bool(abs_diff <= tolerance), abs_diff, tolerance, reference, info
@@ -312,6 +317,7 @@ def ndvi_scene_check(
     reader: RasterReader,
     scene_grid: Grid,
     expected_epsg: int,
+    min_pixels: int = 1,
 ) -> Check:
     dea_grid = reader.open_grid(nbart.red_href)
     base: dict[str, Any] = {
@@ -358,4 +364,5 @@ def ndvi_scene_check(
         clear & inside,
         reference=nbart.reference,
         detail=base,
+        min_pixels=min_pixels,
     )

@@ -127,6 +127,20 @@ def test_write_report(tmp_path: Path) -> None:
     assert "| a |" in md_path.read_text()
 
 
+def test_report_marks_an_errored_skip_as_not_all_passed(tmp_path: Path) -> None:
+    store = OutputStore(str(tmp_path / "out"))
+    ok = Check("a", True, 1.0, 1.0, "r")
+    errored = Check("e", None, None, None, "r", {"error": "RuntimeError: down"})
+    reason = Check("s", None, None, None, "r", {"reason": "late reference"})
+    assert errored.errored and not reason.errored and not ok.errored
+    write_report([ok, errored], store=store, run_id="e", docs_dir=None)
+    bad = json.loads(store.read_bytes("verification/e.json"))
+    assert (bad["all_passed"], bad["n_errored"], bad["n_skipped"]) == (False, 1, 1)
+    write_report([ok, reason], store=store, run_id="s", docs_dir=None)
+    good = json.loads(store.read_bytes("verification/s.json"))
+    assert (good["all_passed"], good["n_errored"], good["n_skipped"]) == (True, 0, 1)
+
+
 # ---------------------------------------------------------------------------
 # Offline coverage of the check branches, verify_run and the verify CLI
 # ---------------------------------------------------------------------------
@@ -147,15 +161,17 @@ from tests.test_pipeline import NOW, FakeClient, _config, _polygons, _run  # noq
 from wetland_change import cli  # noqa: E402
 from wetland_change.config import (  # noqa: E402
     PipelineConfig,
+    VerifyConfig,
     WaterConfig,
     WaterSetting,
 )
+from wetland_change.mask import clear_mask  # noqa: E402
 from wetland_change.outputs.geoparquet import (  # noqa: E402
     observation_path,
     read_observations,
 )
 from wetland_change.raster.read import RasterioReader, read_stack  # noqa: E402
-from wetland_change.stats import rasterise  # noqa: E402
+from wetland_change.stats import rasterise, water_pixels  # noqa: E402
 from wetland_change.verify.ndvi import NbartItem  # noqa: E402
 from wetland_change.verify.run import (  # noqa: E402
     ManifestReadError,
@@ -357,6 +373,92 @@ def test_wo_check_branches(
     assert wet.passed is True
     dry = run(FakeReader(grid=grid, data=np.zeros(shape, np.uint8)))
     assert dry.passed is False
+
+
+def _wo_with_clear_count(
+    fixture_scene: SceneItem,
+    fixture_polygon: BaseGeometry,
+    n_clear: int,
+    **kwargs: Any,
+) -> Check:
+    """wo_check where WO is clear and dry on exactly `n_clear` pixels.
+
+    The pipeline pixel is clear and wet there (agreement_min 0.5), so every
+    mutually clear pixel disagrees.
+    """
+    stack, planned, inside, grid = _stack_and_window(fixture_scene, fixture_polygon)
+    clear = clear_mask(stack.scl, stack.green, stack.nir, stack.swir16) & inside
+    water = WaterConfig(agreement_min=0.5)
+    wet = water_pixels(water.for_polygon(None), stack, clear) & clear
+    rows, cols = np.nonzero(wet)
+    assert rows.size >= n_clear
+    data = np.full(stack.shape, 1, np.uint8)
+    data[rows[:n_clear], cols[:n_clear]] = 0
+    return wo_check(
+        fixture_scene,
+        stack,
+        planned,
+        inside,
+        water=water,
+        wo_href="wo.tif",
+        reader=FakeReader(grid=grid, data=data),
+        scene_grid=grid,
+        **kwargs,
+    )
+
+
+def test_wo_check_one_disagreeing_pixel_fails_under_the_default_floor(
+    fixture_scene: SceneItem, fixture_polygon: BaseGeometry
+) -> None:
+    result = _wo_with_clear_count(fixture_scene, fixture_polygon, 1)
+    assert result.detail["n_mutually_clear"] == 1
+    assert result.passed is False
+    assert result.measured == 0.0
+
+
+def test_wo_check_below_min_clear_pixels_is_a_reason_skip(
+    fixture_scene: SceneItem, fixture_polygon: BaseGeometry
+) -> None:
+    result = _wo_with_clear_count(fixture_scene, fixture_polygon, 1, min_clear_pixels=2)
+    assert result.passed is None
+    assert result.measured is None
+    assert result.threshold == 0.5
+    assert result.reference == "wo.tif"
+    assert result.detail["n_mutually_clear"] == 1
+    assert result.detail["min_clear_pixels"] == 2
+    assert result.detail["reason"] == "fewer than 2 mutually clear pixels"
+    assert result.detail["item"] == fixture_scene.item_id
+    assert result.errored is False
+
+
+def test_wo_check_count_equal_to_the_floor_is_scored(
+    fixture_scene: SceneItem, fixture_polygon: BaseGeometry
+) -> None:
+    result = _wo_with_clear_count(fixture_scene, fixture_polygon, 2, min_clear_pixels=2)
+    assert result.detail["n_mutually_clear"] == 2
+    assert result.passed is False
+    assert result.measured == 0.0
+    assert "reason" not in result.detail
+
+
+def test_wo_check_zero_clear_pixels_unchanged_with_a_floor(
+    fixture_scene: SceneItem, fixture_polygon: BaseGeometry
+) -> None:
+    result = _wo_with_clear_count(
+        fixture_scene, fixture_polygon, 0, min_clear_pixels=100
+    )
+    assert result.passed is None and result.measured is None
+    assert result.detail["n_mutually_clear"] == 0
+    assert "reason" not in result.detail
+
+
+def test_pooled_agreement_ignores_floor_skipped_checks(
+    fixture_scene: SceneItem, fixture_polygon: BaseGeometry
+) -> None:
+    skipped = _wo_with_clear_count(
+        fixture_scene, fixture_polygon, 1, min_clear_pixels=2
+    )
+    assert pooled_agreement([skipped]) is None
 
 
 def _wo_with(
@@ -664,6 +766,9 @@ def test_verify_run_turns_exceptions_into_skipped_checks(
     assert errors["water_vs_dea_s2_wo"] == "RuntimeError: DEA is down"
     assert errors["pixels_vs_planetary_computer"] == "RuntimeError: PC is down"
     assert store.exists(f"verification/{run_id}.json")
+    report = json.loads(store.read_bytes(f"verification/{run_id}.json"))
+    assert report["all_passed"] is False
+    assert report["n_errored"] >= 2
 
 
 def test_verify_run_does_not_look_up_wo_without_overlap(
@@ -722,7 +827,12 @@ def _ndvi_run(
     tmp_path: Path,
     **overrides: Any,
 ) -> tuple[list[Check], OutputStore, str]:
+    min_clear_pixels = overrides.pop("min_clear_pixels", None)
     cfg, store, run_id, polygons = _built_run(fixture_item, fixture_polygon, tmp_path)
+    if min_clear_pixels is not None:
+        cfg = cfg.model_copy(
+            update={"verify": VerifyConfig(min_clear_pixels=min_clear_pixels)}
+        )
     scene = scenes_for_run(cfg, store, run_id)[0]
     stack, _, _, grid = _stack_and_window(scene, fixture_polygon)
     arrays = {
@@ -760,6 +870,22 @@ def test_verify_run_scores_ndvi_against_injected_nbart_item(
     report = json.loads(store.read_bytes(f"verification/{run_id}.json"))
     names = {c["name"] for c in report["checks"]}
     assert {"ndvi_vs_dea_nbart", "ndvi_correlation_vs_dea_nbart"} <= names
+
+
+def test_verify_run_excludes_a_floor_skipped_ndvi_row_from_the_correlation(
+    fixture_item: dict[str, Any], fixture_polygon: BaseGeometry, tmp_path: Path
+) -> None:
+    checks, _, _ = _ndvi_run(
+        fixture_item, fixture_polygon, tmp_path, min_clear_pixels=10_000_000
+    )
+    ndvi = [c for c in checks if c.name == "ndvi_vs_dea_nbart"]
+    assert len(ndvi) == 1
+    assert ndvi[0].passed is None and ndvi[0].errored is False
+    assert ndvi[0].detail["reason"].startswith("fewer than 10000000 compared")
+    corr = [c for c in checks if c.name == "ndvi_correlation_vs_dea_nbart"]
+    assert len(corr) == 1
+    assert corr[0].detail["rows"] == []
+    assert corr[0].detail["n_rows"] == 0
 
 
 def test_verify_run_correlation_is_skipped_not_errored_on_a_mismatched_grid(
@@ -1055,6 +1181,10 @@ def test_pixel_check_skips_on_different_processing_baseline(
     assert check.detail["planetary_computer_baseline"] == "04.00"
 
 
+_ERRORED = Check("e", None, None, None, "r", {"error": "RuntimeError: down"})
+_REASON_ONLY = Check("s", None, None, None, "r", {"reason": "late reference"})
+
+
 def _cli_env(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path, checks: list[Check]
 ) -> OutputStore:
@@ -1079,8 +1209,12 @@ def test_cli_verify_errors_without_runs(
     [
         ([Check("a", True, 1.0, 1.0, "r")], 0),
         ([Check("a", False, 0.5, 1.0, "r")], 3),
-        ([Check("a", None, None, None, "r")], 4),
+        ([Check("a", None, None, None, "r", {"reason": "late"})], 4),
         ([], 4),
+        ([Check("a", True, 1.0, 1.0, "r"), _ERRORED], 6),
+        ([_ERRORED], 6),
+        ([Check("a", False, 0.5, 1.0, "r"), _ERRORED], 3),
+        ([Check("a", True, 1.0, 1.0, "r"), _REASON_ONLY], 0),
     ],
 )
 def test_cli_verify_exit_codes(
@@ -1090,6 +1224,16 @@ def test_cli_verify_exit_codes(
     store.write_bytes("runs/r1.json", b'{"processed": 1}')
     result = CliRunner().invoke(cli.app, ["verify"])
     assert result.exit_code == code, result.output
+
+
+def test_cli_verify_names_the_errored_count_on_stderr(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    store = _cli_env(monkeypatch, tmp_path, [_ERRORED, _ERRORED])
+    store.write_bytes("runs/r1.json", b'{"processed": 1}')
+    result = CliRunner().invoke(cli.app, ["verify"])
+    assert result.exit_code == 6
+    assert "2 reference checks could not run for run r1" in result.output
 
 
 WB_UID = "qd635epws_v3"
@@ -1163,6 +1307,280 @@ def test_verify_run_scores_the_waterbody_history(
     assert wb[0].measured == pytest.approx(0.25)
     spearman = [c for c in checks if c.name == "water_spearman_vs_dea_waterbodies"]
     assert len(spearman) == 1 and spearman[0].passed is None  # fewer than 10 pairs
+
+
+def _store_earlier_pass(
+    store: OutputStore,
+    template: SceneItem,
+    item_id: str,
+    when: datetime,
+    *,
+    wet_fraction: float,
+    run_kind: str = "run",
+) -> None:
+    """Store one waterbody observation file and its succeeded ledger entry."""
+    import io
+
+    import pandas as pd
+
+    from wetland_change.ledger import entry_for, write_ledger
+    from wetland_change.outputs.geoparquet import observation_path
+
+    scene = replace(template, item_id=item_id, datetime=when)
+    path = observation_path(scene.year, scene.tile, scene.item_id)
+    frame = pd.read_parquet(
+        io.BytesIO(
+            store.read_bytes(
+                observation_path(template.year, template.tile, template.item_id)
+            )
+        )
+    )
+    row = frame.iloc[[0]].copy()
+    row["polygon_id"] = f"dea-{WB_UID}"
+    row["aoi_layer"] = "dea_waterbody"
+    row["item_id"] = item_id
+    row["datetime"] = pd.Timestamp(when)
+    row["scene_coverage"] = 1.0
+    row["valid_fraction"] = 1.0
+    row["water_ha_index"] = wet_fraction * 193.2
+    buf = io.BytesIO()
+    row.to_parquet(buf)
+    store.write_bytes(path, buf.getvalue())
+    write_ledger(
+        [
+            entry_for(
+                scene,
+                status="succeeded",
+                attempts=1,
+                run_id=f"earlier-{item_id}",
+                processed_at=datetime(2026, 11, 1, tzinfo=UTC),
+                n_rows=1,
+                observation_path=path,
+                run_kind=run_kind,
+            )
+        ],
+        store,
+        run_id=f"earlier-{item_id}",
+    )
+
+
+class _CountingStore(OutputStore):
+    def __init__(self, root: str) -> None:
+        super().__init__(root)
+        self.listed: list[str] = []
+        self.checked: list[str] = []
+
+    def list_files(self, prefix: str) -> list[str]:
+        self.listed.append(prefix)
+        return super().list_files(prefix)
+
+    def exists(self, relpath: str) -> bool:
+        self.checked.append(relpath)
+        return super().exists(relpath)
+
+
+def _verify_with_history(
+    cfg: PipelineConfig,
+    store: OutputStore,
+    run_id: str,
+    polygons: list[Any],
+    scene: SceneItem,
+    series_dates: list[datetime],
+    series_wet: list[float],
+) -> list[Check]:
+    import pandas as pd
+
+    series = pd.DataFrame(
+        {
+            "date": [pd.Timestamp(d).tz_convert("UTC") for d in series_dates],
+            "wet_fraction": series_wet,
+        }
+    )
+    return verify_run(
+        cfg,
+        store,
+        run_id,
+        polygons=polygons,
+        waterbody_polygons=[_waterbody_polygon()],
+        waterbodies_loader=lambda uid: series,
+        wo_lookup=lambda s, b: None,
+        pixel_checker=lambda *a: Check("p", True, 1.0, 1.0, "fake"),
+        docs_dir=None,
+    )
+
+
+def test_verify_run_scores_spearman_over_stored_history(
+    fixture_item: dict[str, Any], fixture_polygon: BaseGeometry, tmp_path: Path
+) -> None:
+    from datetime import timedelta
+
+    cfg, store, run_id, polygons = _built_run(fixture_item, fixture_polygon, tmp_path)
+    scene = scenes_for_run(cfg, store, run_id)[0]
+    _add_waterbody_row(store, scene, wet_fraction=0.5)
+    days = [
+        (f"h{k}", k * 10, 0.5 - 0.02 * k, "backfill" if k % 2 else "run")
+        for k in range(1, 13)
+    ]
+    # Exactly history_days back is in the window; one day further is out, and so
+    # is a pass newer than the run's newest scene.
+    days += [("edge-in", 365, 0.1, "run"), ("edge-out", 366, 0.1, "run")]
+    for item_id, back, wet, kind in days:
+        _store_earlier_pass(
+            store,
+            scene,
+            item_id,
+            scene.datetime - timedelta(days=back),
+            wet_fraction=wet,
+            run_kind=kind,
+        )
+    _store_earlier_pass(
+        store, scene, "later", scene.datetime + timedelta(days=3), wet_fraction=0.9
+    )
+    dates = [scene.datetime] + [
+        scene.datetime - timedelta(days=b) for _, b, _, _ in days
+    ]
+    dates.append(scene.datetime + timedelta(days=3))
+    wets = [0.5025] + [w + 0.0025 for _, _, w, _ in days] + [0.9025]
+    checks = _verify_with_history(cfg, store, run_id, polygons, scene, dates, wets)
+    per_pass = [c for c in checks if c.name == "water_vs_dea_waterbodies"]
+    assert len(per_pass) == 1  # the verified run only
+    (spearman,) = [c for c in checks if c.name == "water_spearman_vs_dea_waterbodies"]
+    assert spearman.passed is not None
+    # run pass + 12 history passes + the pass exactly history_days back
+    assert spearman.detail["n_pairs"] == 14
+    assert spearman.detail["n_run_pairs"] == 1
+    assert spearman.detail["history_days"] == 365
+
+
+def _lake_dates_and_wets(
+    scene: SceneItem, days: list[tuple[str, int, float]]
+) -> tuple[list[datetime], list[float]]:
+    from datetime import timedelta
+
+    dates = [scene.datetime] + [scene.datetime - timedelta(days=b) for _, b, _ in days]
+    wets = [0.5025] + [w + 0.0025 for _, _, w in days]
+    return dates, wets
+
+
+def test_verify_run_scores_spearman_when_the_run_has_no_lake_rows(
+    fixture_item: dict[str, Any], fixture_polygon: BaseGeometry, tmp_path: Path
+) -> None:
+    from datetime import timedelta
+
+    cfg, store, run_id, polygons = _built_run(fixture_item, fixture_polygon, tmp_path)
+    scene = scenes_for_run(cfg, store, run_id)[0]
+    # No _add_waterbody_row: the run's own rows are all non-lake polygons.
+    days = [(f"h{k}", k * 10, 0.5 - 0.02 * k) for k in range(1, 13)]
+    for item_id, back, wet in days:
+        _store_earlier_pass(
+            store,
+            scene,
+            item_id,
+            scene.datetime - timedelta(days=back),
+            wet_fraction=wet,
+        )
+    dates, wets = _lake_dates_and_wets(scene, days)
+    checks = _verify_with_history(cfg, store, run_id, polygons, scene, dates, wets)
+    assert not [c for c in checks if c.name == "water_vs_dea_waterbodies"]
+    (spearman,) = [c for c in checks if c.name == "water_spearman_vs_dea_waterbodies"]
+    assert spearman.passed is not None
+    assert spearman.detail["n_pairs"] == 12
+    assert spearman.detail["n_run_pairs"] == 0
+    assert not [c for c in checks if c.name.startswith("water") and c.errored]
+
+
+def test_verify_run_history_uses_only_the_latest_succeeded_stored_entries(
+    fixture_item: dict[str, Any], fixture_polygon: BaseGeometry, tmp_path: Path
+) -> None:
+    from datetime import timedelta
+
+    from wetland_change.ledger import entry_for, write_ledger
+    from wetland_change.outputs.geoparquet import observation_path
+
+    cfg, store, run_id, polygons = _built_run(fixture_item, fixture_polygon, tmp_path)
+    scene = scenes_for_run(cfg, store, run_id)[0]
+    _add_waterbody_row(store, scene, wet_fraction=0.5)
+    days = [(f"h{k}", k * 10, 0.5 - 0.02 * k) for k in range(1, 13)]
+    for item_id, back, wet in days:
+        _store_earlier_pass(
+            store,
+            scene,
+            item_id,
+            scene.datetime - timedelta(days=back),
+            wet_fraction=wet,
+        )
+    extra = [("failed-later", 130, 0.2), ("file-gone", 140, 0.3)]
+    for item_id, back, wet in extra:
+        _store_earlier_pass(
+            store,
+            scene,
+            item_id,
+            scene.datetime - timedelta(days=back),
+            wet_fraction=wet,
+        )
+    # Its latest ledger row is a failure, though an earlier success left a file.
+    failed_scene = replace(
+        scene,
+        item_id="failed-later",
+        datetime=scene.datetime - timedelta(days=130),
+    )
+    write_ledger(
+        [
+            entry_for(
+                failed_scene,
+                status="failed",
+                attempts=1,
+                run_id="later-failure",
+                processed_at=datetime(2026, 11, 2, tzinfo=UTC),
+                error="boom",
+            )
+        ],
+        store,
+        run_id="later-failure",
+    )
+    # The ledger lists the file as succeeded, but it is no longer in the store.
+    gone = observation_path(scene.year, scene.tile, "file-gone")
+    assert store.delete(gone)
+    dates, wets = _lake_dates_and_wets(scene, days + extra)
+    checks = _verify_with_history(cfg, store, run_id, polygons, scene, dates, wets)
+    (spearman,) = [c for c in checks if c.name == "water_spearman_vs_dea_waterbodies"]
+    assert spearman.passed is not None
+    # run pass + 12 healthy history passes; neither extra item counts
+    assert spearman.detail["n_pairs"] == 13
+    assert not [c for c in checks if c.name.startswith("water") and c.errored]
+
+
+def test_verify_run_reads_history_with_one_ledger_listing_and_no_exists(
+    fixture_item: dict[str, Any], fixture_polygon: BaseGeometry, tmp_path: Path
+) -> None:
+    from datetime import timedelta
+
+    cfg, _, run_id, polygons = _built_run(fixture_item, fixture_polygon, tmp_path)
+    store = _CountingStore(cfg.output.root)
+    scene = scenes_for_run(cfg, store, run_id)[0]
+    _add_waterbody_row(store, scene, wet_fraction=0.5)
+    for k in range(1, 4):
+        _store_earlier_pass(
+            store,
+            scene,
+            f"h{k}",
+            scene.datetime - timedelta(days=10 * k),
+            wet_fraction=0.4,
+        )
+    store.listed.clear()
+    store.checked.clear()
+    _verify_with_history(
+        cfg,
+        store,
+        run_id,
+        polygons,
+        scene,
+        [scene.datetime],
+        [0.5],
+    )
+    assert store.listed.count("ledger") == 1
+    assert store.listed.count("observations") == 1
+    assert not [p for p in store.checked if p.startswith("observations")]
 
 
 def test_verify_run_without_waterbodies_makes_no_history_check(
@@ -1296,3 +1714,54 @@ def test_pooled_agreement_skips_unmeasured_and_empty() -> None:
 def test_pooled_agreement_none_when_nothing_usable() -> None:
     assert pooled_agreement([]) is None
     assert pooled_agreement([_wo_check("a", None, 0)]) is None
+
+
+def _assert_every_name_maps_to_a_row(checks: list[Check]) -> None:
+    from wetland_change.verify.matrix import matrix_status
+
+    rows = matrix_status(checks)
+    mapped = {
+        name for r in rows if r["row"] != "End to end" for name in r["check_names"]
+    }
+    assert {c.name for c in checks} <= mapped
+
+
+def test_every_check_name_verify_run_emits_maps_to_a_matrix_row(
+    fixture_item: dict[str, Any], fixture_polygon: BaseGeometry, tmp_path: Path
+) -> None:
+    cfg, store, run_id, polygons = _built_run(fixture_item, fixture_polygon, tmp_path)
+    grid = RasterioReader().open_grid(fixture_item["assets"]["green"]["href"])
+    checks = verify_run(
+        cfg,
+        store,
+        run_id,
+        polygons=polygons,
+        wo_lookup=lambda scene, bbox: "wo.tif",
+        wo_reader_factory=lambda: FakeReader(
+            grid=grid, data=np.full((48, 48), WO_WET, np.uint8)
+        ),
+        pixel_checker=lambda scene, reader, window: Check(
+            "pixels_vs_planetary_computer", True, 1.0, 1.0, "fake"
+        ),
+        docs_dir=None,
+    )
+    names = {c.name for c in checks}
+    assert {"reflectance_scaling", "water_vs_dea_s2_wo"} <= names
+    assert any(n.startswith("scl_share_") for n in names)
+    _assert_every_name_maps_to_a_row(checks)
+    report = json.loads(store.read_bytes(f"verification/{run_id}.json"))
+    assert len(report["matrix"]) == 14
+
+
+def test_error_check_names_map_to_a_matrix_row(
+    fixture_item: dict[str, Any], fixture_polygon: BaseGeometry, tmp_path: Path
+) -> None:
+    cfg, store, run_id, polygons = _built_run(fixture_item, fixture_polygon, tmp_path)
+    checks = verify_run(
+        cfg, store, run_id, polygons=polygons, reader=FakeReader(), docs_dir=None
+    )
+    names = {c.name for c in checks if c.errored}
+    assert {"scl_shares", "scene_grid"} <= names
+    _assert_every_name_maps_to_a_row(checks)
+    report = json.loads(store.read_bytes(f"verification/{run_id}.json"))
+    assert report["all_passed"] is False

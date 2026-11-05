@@ -134,9 +134,9 @@ recorded in `LEARNINGS.md`, and the Collection 1 backfill
 | Reflectance scaling | ESA `product_metadata` XML on each item | `src/wetland_change/raster/scaling.py`, `src/wetland_change/verify/scaling.py` (`reflectance_scaling`); `tests/test_scaling.py`, `tests/test_verify.py` | Implemented and asserted for every scene at run time. Passed 8 of 8 on the first live run. |
 | SCL read and alignment | ESA SCL class percentages in item properties | `src/wetland_change/verify/scl.py` (`scl_share_*`); `tests/test_verify.py` | Implemented at full resolution, tolerance 1 pp. Passed 32 of 32 checks on the first live run. |
 | Index arithmetic | spyndex 0.12; dea-tools 0.4.10 `calculate_indices` | `tests/test_indices.py` (spyndex, standing); `scripts/compare_dea_tools_indices.py` (dea-tools, one-off) | Implemented. The dea-tools comparison passed 6 of 6 at 1e-6 (`LEARNINGS.md`, "dea-tools index comparison"). |
-| Water extent, live | DEA `ga_s2_wo_provisional_3`, same pass and grid | `src/wetland_change/verify/wo.py` (`water_vs_dea_s2_wo`); `tests/test_verify.py` | Implemented for pixel agreement on mutually clear pixels, with per-polygon thresholds (0.91 default, 0.94, 0.92 and 0.95 for the three overrides) instead of the design's 0.95, because the best calibrated agreement was 0.9303 (handoff, ADR 0005). The design's "wet area within 5 pp" clause is not implemented; no design document, decision or handoff records a reason. |
-| Water extent, history | DEA Waterbodies v3 CSV per lake; DEA `ga_ls_wo_3` per scene | `src/wetland_change/verify/waterbodies.py` (`water_vs_dea_waterbodies`, `water_spearman_vs_dea_waterbodies`); `tests/test_verify_waterbodies.py` | Implemented against the Waterbodies CSV with a 10 pp per-pass tolerance (spike S9). The `ga_ls_wo_3` per-scene comparison is not implemented as a standing check: S9 found Waterbodies v3 within 0.2 pp of `ga_ls_wo_3` on all 129 passes, consistent with Waterbodies being derived from it, and used it once to set the tolerance (`LEARNINGS.md`, "S9 historical tolerance"). The backfill Spearman rho was 0.858 to 0.897 on four lakes, below 0.9. |
-| NDVI | DEA NBART, same acquisition | `src/wetland_change/verify/ndvi.py` (`ndvi_vs_dea_nbart`, `ndvi_correlation_vs_dea_nbart`); `tests/test_verify_ndvi.py` | Implemented. One live check on 2026-10-30 passed with an absolute difference of about 0.003 against a 0.05 tolerance (`LEARNINGS.md`, "DEA NBART scale"). |
+| Water extent, live | DEA `ga_s2_wo_provisional_3`, same pass and grid | `src/wetland_change/verify/wo.py` (`water_vs_dea_s2_wo`); `tests/test_verify.py` | Implemented for pixel agreement on mutually clear pixels, with per-polygon thresholds (0.91 default, 0.94, 0.92 and 0.95 for the three overrides) instead of the design's 0.95, because the best calibrated agreement was 0.9303 (handoff, ADR 0005). The design's "wet area within 5 pp" clause is not implemented; no design document, decision or handoff records a reason. The check skips a polygon below `[verify] min_clear_pixels` (default 100) mutually clear pixels, and the skip is a reason skip, not an error. |
+| Water extent, history | DEA Waterbodies v3 CSV per lake; DEA `ga_ls_wo_3` per scene | `src/wetland_change/verify/waterbodies.py` (`water_vs_dea_waterbodies`, `water_spearman_vs_dea_waterbodies`); `tests/test_verify_waterbodies.py` | Implemented against the Waterbodies CSV with a 10 pp per-pass tolerance (spike S9). The `ga_ls_wo_3` per-scene comparison is not implemented as a standing check: S9 found Waterbodies v3 within 0.2 pp of `ga_ls_wo_3` on all 129 passes, consistent with Waterbodies being derived from it, and used it once to set the tolerance (`LEARNINGS.md`, "S9 historical tolerance"). The per-lake Spearman is scored over the stored observations of the last `[verify.waterbodies] history_days` (default 365) days, ending at the newest scene of the verified run, so it reaches its 10 pair minimum on a daily run; per-pass checks cover the verified run only. The backfill Spearman rho was 0.858 to 0.897 on four lakes, below 0.9. |
+| NDVI | DEA NBART, same acquisition | `src/wetland_change/verify/ndvi.py` (`ndvi_vs_dea_nbart`, `ndvi_correlation_vs_dea_nbart`); `tests/test_verify_ndvi.py` | Implemented. One live check on 2026-10-30 passed with an absolute difference of about 0.003 against a 0.05 tolerance (`LEARNINGS.md`, "DEA NBART scale"). The check skips a polygon below `[verify] min_clear_pixels` (default 100) compared pixels, and the skip is a reason skip, not an error. |
 | GeoParquet output | geoparquet-validator; DuckDB and GDAL as readers | `src/wetland_change/outputs/geoparquet.py`; `tests/test_geoparquet.py`, `tests/test_pipeline.py`, `tests/test_readme.py` | Implemented. The validator, DuckDB, pyarrow and geopandas readers run in the default suite and agree on row counts and bounds (`tests/test_geoparquet.py`). GDAL is not exercised because the pinned pyogrio wheel has no Parquet driver. |
 | STAC catalogue | stac-validator (through stac-check 1.14), stac-check, pystac validate, stac-browser | `src/wetland_change/stac/catalogue.py`; `tests/test_catalogue.py`, `tests/test_run_catalogue.py`; CORS in `infra/main.tf`, `tests/test_infra.py` | Implemented offline: pystac `validate_all` and stac-check pass, and all hrefs are absolute https. The live checks (bucket returns `Access-Control-Allow-Origin`, catalogue opens in stac-browser) are not implemented because the infrastructure has not been applied and no bucket exists. |
 | Incremental and idempotent | pytest-regressions golden run; watermark replay | `tests/test_golden_run.py`, `tests/test_pipeline.py`, `tests/test_ledger.py`, `tests/test_catalogue.py` | Implemented: byte-identical outputs on rerun, no duplicates after watermark replay, golden observation rows. The ledger-against-Copernicus count is covered per tile over 30 days by the freshness row; the backfill reached coverage 1.0 against a fresh Earth Search reference. |
@@ -206,9 +206,17 @@ uv run wetland-change freshness
   catalogue.
 - `verify` scores the verification matrix for the latest daily run, or the run
   given with `--run-id`, and writes the JSON and Markdown reports. A backfill
-  chunk is verified only by naming it with `--run-id`. It exits 5
-  and names the manifest path when a run manifest cannot be read, rather than
-  checking an older run.
+  chunk is verified only by naming it with `--run-id`. It exits 3 when a check
+  failed, 4 when nothing was scored, 5 (naming the manifest path) when a run
+  manifest cannot be read, rather than checking an older run, and 6 when a
+  reference check could not run because its source raised an error. A skip
+  that carries only a reason, such as a reference that is not published yet,
+  does not change the exit code. The report carries a `matrix` section with
+  pass, fail or not-run for all 14 rows of the verification matrix.
+  The per-lake Spearman of the water history row is scored over stored
+  observations for the last `[verify.waterbodies] history_days` (default 365)
+  days, ending at the newest scene of the verified run; per-pass checks cover
+  the verified run only.
 - `build-catalogue` builds the STAC catalogue from the ledger, writing only
   objects that are new or changed (`0 files written` is the correct output
   when nothing changed). Run it after `verify` so the catalogue links the
@@ -297,6 +305,8 @@ As of this commit:
 - The infrastructure in `infra/` has not been applied. No bucket, OIDC role
   or repository variables exist yet.
 - The `pipeline` and `verify` workflows are disabled on GitHub until it is.
+- The scheduled-job-alive row reads not-run in the verify report because
+  freshness is a separate command (`wetland-change freshness`).
 - No scheduled run has happened. The freshness and end-to-end rows, and
   success criterion 1 (four weeks of unattended daily runs), are untested.
 - Whether GitHub-hosted runners can reach the DEA hosts has not been tested.

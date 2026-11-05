@@ -135,6 +135,7 @@ def wo_check(
     reader: RasterReader,
     scene_grid: Grid | None = None,
     polygon_id: str | None = None,
+    min_clear_pixels: int = 1,
 ) -> Check:
     name = "water_vs_dea_s2_wo"
     setting = water.for_polygon(polygon_id)
@@ -166,6 +167,22 @@ def wo_check(
     pipeline_water = water_pixels(setting, stack, clear)
     agreement, n = wo_agreement(pipeline_water, clear, wo)
     scl_agreement, _ = wo_agreement(clear & (stack.scl == 6), clear, wo)
+    if 0 < n < min_clear_pixels:
+        # Too few pixels to score: a reason skip, not an error. `measured`
+        # stays None so pooled_agreement ignores it.
+        return Check(
+            name,
+            None,
+            None,
+            agreement_min,
+            wo_href,
+            {
+                **base,
+                "n_mutually_clear": n,
+                "min_clear_pixels": min_clear_pixels,
+                "reason": f"fewer than {min_clear_pixels} mutually clear pixels",
+            },
+        )
     return Check(
         name,
         passed=bool(agreement >= agreement_min) if n else None,

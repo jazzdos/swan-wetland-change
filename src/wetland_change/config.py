@@ -137,9 +137,15 @@ class WaterbodiesVerifyConfig(BaseModel):
     max_day_gap: int = Field(default=3, ge=1)  # days between the two passes
     spearman_min: float = Field(default=0.9, ge=0.0, le=1.0)
     spearman_min_pairs: int = Field(default=10, ge=3)
+    # Days of stored observations the Spearman check scores over, ending at the
+    # newest scene of the verified run.
+    history_days: int = Field(default=365, ge=1)
 
 
 class VerifyConfig(BaseModel):
+    # Mutually clear pixels a polygon needs before the WO and NDVI checks score
+    # it. Pixels are 10 m, so 100 is 1 ha. Below it the check is a reason skip.
+    min_clear_pixels: int = Field(default=100, ge=1)
     waterbodies: WaterbodiesVerifyConfig = Field(
         default_factory=WaterbodiesVerifyConfig
     )

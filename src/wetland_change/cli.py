@@ -299,7 +299,12 @@ def verify(
         ),
     ] = None,
 ) -> None:
-    """Score the known-good checks for one run and write the report."""
+    """Score the known-good checks for one run and write the report.
+
+    Exits 3 when a check failed, 4 when nothing was scored, 5 when the run
+    manifest cannot be read, and 6 when a reference check could not run
+    because its source raised an error.
+    """
     from wetland_change.manifest import manifest_path
     from wetland_change.verify.run import (
         ManifestReadError,
@@ -335,6 +340,12 @@ def verify(
         typer.echo(f"{status}\t{check.name}\t{check.measured}\t{check.reference}")
     if any(check.passed is False for check in checks):
         raise typer.Exit(code=3)
+    n_errored = sum(check.errored for check in checks)
+    if n_errored:
+        typer.echo(
+            f"{n_errored} reference checks could not run for run {target}", err=True
+        )
+        raise typer.Exit(code=6)
     if not any(check.passed is not None for check in checks):
         typer.echo(f"no checks were scored for run {target}", err=True)
         raise typer.Exit(code=4)
