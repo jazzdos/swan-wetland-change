@@ -17,7 +17,7 @@ from wetland_change.aoi import AoiPolygon, union_bbox_4326
 from wetland_change.catalogue.item import SceneItem, parse_item, parse_timestamp
 from wetland_change.catalogue.search import StacClient, open_client
 from wetland_change.config import PipelineConfig
-from wetland_change.ledger import read_ledger
+from wetland_change.ledger import RUN_KIND_RUN, read_ledger
 from wetland_change.manifest import manifest_path
 from wetland_change.outputs.geoparquet import observation_path
 from wetland_change.raster.read import (
@@ -95,7 +95,10 @@ def read_manifest_bytes(store: OutputStore, path: str) -> bytes:
 
 
 def latest_run_id(store: OutputStore) -> str | None:
-    """Newest run that processed at least one scene (no-op runs are skipped).
+    """Newest daily run (kind run) that processed at least one scene.
+
+    Backfill chunks and no-op runs are skipped. A manifest without a kind
+    counts as a daily run.
 
     A manifest that is not valid JSON is skipped. A manifest that cannot be
     read raises ManifestReadError, so an access failure never falls back to an
@@ -105,10 +108,12 @@ def latest_run_id(store: OutputStore) -> str | None:
     for path in reversed(runs):
         raw = read_manifest_bytes(store, path)
         try:
-            processed = int(json.loads(raw).get("processed", 0))
+            manifest = json.loads(raw)
+            processed = int(manifest.get("processed", 0))
+            kind = manifest.get("kind", RUN_KIND_RUN)
         except (ValueError, TypeError):
             continue
-        if processed > 0:
+        if kind == RUN_KIND_RUN and processed > 0:
             return path.rsplit("/", 1)[-1].removesuffix(".json")
     return None
 
