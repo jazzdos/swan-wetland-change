@@ -7,7 +7,7 @@ depends_on: [st-06a8, st-b983]
 touches: [docs/research/**, docs/handoffs/**]
 exclusive: false
 created: 2026-10-29
-updated: 2026-10-30
+updated: 2026-11-05
 ---
 ## Description
 
@@ -34,5 +34,6 @@ The handoff states the project state, verification status per matrix row, deviat
 ## Implementation Notes
 
 - 2026-10-30T00:54:59.553Z: 2026-10-30: the calibration spike scripts behind LEARNINGS.md 'S2 water calibration' and 'Per-polygon water calibration' exist only untracked, at scratch/spikes/s2_calibrate.py and scratch/spikes/polygon_calibrate.py (copied with their logs from .worktrees/feature/wetland-change-pipeline/scratch/spikes/ so removing that worktree does not lose them). The audit should decide whether to commit them.
+- 2026-11-05T08:56:36.821Z: Before the handoff reconcile README.md with docs/research/2026-11-04-milestone-2-review.md. README.md says reruns are safe (Architecture), which review finding 2 contradicts until it is fixed, and its Limitations section predates the review. The handoff must also list which review stories were fixed or waived.
 
 ## Questions
