@@ -53,6 +53,17 @@ Definitions. H1 to H3 use metric `water_ha_index`, UTC acquisition dates and one
 
 H2 may come out untestable. The store starts in December 2022, so a February to April 2023 baseline holds only earlier dates of that same month, and 4 to 5 dates a month may not reach 5 samples. The report gives the count per `reason`. It also gives a descriptive z for those dates against same-month observations from all years other than 2023; that figure is not a verdict and does not follow ADR 0004.
 
+## Pre-registered hypotheses (st-9aff, 2026-11-05)
+
+Recorded before any wet-area measurement. The design's Water extent, live row (line 226) asks for wet area within 5 pp, and `water_vs_dea_s2_wo` does not score it. Over mutually clear pixels, the absolute wet-area gap is at most 1 minus agreement, so the clause was implied at the design's 0.95 floor and can bind only below it. In `docs/research/2026-10-29-polygon-calibration.csv`, 17 of 22 ramsar-28 rows at its configured setting sit between its 0.92 floor and 0.95. The same rows for ramsar-15 and ramsar-56 show none. No recorded data holds wet counts.
+
+Definitions. Sample: every polygon in the Ramsar AOI at its configured setting, on the 6 newest of the 12 dates in that CSV, and ramsar-28 on all 12. A row is one polygon on one scene with at least 100 mutually clear pixels. Wet share is the share of mutually clear pixels that are wet, for the pipeline and for DEA WO, using the clear rule in `wo_agreement`. Gap is pipeline share minus WO share, in percentage points. A row passes agreement when agreement is at or above the polygon's agreement_min.
+
+- H1. Of the rows that pass agreement, at least 90 percent have an absolute gap of 5 pp or less.
+- H2. Of the ramsar-28 rows that pass agreement, at least 90 percent have an absolute gap of 5 pp or less.
+
+Decision rule. Both hold: implement the 5 pp clause as part of `Check.passed`. Either fails: do not add it as a hard gate at 5 pp, and park the story with the measured rates, because a clause that fails often would turn verify red the way st-b602's Spearman check does. The result also records, per scene, the share with at least one failing polygon, with and without the clause.
+
 ## Spike results
 
 ### S1 Forrestdale seam (2026-10-29)
