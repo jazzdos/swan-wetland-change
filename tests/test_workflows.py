@@ -1,14 +1,18 @@
-"""Offline structural checks for the daily pipeline and weekly verify workflows.
+"""Offline checks for the daily pipeline, weekly verify and alert workflows.
 
 No GitHub repository exists to run the workflows, so these tests read
-`.github/workflows/pipeline.yml` and `.github/workflows/verify.yml` and
-assert the properties that matter: the schedule, pinned actions,
-least-privilege permissions, step order, the commit step surviving a failed
-verify, the issue step firing on failure, OIDC role assumption and no secrets.
+`.github/workflows/pipeline.yml`, `.github/workflows/verify.yml` and
+`.github/workflows/alert.yml` and assert the properties that matter: the
+schedule, pinned actions, least-privilege permissions, step order, the commit
+step surviving a failed verify, OIDC role assumption and no secrets. The alert
+workflow is checked for its `workflow_run` trigger on both workflows, its
+condition (scheduled runs that did not succeed), and its script, which runs
+against a fake `gh` to prove it opens one issue or comments on the open one.
 """
 
 from __future__ import annotations
 
+import os
 import re
 import shutil
 import subprocess
@@ -21,6 +25,7 @@ import yaml
 REPO = Path(__file__).resolve().parents[1]
 WORKFLOW: Final = REPO / ".github" / "workflows" / "pipeline.yml"
 VERIFY_WORKFLOW: Final = REPO / ".github" / "workflows" / "verify.yml"
+ALERT_WORKFLOW: Final = REPO / ".github" / "workflows" / "alert.yml"
 
 BUCKET_URI: Final = "s3://${{ vars.OUTPUT_BUCKET }}"
 PINNED_USES: Final = re.compile(r"^[\w.-]+/[\w./-]+@[0-9a-f]{40}$")
@@ -67,7 +72,7 @@ def _index(steps: list[dict[str, Any]], pattern: str) -> int:
 def test_schedule_is_daily_with_manual_dispatch() -> None:
     doc = _workflow()
     triggers = doc.get("on", doc.get(True))
-    assert triggers["schedule"] == [{"cron": "0 10 * * *"}]
+    assert triggers["schedule"] == [{"cron": "17 10 * * *"}]
     assert "workflow_dispatch" in triggers
 
 
@@ -262,6 +267,14 @@ def _verify_doc() -> dict[Any, Any]:
     return _workflow(VERIFY_WORKFLOW)
 
 
+def test_both_crons_avoid_minute_zero() -> None:
+    for doc in (_workflow(), _verify_doc()):
+        triggers = doc.get("on", doc.get(True))
+        minute = triggers["schedule"][0]["cron"].split()[0]
+        assert re.fullmatch(r"[1-9]\d?", minute), minute
+        assert 1 <= int(minute) <= 59
+
+
 def test_verify_schedule_is_weekly_with_manual_dispatch() -> None:
     doc = _verify_doc()
     triggers = doc.get("on", doc.get(True))
@@ -300,7 +313,6 @@ def test_verify_permissions_are_least_privilege() -> None:
     assert _job(doc)["permissions"] == {
         "contents": "read",
         "id-token": "write",
-        "issues": "write",
     }
 
 
@@ -374,17 +386,9 @@ def test_verify_and_freshness_run_after_an_earlier_failure() -> None:
         assert "continue-on-error" not in steps[_index(steps, pattern)]
 
 
-def test_verify_last_step_opens_an_issue_with_the_run_url_on_failure() -> None:
-    last = _steps(_verify_doc())[-1]
-    assert _normalised_condition(last) == "failure()"
-    assert "gh issue create" in last["run"]
-    assert "${RUN_URL}" in last["run"] or "$RUN_URL" in last["run"]
-    env = last["env"]
-    assert env["GH_TOKEN"] == "${{ github.token }}"
-    assert env["RUN_URL"] == (
-        "${{ github.server_url }}/${{ github.repository }}"
-        "/actions/runs/${{ github.run_id }}"
-    )
+def test_verify_has_no_issue_step() -> None:
+    for step in _steps(_verify_doc()):
+        assert "gh issue" not in str(step.get("run", ""))
 
 
 def test_verify_workflow_text_contains_no_secret_literals() -> None:
@@ -408,5 +412,162 @@ def test_actionlint_accepts_the_verify_workflow() -> None:
         pytest.skip("actionlint not installed")
     result = subprocess.run(
         [executable, str(VERIFY_WORKFLOW)], capture_output=True, text=True, check=False
+    )
+    assert result.returncode == 0, result.stdout + result.stderr
+
+
+# --- alert workflow ---------------------------------------------------------
+
+SECRET_NEEDLES: Final = (
+    "aws-secret-access-key",
+    "aws-access-key-id",
+    "aws_secret_access_key",
+    "aws_access_key_id",
+    "secrets.",
+)
+
+
+def _alert_doc() -> dict[Any, Any]:
+    return _workflow(ALERT_WORKFLOW)
+
+
+def _alert_script() -> str:
+    steps = _steps(_alert_doc())
+    assert len(steps) == 1
+    return str(steps[0]["run"])
+
+
+def test_alert_triggers_on_completed_runs_of_both_workflows() -> None:
+    doc = _alert_doc()
+    triggers = doc.get("on", doc.get(True))
+    assert list(triggers) == ["workflow_run"]
+    run = triggers["workflow_run"]
+    assert run["types"] == ["completed"]
+    assert run["workflows"] == [
+        _workflow(WORKFLOW)["name"],
+        _workflow(VERIFY_WORKFLOW)["name"],
+    ]
+
+
+ALERT_CONDITION: Final = (
+    "github.event.workflow_run.event == 'schedule' "
+    "&& github.event.workflow_run.conclusion != 'success'"
+)
+
+
+def test_alert_job_fires_on_schedule_runs_that_did_not_succeed() -> None:
+    assert _normalised_condition(_job(_alert_doc())) == ALERT_CONDITION
+
+
+def test_alert_step_env_reads_the_finished_run_not_this_run() -> None:
+    steps = _steps(_alert_doc())
+    assert len(steps) == 1
+    assert steps[0]["env"] == {
+        "GH_TOKEN": "${{ github.token }}",
+        "GH_REPO": "${{ github.repository }}",
+        "WORKFLOW_NAME": "${{ github.event.workflow_run.name }}",
+        "CONCLUSION": "${{ github.event.workflow_run.conclusion }}",
+        "RUN_URL": "${{ github.event.workflow_run.html_url }}",
+    }
+
+
+def test_alert_permissions_pins_and_inputs() -> None:
+    doc = _alert_doc()
+    assert doc["permissions"] == {"contents": "read"}
+    assert doc["concurrency"] == {"group": "alert", "cancel-in-progress": False}
+    job = _job(doc)
+    assert job["permissions"] == {"contents": "read", "issues": "write"}
+    assert job["runs-on"] == "ubuntu-24.04"
+    for step in _steps(doc):
+        if "uses" in step:
+            assert PINNED_USES.match(step["uses"]), step["uses"]
+
+    text = ALERT_WORKFLOW.read_text(encoding="utf-8")
+    assert not re.search(r"AKIA[0-9A-Z]{16}", text)
+    assert not re.search(r"ASIA[0-9A-Z]{16}", text)
+    lowered = text.lower()
+    for needle in SECRET_NEEDLES:
+        assert needle not in lowered, needle
+    for field in ("head_branch", "head_commit", "display_title"):
+        assert field not in text, field
+
+    assert "${{" not in _alert_script()
+
+
+TITLE_VERIFY: Final = "verify workflow did not succeed"
+
+
+def _run_alert_script(tmp_path: Path, listing: str) -> list[str]:
+    """Run the alert script against a fake `gh`; return the logged calls."""
+    bash = shutil.which("bash")
+    if bash is None or shutil.which("jq") is None:
+        pytest.skip("bash and jq are required")
+    log = tmp_path / "gh.log"
+    log.write_text("", encoding="utf-8")
+    fake = tmp_path / "gh"
+    fake.write_text(
+        "#!/usr/bin/env bash\n"
+        'printf \'%s\\n\' "$*" >> "$GH_LOG"\n'
+        'if [ "$1 $2" = "issue list" ]; then printf \'%s\' "$GH_LIST_JSON"; fi\n',
+        encoding="utf-8",
+    )
+    fake.chmod(0o755)
+    env = {
+        "PATH": f"{tmp_path}:{os.environ['PATH']}",
+        "GH_LOG": str(log),
+        "GH_LIST_JSON": listing,
+        "WORKFLOW_NAME": "verify",
+        "CONCLUSION": "timed_out",
+        "RUN_URL": "https://example.test/run/1",
+    }
+    result = subprocess.run(
+        [bash, "-c", _alert_script()],
+        env=env,
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    assert result.returncode == 0, result.stdout + result.stderr
+    return [line for line in log.read_text(encoding="utf-8").splitlines() if line]
+
+
+def _write_calls(calls: list[str]) -> list[str]:
+    return [call for call in calls if not call.startswith("issue list")]
+
+
+def test_alert_script_opens_an_issue_when_none_is_open(tmp_path: Path) -> None:
+    writes = _write_calls(_run_alert_script(tmp_path, "[]"))
+    assert len(writes) == 1
+    assert writes[0].startswith("issue create")
+    assert TITLE_VERIFY in writes[0]
+    assert "https://example.test/run/1" in writes[0]
+
+
+def test_alert_script_comments_when_an_issue_is_open(tmp_path: Path) -> None:
+    listing = (
+        '[{"number":7,"title":"verify workflow did not succeed"},'
+        '{"number":9,"title":"something else"}]'
+    )
+    writes = _write_calls(_run_alert_script(tmp_path, listing))
+    assert len(writes) == 1
+    assert writes[0].startswith("issue comment 7 ")
+    assert "https://example.test/run/1" in writes[0]
+    assert "timed_out" in writes[0]
+
+
+def test_alert_script_ignores_an_issue_for_another_workflow(tmp_path: Path) -> None:
+    listing = '[{"number":3,"title":"pipeline workflow did not succeed"}]'
+    writes = _write_calls(_run_alert_script(tmp_path, listing))
+    assert len(writes) == 1
+    assert writes[0].startswith("issue create")
+    assert TITLE_VERIFY in writes[0]
+
+
+def test_actionlint_accepts_the_alert_workflow() -> None:
+    executable = shutil.which("actionlint")
+    if executable is None:
+        pytest.skip("actionlint not installed")
+    result = subprocess.run(
+        [executable, str(ALERT_WORKFLOW)], capture_output=True, text=True, check=False
     )
     assert result.returncode == 0, result.stdout + result.stderr

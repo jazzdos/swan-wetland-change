@@ -1,0 +1,78 @@
+# Alert: open a GitHub issue, or comment on the open one, when a scheduled run
+# of `pipeline` or `verify` does not succeed (failure, cancelled, timed_out or
+# startup_failure).
+#
+# Why a separate workflow. A step inside a job cannot report a run whose job
+# never started or whose runner was lost, and `failure()` is documented only as
+# true when any previous step of a job fails, so it does not cover a cancelled
+# run. GitHub documents that `workflow_run` is triggered regardless of the
+# conclusion of the previous workflow. This alert does not depend on how
+# `failure()` treats a job-level timeout, because it reads the conclusion of
+# the finished run.
+#
+# One open issue per workflow, titled "<workflow> workflow did not succeed".
+# The first failure creates it; later failures add a comment with the run URL.
+# The issue is left open for a human to close; the next failure after it is
+# closed opens a new one. The open issue is found with `gh issue list` and a
+# title match rather than `--search`, because search indexing lags and would
+# allow duplicates. No `--label`: `gh issue create` fails when the label does
+# not exist.
+#
+# Limits:
+# - Manual dispatch runs are not alerted; only runs triggered by `schedule`.
+# - `workflow_run` only fires for the workflow file on the default branch, so
+#   this workflow does nothing until the file is on `main`.
+# - A failure of this workflow itself raises no alert.
+# - Whether GitHub emits `workflow_run` for a pending run cancelled by
+#   concurrency is not documented and could not be verified offline.
+#
+# The run reads only the workflow name, conclusion and run URL from the event.
+# Other fields (branch name, commit message, display title) are
+# user-controllable and are never used. The three it reads reach the script
+# through `env`, not through `${{ }}` interpolation in the script.
+
+name: alert
+
+on:
+  workflow_run:
+    workflows: [pipeline, verify]
+    types: [completed]
+
+permissions:
+  contents: read
+
+# Two alerts must not race on the same issue title.
+concurrency:
+  group: alert
+  cancel-in-progress: false
+
+jobs:
+  alert:
+    name: open or update the failure issue
+    if: ${{ github.event.workflow_run.event == 'schedule' && github.event.workflow_run.conclusion != 'success' }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    # Widened from the workflow default for this job only.
+    permissions:
+      contents: read
+      # Open or comment on the issue.
+      issues: write
+
+    steps:
+      - name: Open or update the issue
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          WORKFLOW_NAME: ${{ github.event.workflow_run.name }}
+          CONCLUSION: ${{ github.event.workflow_run.conclusion }}
+          RUN_URL: ${{ github.event.workflow_run.html_url }}
+        run: |
+          set -euo pipefail
+          title="${WORKFLOW_NAME} workflow did not succeed"
+          number="$(gh issue list --state open --limit 200 --json number,title | jq -r --arg t "$title" '[.[] | select(.title == $t)] | .[0].number // empty')"
+          body="The scheduled ${WORKFLOW_NAME} run ended ${CONCLUSION}. Run: ${RUN_URL}"
+          if [ -n "$number" ]; then
+            gh issue comment "$number" --body "$body"
+          else
+            gh issue create --title "$title" --body "$body"
+          fi
