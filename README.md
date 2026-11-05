@@ -168,6 +168,7 @@ uv run wetland-change discover
 uv run wetland-change run
 uv run wetland-change backfill --start 2022-12-01 --end 2026-11-02
 uv run wetland-change score --start 2022-12-01 --end 2026-11-02
+uv run wetland-change requeue --all
 uv run wetland-change verify
 uv run wetland-change build-catalogue
 uv run wetland-change freshness
@@ -187,12 +188,20 @@ uv run wetland-change freshness
   items already in the ledger. It does not score changes.
 - `score` scores stored observations in a date range and writes change files.
   Run it after a backfill.
+- `requeue` brings items that failed three times (exhausted) back: it appends
+  a ledger row per item with attempts reset to 0, so the next `run` retries
+  them with fresh attempts. Give item ids, or `--all` for every exhausted
+  item. It exits 2 for an id that is not exhausted, or when nothing is
+  exhausted. It does not edit existing ledger files and does not build the
+  catalogue.
 - `verify` scores the verification matrix for the latest run, or the run
   given with `--run-id`, and writes the JSON and Markdown reports.
 - `build-catalogue` rebuilds the STAC catalogue from the ledger. Run it after
   `verify` so the catalogue links the verification report.
 - `freshness` checks that the newest processed item is under 7 days old and
   that ledger counts match Earth Search and Copernicus per tile over 30 days.
+  It also fails (`freshness_exhausted_items`) while any item has exhausted its
+  attempts and has not been requeued or succeeded.
 
 Every command reads `config/pipeline.toml` by default (`--config` to
 change) and writes under `outputs/` (`--output-root` to change, including an

@@ -6,12 +6,13 @@ import json
 import shutil
 import subprocess
 from collections.abc import Iterator
-from datetime import UTC, datetime, timedelta
+from datetime import UTC, date, datetime, timedelta
 from pathlib import Path
 from types import SimpleNamespace
 from typing import Any, cast
 
 import geopandas as gpd
+import pandas as pd
 import pyarrow.parquet as pq
 import pyproj
 import pytest
@@ -22,6 +23,7 @@ from shapely.ops import transform as shapely_transform
 
 from tests.conftest import REQUIRED_ASSETS
 from wetland_change.aoi import AoiPolygon
+from wetland_change.catalogue.item import parse_timestamp
 from wetland_change.config import (
     AoiConfig,
     OutputConfig,
@@ -29,11 +31,25 @@ from wetland_change.config import (
     StacConfig,
     WaterConfig,
 )
-from wetland_change.ledger import read_ledger, retry_ids, watermark
-from wetland_change.manifest import KIND_SCORE, RunManifest
+from wetland_change.ledger import (
+    attempts_so_far,
+    exhausted_ids,
+    latest_entries,
+    read_ledger,
+    retry_ids,
+    watermark,
+)
+from wetland_change.manifest import KIND_REQUEUE, KIND_SCORE, RunManifest
 from wetland_change.outputs.changes import CHANGE_COLUMNS, change_path
 from wetland_change.outputs.geoparquet import observation_path, write_observations
-from wetland_change.pipeline import backfill_once, run_once, score_changes, score_once
+from wetland_change.pipeline import (
+    _with_later_dates,
+    backfill_once,
+    requeue_once,
+    run_once,
+    score_changes,
+    score_once,
+)
 from wetland_change.raster.read import Grid, RasterioReader
 from wetland_change.stac import PlaceholderBaseUrlError
 from wetland_change.stats import ObservationRow
@@ -109,6 +125,32 @@ class RecordingClient(FakeClient):
         if "ids" not in kwargs:
             self.main_searches.append(kwargs)
         return super().search(**kwargs)
+
+
+class CreatedAwareClient(FakeClient):
+    """Honours the `created` lower bound on main searches, as Earth Search does.
+
+    Scenes behind the watermark are then reachable only through the `ids` lookup.
+    """
+
+    def __init__(self, items: list[dict[str, Any]]) -> None:
+        super().__init__(items)
+        self.id_searches: list[list[str]] = []
+        self.main_returned: list[list[str]] = []
+
+    def search(self, **kwargs: Any) -> FakeSearch:
+        if "ids" in kwargs:
+            self.id_searches.append(list(kwargs["ids"]))
+            return super().search(**kwargs)
+        bound = kwargs["query"].get("created", {}).get("gte")
+        kept = [
+            i
+            for i in self.items
+            if bound is None
+            or parse_timestamp(i["properties"]["created"]) >= parse_timestamp(bound)
+        ]
+        self.main_returned.append([i["id"] for i in kept])
+        return FakeSearch(kept)
 
 
 class InterruptingReader(RasterioReader):
@@ -205,6 +247,13 @@ def test_failed_scene_is_recorded_and_retried_three_times(
         else:
             assert manifest.failed == 0
             assert manifest.discovered == 0
+        # the third failure exhausts the scene; later quiet runs keep reporting it
+        exhausted = [broken["id"]] if attempt >= 3 else []
+        assert manifest.exhausted_items == exhausted
+        assert manifest.exhausted == len(exhausted)
+        written = json.loads(store.read_bytes(f"runs/{manifest.run_id}.json"))
+        assert written["exhausted"] == len(exhausted)
+        assert written["exhausted_items"] == exhausted
     assert manifest.observation_files == []
 
 
@@ -539,6 +588,105 @@ def test_run_once_writes_change_file_for_flagged_item(
     assert (out / expected).read_bytes() == before
 
 
+def _stored_frame(rows: list[tuple[str, str]]) -> pd.DataFrame:
+    frame = pd.DataFrame(
+        {
+            "polygon_id": [polygon for polygon, _ in rows],
+            "datetime": pd.to_datetime(
+                [f"{day}T02:26:39Z" for _, day in rows], utc=True
+            ),
+        }
+    )
+    frame["acq_date"] = frame["datetime"].dt.date
+    return frame
+
+
+def test_with_later_dates_adds_later_same_polygon_and_month() -> None:
+    frame = _stored_frame(
+        [
+            ("a", "2025-10-05"),
+            ("a", "2026-10-02"),
+            ("a", "2026-10-27"),
+            ("a", "2024-10-01"),
+            ("a", "2026-09-30"),
+            ("a", "2026-11-02"),
+            ("b", "2026-10-15"),
+        ]
+    )
+    assert _with_later_dates(frame, [date(2025, 10, 5)]) == [
+        date(2025, 10, 5),
+        date(2026, 10, 2),
+        date(2026, 10, 27),
+    ]
+
+
+def test_with_later_dates_uses_the_earliest_wanted_date_per_polygon_and_month() -> None:
+    frame = _stored_frame(
+        [
+            ("a", "2026-10-05"),
+            ("a", "2026-10-10"),
+            ("a", "2026-10-20"),
+            ("b", "2026-10-12"),
+            ("b", "2026-10-25"),
+        ]
+    )
+    assert _with_later_dates(frame, [date(2026, 10, 10), date(2026, 10, 12)]) == [
+        date(2026, 10, 10),
+        date(2026, 10, 12),
+        date(2026, 10, 20),
+        date(2026, 10, 25),
+    ]
+
+
+def test_with_later_dates_ignores_dates_with_no_stored_rows() -> None:
+    frame = _stored_frame([("a", "2026-10-05"), ("a", "2026-10-20")])
+    assert _with_later_dates(frame, [date(2026, 10, 1)]) == []
+
+
+def _change_bytes(root: Path) -> dict[str, bytes]:
+    return {
+        str(f.relative_to(root)): f.read_bytes()
+        for f in sorted(root.rglob("*"))
+        if f.is_file()
+    }
+
+
+def test_retried_earlier_scene_leaves_change_files_equal_to_full_rescore(
+    fixture_item: dict[str, Any], fixture_polygon: BaseGeometry, tmp_path: Path
+) -> None:
+    probe = _probe(tmp_path, fixture_item, fixture_polygon)
+    store = OutputStore(str(tmp_path / "out"))
+    _seed_october_baseline(store, probe, fixture_polygon)
+    fixed = copy.deepcopy(fixture_item)
+    fixed["id"] = f"{fixture_item['id']}_A"
+    fixed["properties"]["s2:product_uri"] = f"A_{fixture_item['id']}.SAFE"
+    fixed["properties"]["datetime"] = "2026-10-20T02:26:39Z"
+    fixed["properties"]["created"] = "2026-10-28T08:00:00.000Z"
+    fixed["properties"]["updated"] = "2026-10-28T08:00:00.000Z"
+    broken = copy.deepcopy(fixed)
+    broken["assets"]["green"]["href"] = str(tmp_path / "missing.tif")
+    polygons = _polygons(fixture_polygon)
+    out = tmp_path / "out"
+    expected = change_path(2026, probe["tile"], probe["item_id"])
+
+    first = _run(tmp_path, FakeClient([broken, fixture_item]), polygons, NOW)
+    assert first.failed == 1
+    assert first.change_files == [expected]
+    first_n = gpd.read_parquet(out / expected)["baseline_n"].unique().tolist()
+
+    second = _run(
+        tmp_path, FakeClient([fixed, fixture_item]), polygons, NOW + timedelta(days=1)
+    )
+    assert second.failed == 0
+    assert expected in second.change_files
+    rescored_n = gpd.read_parquet(out / expected)["baseline_n"].unique().tolist()
+    assert rescored_n != first_n
+
+    snapshot = _change_bytes(out / "changes")
+    score_changes(store, min_valid_fraction=_config(tmp_path).water.min_valid_fraction)
+    assert _change_bytes(out / "changes") == snapshot
+
+
 def test_run_once_without_baseline_writes_no_changes(
     fixture_item: dict[str, Any], fixture_polygon: BaseGeometry, tmp_path: Path
 ) -> None:
@@ -689,3 +837,201 @@ def test_backfill_and_score_refuse_placeholder_base_url_on_s3(tmp_path: Path) ->
             now=NOW,
             config_path=tmp_path / "pipeline.toml",
         )
+
+
+def _exhaust(
+    tmp_path: Path, broken: dict[str, Any], polygons: list[AoiPolygon]
+) -> OutputStore:
+    client = FakeClient([broken])
+    for attempt in range(1, 4):
+        _run(tmp_path, client, polygons, NOW + timedelta(days=attempt))
+    store = OutputStore(str(tmp_path / "out"))
+    assert exhausted_ids(read_ledger(store)) == [broken["id"]]
+    return store
+
+
+def _requeue(
+    tmp_path: Path,
+    store: OutputStore,
+    now: datetime,
+    *,
+    item_ids: list[str],
+    all_exhausted: bool = False,
+) -> RunManifest:
+    config_path = tmp_path / "pipeline.toml"
+    config_path.write_text("# test\n")
+    return requeue_once(
+        _config(tmp_path),
+        item_ids=item_ids,
+        all_exhausted=all_exhausted,
+        store=store,
+        now=now,
+        config_path=config_path,
+    )
+
+
+def test_requeue_once_brings_an_exhausted_scene_back(
+    fixture_item: dict[str, Any], fixture_polygon: BaseGeometry, tmp_path: Path
+) -> None:
+    polygons = _polygons(fixture_polygon)
+    broken = copy.deepcopy(fixture_item)
+    broken["assets"]["green"]["href"] = str(tmp_path / "missing.tif")
+    store = _exhaust(tmp_path, broken, polygons)
+    ledger_before = sorted(p for p in store.list_files("ledger"))
+
+    when = NOW + timedelta(days=10)
+    manifest = _requeue(tmp_path, store, when, item_ids=[broken["id"]])
+
+    assert manifest.kind == KIND_REQUEUE
+    assert manifest.run_id == "20261108T100000Z"
+    assert manifest.requeued_items == [broken["id"]]
+    assert manifest.exhausted == 0
+    assert manifest.exhausted_items == []
+    assert manifest.finished_at == when
+    assert manifest.watermark_before is None
+    assert manifest.watermark_after is None
+    assert len(manifest.ledger_files) == 1
+    written = json.loads(store.read_bytes(f"runs/{manifest.run_id}.json"))
+    assert written["kind"] == KIND_REQUEUE
+    assert written["requeued_items"] == [broken["id"]]
+    # earlier ledger files are untouched; the requeue only adds one
+    assert [p for p in store.list_files("ledger") if p in ledger_before] == (
+        ledger_before
+    )
+    ledger = read_ledger(store)
+    assert retry_ids(ledger) == [broken["id"]]
+    assert attempts_so_far(ledger, broken["id"]) == 0
+
+    fixed = _run(
+        tmp_path,
+        FakeClient([fixture_item]),
+        polygons,
+        when + timedelta(days=1),
+    )
+    assert fixed.processed == 1
+    assert fixed.exhausted == 0
+    latest = read_ledger(store).to_pandas().sort_values("processed_at").iloc[-1]
+    assert latest["item_id"] == fixture_item["id"]
+    assert latest["status"] == "succeeded"
+
+
+def test_requeue_once_all_exhausted(
+    fixture_item: dict[str, Any], fixture_polygon: BaseGeometry, tmp_path: Path
+) -> None:
+    broken = copy.deepcopy(fixture_item)
+    broken["assets"]["green"]["href"] = str(tmp_path / "missing.tif")
+    store = _exhaust(tmp_path, broken, _polygons(fixture_polygon))
+    manifest = _requeue(
+        tmp_path,
+        store,
+        NOW + timedelta(days=10),
+        item_ids=[],
+        all_exhausted=True,
+    )
+    assert manifest.requeued_items == [broken["id"]]
+    assert exhausted_ids(read_ledger(store)) == []
+
+
+def test_requeue_once_refuses_nothing_to_requeue(tmp_path: Path) -> None:
+    store = OutputStore(str(tmp_path / "out"))
+    with pytest.raises(ValueError, match="nothing to requeue"):
+        _requeue(tmp_path, store, NOW, item_ids=[], all_exhausted=True)
+
+
+def test_requeue_once_needs_exactly_one_selection(
+    fixture_item: dict[str, Any], fixture_polygon: BaseGeometry, tmp_path: Path
+) -> None:
+    broken = copy.deepcopy(fixture_item)
+    broken["assets"]["green"]["href"] = str(tmp_path / "missing.tif")
+    store = _exhaust(tmp_path, broken, _polygons(fixture_polygon))
+    when = NOW + timedelta(days=10)
+    with pytest.raises(ValueError, match="either"):
+        _requeue(tmp_path, store, when, item_ids=[], all_exhausted=False)
+    with pytest.raises(ValueError, match="either"):
+        _requeue(tmp_path, store, when, item_ids=[broken["id"]], all_exhausted=True)
+
+
+def test_requeue_once_rejects_an_unknown_id(
+    fixture_item: dict[str, Any], fixture_polygon: BaseGeometry, tmp_path: Path
+) -> None:
+    broken = copy.deepcopy(fixture_item)
+    broken["assets"]["green"]["href"] = str(tmp_path / "missing.tif")
+    store = _exhaust(tmp_path, broken, _polygons(fixture_polygon))
+    with pytest.raises(ValueError, match="nope"):
+        _requeue(tmp_path, store, NOW + timedelta(days=10), item_ids=["nope"])
+
+
+def test_requeue_once_refuses_reused_run_id(
+    fixture_item: dict[str, Any], fixture_polygon: BaseGeometry, tmp_path: Path
+) -> None:
+    broken = copy.deepcopy(fixture_item)
+    broken["assets"]["green"]["href"] = str(tmp_path / "missing.tif")
+    store = _exhaust(tmp_path, broken, _polygons(fixture_polygon))
+    when = NOW + timedelta(days=10)
+    _requeue(tmp_path, store, when, item_ids=[broken["id"]])
+    with pytest.raises(ValueError, match="run id"):
+        _requeue(tmp_path, store, when, item_ids=[broken["id"]])
+
+
+def _exhausted_behind_the_watermark(
+    fixture_item: dict[str, Any], polygons: list[AoiPolygon], tmp_path: Path
+) -> tuple[dict[str, Any], dict[str, Any], OutputStore]:
+    """Exhaust a broken scene, then let a later scene push the watermark past it."""
+    broken = copy.deepcopy(fixture_item)
+    broken["assets"]["green"]["href"] = str(tmp_path / "missing.tif")
+    store = _exhaust(tmp_path, broken, polygons)
+    late = copy.deepcopy(fixture_item)
+    stamp = "2026-11-02T08:00:00.000Z"
+    late["id"] = f"{fixture_item['id']}_late"
+    late["properties"]["s2:product_uri"] = f"late_{late['id']}.SAFE"
+    late["properties"]["created"] = stamp
+    late["properties"]["updated"] = stamp
+    manifest = _run(
+        tmp_path,
+        CreatedAwareClient([broken, late]),
+        polygons,
+        NOW + timedelta(days=5),
+    )
+    assert manifest.processed == 1
+    assert watermark(read_ledger(store)) == parse_timestamp(stamp)
+    return broken, late, store
+
+
+def test_requeued_scene_behind_the_watermark_is_reached_by_id(
+    fixture_item: dict[str, Any], fixture_polygon: BaseGeometry, tmp_path: Path
+) -> None:
+    polygons = _polygons(fixture_polygon)
+    broken, late, store = _exhausted_behind_the_watermark(
+        fixture_item, polygons, tmp_path
+    )
+    _requeue(tmp_path, store, NOW + timedelta(days=10), item_ids=[broken["id"]])
+
+    client = CreatedAwareClient([fixture_item, late])
+    manifest = _run(tmp_path, client, polygons, NOW + timedelta(days=11))
+
+    # the created bound hides the scene from the main search; only the id lookup
+    assert client.main_returned == [[late["id"]]]
+    assert client.id_searches == [[broken["id"]]]
+    assert (manifest.processed, manifest.failed) == (1, 0)
+    assert manifest.exhausted_items == []
+    latest = latest_entries(read_ledger(store)).set_index("item_id")
+    assert latest.loc[fixture_item["id"], "status"] == "succeeded"
+
+
+def test_requeued_scene_behind_the_watermark_exhausts_again(
+    fixture_item: dict[str, Any], fixture_polygon: BaseGeometry, tmp_path: Path
+) -> None:
+    polygons = _polygons(fixture_polygon)
+    broken, late, store = _exhausted_behind_the_watermark(
+        fixture_item, polygons, tmp_path
+    )
+    _requeue(tmp_path, store, NOW + timedelta(days=10), item_ids=[broken["id"]])
+
+    client = CreatedAwareClient([broken, late])
+    for attempt in range(1, 4):
+        manifest = _run(tmp_path, client, polygons, NOW + timedelta(days=10 + attempt))
+        assert manifest.failed == 1
+        assert manifest.exhausted_items == ([broken["id"]] if attempt == 3 else [])
+    assert client.id_searches == [[broken["id"]]] * 3
+    assert all(returned == [late["id"]] for returned in client.main_returned)
+    assert exhausted_ids(read_ledger(store)) == [broken["id"]]

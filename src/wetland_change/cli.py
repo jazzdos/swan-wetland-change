@@ -1,4 +1,6 @@
-"""Command line: discover, run, backfill, score, verify, freshness, build-catalogue."""
+"""Command line: discover, run, backfill, score, requeue, verify, freshness,
+build-catalogue.
+"""
 
 from __future__ import annotations
 
@@ -7,6 +9,7 @@ from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Annotated, Any
 
+import pyarrow as pa
 import typer
 
 from wetland_change.aoi import (
@@ -28,6 +31,7 @@ from wetland_change.ledger import (
 from wetland_change.pipeline import (
     backfill_once,
     discovery_created_from,
+    requeue_once,
     run_once,
     score_once,
 )
@@ -184,6 +188,8 @@ def backfill(
             config_path=config,
             output_root_override=output_root,
         )
+    except pa.ArrowException:
+        raise
     except ValueError as exc:
         raise typer.BadParameter(str(exc)) from exc
     typer.echo(manifest.to_json())
@@ -230,6 +236,41 @@ def score(
             config_path=config,
             output_root_override=output_root,
         )
+    except pa.ArrowException:
+        raise
+    except ValueError as exc:
+        raise typer.BadParameter(str(exc)) from exc
+    typer.echo(manifest.to_json())
+
+
+@app.command()
+def requeue(
+    item_ids: Annotated[
+        list[str] | None,
+        typer.Argument(help="Ids of exhausted items to requeue"),
+    ] = None,
+    all_exhausted: Annotated[
+        bool, typer.Option("--all", help="Requeue every exhausted item")
+    ] = False,
+    config: ConfigOption = Path("config/pipeline.toml"),
+    output_root: OutputRootOption = None,
+    now: Annotated[datetime | None, typer.Option(help=NOW_HELP)] = None,
+) -> None:
+    """Requeue exhausted items so the next run retries them with fresh attempts."""
+    cfg = load_config(config)
+    when = (now or datetime.now(UTC)).astimezone(UTC)
+    try:
+        manifest = requeue_once(
+            cfg,
+            item_ids=item_ids or [],
+            all_exhausted=all_exhausted,
+            store=_store(cfg, output_root),
+            now=when,
+            config_path=config,
+            output_root_override=output_root,
+        )
+    except pa.ArrowException:
+        raise
     except ValueError as exc:
         raise typer.BadParameter(str(exc)) from exc
     typer.echo(manifest.to_json())
@@ -291,8 +332,9 @@ def freshness(
     output_root: OutputRootOption = None,
     now: Annotated[datetime | None, typer.Option(help=NOW_HELP)] = None,
 ) -> None:
-    """Check the scheduled job is alive: newest processed item under 7 days old \
-and ledger counts matching Earth Search and Copernicus per tile over 30 days."""
+    """Check the scheduled job is alive: newest processed item under 7 days old, \
+no item failed three times without succeeding, and ledger counts matching \
+Earth Search and Copernicus per tile over 30 days."""
     from wetland_change.verify.copernicus import CDSE_STAC
     from wetland_change.verify.freshness import freshness_checks
 

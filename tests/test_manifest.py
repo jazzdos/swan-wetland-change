@@ -3,6 +3,7 @@ from datetime import UTC, datetime
 from pathlib import Path
 
 from wetland_change.manifest import (
+    KIND_REQUEUE,
     RunManifest,
     config_sha256,
     manifest_path,
@@ -53,3 +54,31 @@ def test_write_manifest_round_trips(tmp_path: Path) -> None:
     assert payload["watermark_before"] is None
     assert payload["watermark_after"] == "2026-10-29T10:05:07+00:00"
     assert payload["observation_files"] == ["observations/a.parquet"]
+
+
+def test_exhausted_and_requeued_fields_default_and_round_trip(
+    tmp_path: Path,
+) -> None:
+    store = OutputStore(str(tmp_path))
+    manifest = RunManifest(
+        run_id="r2",
+        started_at=NOW,
+        finished_at=NOW,
+        package_version="0.1.0",
+        config_sha256="abc",
+        endpoint="https://example",
+        collection="sentinel-2-c1-l2a",
+        watermark_before=None,
+        watermark_after=None,
+    )
+    assert manifest.exhausted == 0
+    assert manifest.exhausted_items == []
+    assert manifest.requeued_items == []
+    assert KIND_REQUEUE == "requeue"
+    manifest.exhausted_items = ["a", "b"]
+    manifest.exhausted = 2
+    manifest.requeued_items = ["c"]
+    payload = json.loads(store.read_bytes(write_manifest(manifest, store)))
+    assert payload["exhausted"] == 2
+    assert payload["exhausted_items"] == ["a", "b"]
+    assert payload["requeued_items"] == ["c"]

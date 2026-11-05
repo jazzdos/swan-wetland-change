@@ -16,7 +16,7 @@ from __future__ import annotations
 import datetime as dt
 import json
 from collections.abc import Sequence
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from io import BytesIO
 from typing import Any
 
@@ -247,6 +247,105 @@ def exhausted_keys(
         (str(row.item_id), row.updated.to_pydatetime())
         for row in done.itertuples(index=False)
     }
+
+
+def exhausted_ids(ledger: pa.Table, *, max_attempts: int = MAX_ATTEMPTS) -> list[str]:
+    """Sorted ids whose latest row is failed with `max_attempts` or more attempts."""
+    latest = latest_entries(ledger)
+    if latest.empty:
+        return []
+    done = latest[(latest["status"] == "failed") & (latest["attempts"] >= max_attempts)]
+    return sorted(str(item_id) for item_id in done["item_id"])
+
+
+def _nullable(value: Any) -> Any:
+    return None if pd.isna(value) else value
+
+
+def _nullable_str(value: Any) -> str | None:
+    return None if pd.isna(value) else str(value)
+
+
+def _nullable_time(value: Any) -> dt.datetime | None:
+    if pd.isna(value):
+        return None
+    stamp = pd.Timestamp(value)
+    stamp = (
+        stamp.tz_localize("UTC") if stamp.tzinfo is None else stamp.tz_convert("UTC")
+    )
+    result: dt.datetime = stamp.to_pydatetime()
+    return result
+
+
+def _entry_from_row(row: Any) -> LedgerEntry:
+    processed_at = _nullable_time(row.processed_at)
+    if processed_at is None:
+        raise ValueError(f"ledger row for {row.item_id} has no processed_at")
+    cloud_cover = _nullable(row.cloud_cover)
+    return LedgerEntry(
+        item_id=str(row.item_id),
+        collection=_nullable_str(row.collection),
+        datetime=_nullable_time(row.datetime),
+        created=_nullable_time(row.created),
+        updated=_nullable_time(row.updated),
+        tile=_nullable_str(row.tile),
+        cloud_cover=None if cloud_cover is None else float(cloud_cover),
+        product_uri=_nullable_str(row.product_uri),
+        status=str(row.status),
+        attempts=int(row.attempts),
+        error=_nullable_str(row.error),
+        run_id=str(row.run_id),
+        processed_at=processed_at,
+        n_rows=0 if pd.isna(row.n_rows) else int(row.n_rows),
+        observation_path=_nullable_str(row.observation_path),
+        source_item=_nullable_str(row.source_item),
+        run_kind=_nullable_str(row.run_kind) or RUN_KIND_RUN,
+    )
+
+
+def requeue_entries(
+    ledger: pa.Table,
+    item_ids: Sequence[str],
+    *,
+    run_id: str,
+    processed_at: dt.datetime,
+    max_attempts: int = MAX_ATTEMPTS,
+) -> list[LedgerEntry]:
+    """Fresh-attempt copies of the latest rows of exhausted items.
+
+    Each copy keeps status 'failed' with attempts reset to 0, so `retry_ids`
+    returns the item and the next daily run retries it. Existing ledger files
+    are never edited; the copies are appended. `processed_at` must be after the
+    item's latest row, otherwise the copy would sort before it and be ignored.
+    """
+    exhausted = set(exhausted_ids(ledger, max_attempts=max_attempts))
+    missing = sorted(set(item_ids) - exhausted)
+    if missing:
+        raise ValueError(
+            "not exhausted (unknown, succeeded, under the attempt cap or "
+            f"rejected): {', '.join(missing)}"
+        )
+    latest = latest_entries(ledger)
+    wanted = latest[latest["item_id"].isin(set(item_ids))]
+    entries: list[LedgerEntry] = []
+    for row in wanted.sort_values("item_id").itertuples(index=False):
+        old = _entry_from_row(row)
+        if processed_at <= old.processed_at:
+            raise ValueError(
+                f"processed_at {processed_at.isoformat()} is not after the latest "
+                f"row of {old.item_id} ({old.processed_at.isoformat()}); rerun "
+                "with a later --now"
+            )
+        entries.append(
+            replace(
+                old,
+                attempts=0,
+                error=f"requeued; previous error: {old.error}",
+                run_id=run_id,
+                processed_at=processed_at,
+            )
+        )
+    return entries
 
 
 def attempts_so_far(ledger: pa.Table, item_id: str) -> int:
