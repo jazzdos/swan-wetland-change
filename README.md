@@ -175,7 +175,10 @@ uv run wetland-change freshness
 
 - `scripts/fetch_aoi.py` downloads the Ramsar and DEA Waterbodies polygons
   into `data/external/` and prints their `data/SOURCES.md` rows. It is a
-  script, not a `wetland-change` subcommand.
+  script, not a `wetland-change` subcommand. It exits non-zero when a
+  response is not a GeoJSON FeatureCollection, or when an id used by
+  `[water.overrides.*]` is absent from the fetched layers or no longer matches
+  its pinned site name and bounding box.
 - `discover` lists the scenes the next run would process without reading
   pixels.
 - `run` is one incremental run: stages 1 to 8. It exits 2 when any scene
