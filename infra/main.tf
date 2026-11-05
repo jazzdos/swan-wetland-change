@@ -106,6 +106,13 @@ data "aws_iam_policy_document" "pipeline_trust" {
 resource "aws_iam_role" "pipeline" {
   name               = "swan-wetland-change-pipeline"
   assume_role_policy = data.aws_iam_policy_document.pipeline_trust.json
+
+  # The pipeline job runs up to 120 minutes (timeout-minutes in
+  # .github/workflows/pipeline.yml), and the 3600 s default session expires
+  # mid-run. 3 hours covers the job plus the setup steps before the
+  # credentials are minted. role-duration-seconds in pipeline.yml must equal
+  # this value.
+  max_session_duration = 10800
 }
 
 data "aws_iam_policy_document" "pipeline_access" {
