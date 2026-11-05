@@ -4,12 +4,12 @@ variable "bucket_name" {
 }
 
 variable "github_repository" {
-  description = "GitHub repository allowed to assume the pipeline role, as owner/name."
+  description = "GitHub repository allowed to assume the pipeline role, in the immutable subject form <owner>@<owner_id>/<name>@<repo_id>."
   type        = string
 
   validation {
-    condition     = can(regex("^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$", var.github_repository))
-    error_message = "github_repository must be in owner/name form."
+    condition     = can(regex("^[A-Za-z0-9_.-]+@[0-9]+/[A-Za-z0-9_.-]+@[0-9]+$", var.github_repository))
+    error_message = "The github_repository value must be in the form <owner>@<owner_id>/<name>@<repo_id> with numeric ids."
   }
 }
 

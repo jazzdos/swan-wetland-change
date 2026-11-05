@@ -5,10 +5,22 @@ OpenTofu/Terraform module for the AWS resources the swan-wetland-change pipeline
 ## What the module creates
 
 - A public-read S3 bucket. Anonymous callers get `s3:GetObject` only; there is no public list, put or delete. CORS allows GET and HEAD from any origin because stac-browser on GitHub Pages reads the STAC catalogue from the bucket.
-- The GitHub OIDC provider `token.actions.githubusercontent.com` with audience `sts.amazonaws.com`, when `create_oidc_provider` is true (the default). An AWS account can hold only one such provider, and other repositories usually share it. If the account already has one, set `-var create_oidc_provider=false`. The module then looks the provider up with a data source and leaves it unmanaged. Do not import an existing provider into this state: a later `destroy` would delete it and break GitHub-to-AWS authentication for every other repository in the account.
-- An IAM role `swan-wetland-change-pipeline`, assumable only from the repository's `main` branch. The trust policy requires `token.actions.githubusercontent.com:aud` = `sts.amazonaws.com` and `token.actions.githubusercontent.com:sub` = `repo:<owner>/<name>:ref:refs/heads/main`. The role has `s3:ListBucket` on the bucket and `s3:GetObject`, `s3:PutObject` and `s3:DeleteObject` on its objects, and nothing else.
+- The GitHub OIDC provider `token.actions.githubusercontent.com` with audience `sts.amazonaws.com`, when `create_oidc_provider` is true (the default). An AWS account can hold only one such provider, and other repositories usually share it. If the account already has one, pass `-var create_oidc_provider=false`, as the commands below do. The module then looks the provider up with a data source and leaves it unmanaged. Do not import an existing provider into this state: a later `destroy` would delete it and break GitHub-to-AWS authentication for every other repository in the account.
+- An IAM role `swan-wetland-change-pipeline`, assumable only from the repository's `main` branch. The trust policy requires `token.actions.githubusercontent.com:aud` = `sts.amazonaws.com` and `token.actions.githubusercontent.com:sub` = `repo:<owner>@<owner_id>/<name>@<repo_id>:ref:refs/heads/main`. The role has `s3:ListBucket` on the bucket and `s3:GetObject`, `s3:PutObject` and `s3:DeleteObject` on its objects, and nothing else.
 
-Required variables with no defaults: `bucket_name` (globally unique), `github_repository` (`owner/name`) and `aws_region`. `create_oidc_provider` is optional and defaults to true. Outputs are `role_arn` and `bucket_url`.
+Required variables with no defaults: `bucket_name` (globally unique), `github_repository` (`<owner>@<owner_id>/<name>@<repo_id>`, see "Immutable subject" below) and `aws_region`. `create_oidc_provider` is optional and defaults to true. Outputs are `role_arn` and `bucket_url`.
+
+## Immutable subject
+
+This repository has GitHub's immutable subject enabled, so its OIDC `sub` claims use `repo:<owner>@<owner_id>/<name>@<repo_id>:...` rather than `repo:<owner>/<name>:...`. A trust condition built from a plain `owner/name` value never matches the token, and the role cannot be assumed.
+
+Read the value with:
+
+```sh
+gh api repos/jazzdos/swan-wetland-change/actions/oidc/customization/sub
+```
+
+Take `sub_claim_prefix` from the response and drop the leading `repo:`. For this repository the `github_repository` value is `jazzdos@33918812/swan-wetland-change@1438569874`. The trust condition then resolves to `repo:jazzdos@33918812/swan-wetland-change@1438569874:ref:refs/heads/main`. The variable validation rejects the plain `owner/name` form.
 
 ## Prerequisites
 
@@ -22,13 +34,13 @@ The commands below use `terraform`. `tofu` works identically.
 
 ```sh
 terraform -chdir=infra init
-terraform -chdir=infra plan -var bucket_name=<bucket> -var github_repository=<owner>/<name> -var aws_region=<region>
-terraform -chdir=infra apply -var bucket_name=<bucket> -var github_repository=<owner>/<name> -var aws_region=<region>
+terraform -chdir=infra plan -var bucket_name=<bucket> -var github_repository=jazzdos@33918812/swan-wetland-change@1438569874 -var create_oidc_provider=false -var aws_region=<region>
+terraform -chdir=infra apply -var bucket_name=<bucket> -var github_repository=jazzdos@33918812/swan-wetland-change@1438569874 -var create_oidc_provider=false -var aws_region=<region>
 terraform -chdir=infra output -raw role_arn
 terraform -chdir=infra output -raw bucket_url
 ```
 
-If the account already has the GitHub OIDC provider, add `-var create_oidc_provider=false` to the `plan` and `apply` commands.
+Drop `-var create_oidc_provider=false` for an AWS account that has no GitHub OIDC provider yet, so the module creates it.
 
 Review the plan output before applying. The story that created this module only validated it offline; nobody ran plan or apply there. The operator runs them.
 

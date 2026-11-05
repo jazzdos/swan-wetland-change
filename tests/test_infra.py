@@ -4,6 +4,9 @@ from __future__ import annotations
 
 import re
 from pathlib import Path
+from typing import Final
+
+import pytest
 
 REPO = Path(__file__).resolve().parents[1]
 INFRA = REPO / "infra"
@@ -103,6 +106,55 @@ def test_required_variables_have_no_defaults() -> None:
     for name in ("bucket_name", "github_repository", "aws_region"):
         block = _block(variables, f'variable "{name}"')
         assert not re.search(r"^\s*default\s*=", block, re.MULTILINE), name
+
+
+IMMUTABLE_REPOSITORY: Final = "jazzdos@33918812/swan-wetland-change@1438569874"
+
+
+def _github_repository_pattern() -> re.Pattern[str]:
+    block = _block(_read("variables.tf"), 'variable "github_repository"')
+    call = re.search(r'regex\("((?:[^"\\]|\\.)*)",\s*var\.github_repository\)', block)
+    assert call, (
+        "github_repository validation must call regex(..., var.github_repository)"
+    )
+    raw = call.group(1).replace("\\\\", "\\")
+    return re.compile(raw)
+
+
+def test_github_repository_validation_accepts_immutable_subject_form() -> None:
+    assert _github_repository_pattern().fullmatch(IMMUTABLE_REPOSITORY)
+
+
+@pytest.mark.parametrize(
+    "value",
+    [
+        "jazzdos/swan-wetland-change",
+        "jazzdos@abc/swan-wetland-change@1438569874",
+        "jazzdos@33918812/swan-wetland-change@abc",
+        "jazzdos@33918812/swan-wetland-change",
+        f"repo:{IMMUTABLE_REPOSITORY}",
+        f"{IMMUTABLE_REPOSITORY}:ref:refs/heads/main",
+    ],
+    ids=[
+        "plain-owner-name",
+        "non-numeric-owner-id",
+        "non-numeric-repo-id",
+        "missing-repo-id",
+        "repo-prefix",
+        "ref-suffix",
+    ],
+)
+def test_github_repository_validation_rejects_other_forms(value: str) -> None:
+    assert not _github_repository_pattern().search(value)
+
+
+def test_trust_subject_resolves_to_immutable_main_branch_subject() -> None:
+    template = "repo:${var.github_repository}:ref:refs/heads/main"
+    assert template in _read("main.tf")
+    assert f"github_repository={IMMUTABLE_REPOSITORY} " in _read("README.md")
+    assert template.replace("${var.github_repository}", IMMUTABLE_REPOSITORY) == (
+        "repo:jazzdos@33918812/swan-wetland-change@1438569874:ref:refs/heads/main"
+    )
 
 
 def test_outputs_declared() -> None:
