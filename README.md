@@ -143,7 +143,7 @@ recorded in `LEARNINGS.md`, and the Collection 1 backfill
 | SCL read and alignment | ESA SCL class percentages in item properties | `src/wetland_change/verify/scl.py` (`scl_share_*`); `tests/test_verify.py` | Implemented at full resolution, tolerance 1 pp. Passed 32 of 32 checks on the first live run. |
 | Index arithmetic | spyndex 0.12; dea-tools 0.4.10 `calculate_indices` | `tests/test_indices.py` (spyndex, standing); `scripts/compare_dea_tools_indices.py` (dea-tools, one-off) | Implemented. The dea-tools comparison passed 6 of 6 at 1e-6 (`LEARNINGS.md`, "dea-tools index comparison"). |
 | Water extent, live | DEA `ga_s2_wo_provisional_3`, same pass and grid | `src/wetland_change/verify/wo.py` (`water_vs_dea_s2_wo`); `tests/test_verify.py` | Implemented for pixel agreement on mutually clear pixels, with per-polygon thresholds (0.91 default, 0.94, 0.92 and 0.95 for the three overrides) instead of the design's 0.95, because the best calibrated agreement was 0.9303 (handoff, ADR 0005). The design's "wet area within 5 pp" clause is implemented as the signed gap between the pipeline and WO wet shares of mutually clear pixels, within 5 pp per pass and per polygon (ADR 0006); it was implied by the design's 0.95 floor and binds at the lowered per-polygon floors. 242 of the 251 rows that pass agreement are within 5 pp, and on the 6 fully measured dates, dates with a failing row go from 2 to 6 (LEARNINGS.md, ADR 0006). The check skips a polygon below `[verify] min_clear_pixels` (default 100) mutually clear pixels, and the skip is a reason skip, not an error. |
-| Water extent, history | DEA Waterbodies v3 CSV per lake; DEA `ga_ls_wo_3` per scene | `src/wetland_change/verify/waterbodies.py` (`water_vs_dea_waterbodies`, `water_spearman_vs_dea_waterbodies`); `tests/test_verify_waterbodies.py` | Implemented against the Waterbodies CSV with a 10 pp per-pass tolerance (spike S9). The `ga_ls_wo_3` per-scene comparison is not implemented as a standing check: S9 found Waterbodies v3 within 0.2 pp of `ga_ls_wo_3` on all 129 passes, consistent with Waterbodies being derived from it, and used it once to set the tolerance (`LEARNINGS.md`, "S9 historical tolerance"). The per-lake Spearman is scored over the stored observations of the last `[verify.waterbodies] history_days` (default 365) days, ending at the newest scene of the verified run, so it reaches its 10 pair minimum on a daily run; per-pass checks cover the verified run only. The backfill Spearman rho was 0.858 to 0.897 on four lakes, below 0.9. |
+| Water extent, history | DEA Waterbodies v3 CSV per lake; DEA `ga_ls_wo_3` per scene | `src/wetland_change/verify/waterbodies.py` (`water_vs_dea_waterbodies`, `water_spearman_vs_dea_waterbodies`); `tests/test_verify_waterbodies.py` | Implemented against the Waterbodies CSV with a 10 pp per-pass tolerance (spike S9). The `ga_ls_wo_3` per-scene comparison is not implemented as a standing check: S9 found Waterbodies v3 within 0.2 pp of `ga_ls_wo_3` on all 129 passes, consistent with Waterbodies being derived from it, and used it once to set the tolerance (`LEARNINGS.md`, "S9 historical tolerance"). The per-lake Spearman is scored over every stored observation up to the newest scene of the verified run, so it reaches its 10 pair minimum on a daily run; per-pass checks cover the verified run only. `spearman_min` is 0.83, calibrated on the whole backfill (ADR 0007, `docs/decisions/0007-spearman-threshold-from-whole-history.md`). The backfill rho is 0.855 to 0.893 on four lakes, below the design's 0.9, so H4 is not supported. |
 | NDVI | DEA NBART, same acquisition | `src/wetland_change/verify/ndvi.py` (`ndvi_vs_dea_nbart`, `ndvi_correlation_vs_dea_nbart`); `tests/test_verify_ndvi.py` | Implemented. One live check on 2026-10-30 passed with an absolute difference of about 0.003 against a 0.05 tolerance (`LEARNINGS.md`, "DEA NBART scale"). The check skips a polygon below `[verify] min_clear_pixels` (default 100) compared pixels, and the skip is a reason skip, not an error. |
 | GeoParquet output | geoparquet-validator; DuckDB and GDAL as readers | `src/wetland_change/outputs/geoparquet.py`; `tests/test_geoparquet.py`, `tests/test_pipeline.py`, `tests/test_readme.py` | Implemented. The validator, DuckDB, pyarrow and geopandas readers run in the default suite and agree on row counts and bounds (`tests/test_geoparquet.py`). GDAL is not exercised because the pinned pyogrio wheel has no Parquet driver. |
 | STAC catalogue | stac-validator (through stac-check 1.14), stac-check, pystac validate, stac-browser | `src/wetland_change/stac/catalogue.py`; `tests/test_catalogue.py`, `tests/test_run_catalogue.py`; CORS in `infra/main.tf`, `tests/test_infra.py` | Implemented offline: pystac `validate_all` and stac-check pass, and all hrefs are absolute https. The live checks (bucket returns `Access-Control-Allow-Origin`, catalogue opens in stac-browser) are not implemented because the infrastructure has not been applied and no bucket exists. |
@@ -163,7 +163,7 @@ after it. Forrestdale is ramsar-56, Thomsons is ramsar-52.
 | H1, Forrestdale low water, December 2023 to January 2024 | Supported | 2 low flags in 3 scored dates; lowest z -8.87 on 2023-12-17 |
 | H2, Forrestdale no anomaly, February to April 2023 | Untestable | 0 of 12 dates scored, all with too few baseline samples. The 2022 half is untestable: Collection 1 has no items over Forrestdale under 20 percent cloud for that period |
 | H3, winter 2025 water at or above baseline | Not supported | ramsar-56 median delta -14.38 ha with a low flag on 2025-08-23 (z -3.39); ramsar-52 had no scored date |
-| H4, Spearman rho at least 0.9 against DEA Waterbodies | Not supported | rho 0.870 (Forrestdale), 0.897 (Thomsons), 0.858 (Lake Clifton), 0.861 (Lake Preston) |
+| H4, Spearman rho at least 0.9 against DEA Waterbodies | Not supported | rho 0.870 (Forrestdale), 0.897 (Thomsons), 0.858 (Lake Clifton), 0.861 (Lake Preston) on the 2026-11-03 report; 0.861, 0.893, 0.855 and 0.857 over the whole stored history with the current pairing (`LEARNINGS.md`, "Spearman threshold calibration") |
 
 Coverage was 1.0 (1147 of 1147 items in the reference search) with 0 items
 failed in their final state. Earth Search Collection 1 has no history before
@@ -221,10 +221,10 @@ uv run wetland-change freshness
   that carries only a reason, such as a reference that is not published yet,
   does not change the exit code. The report carries a `matrix` section with
   pass, fail or not-run for all 14 rows of the verification matrix.
-  The per-lake Spearman of the water history row is scored over stored
-  observations for the last `[verify.waterbodies] history_days` (default 365)
-  days, ending at the newest scene of the verified run; per-pass checks cover
-  the verified run only.
+  The per-lake Spearman of the water history row is scored over every stored
+  observation up to the newest scene of the verified run, against
+  `spearman_min` 0.83 (`docs/decisions/0007-spearman-threshold-from-whole-history.md`);
+  per-pass checks cover the verified run only.
 - `build-catalogue` builds the STAC catalogue from the ledger, writing only
   objects that are new or changed (`0 files written` is the correct output
   when nothing changed). Run it after `verify` so the catalogue links the
@@ -331,7 +331,11 @@ As of this commit:
   global setting; the per-polygon overrides in ADR 0005 address this, and
   rows written before the change used the global setting.
 - Hypotheses H2 to H4 are untestable or not supported on the current
-  backfill; H4's rho of 0.858 to 0.897 sits below the 0.9 target.
+  backfill; H4's rho of 0.855 to 0.893 sits below the 0.9 target, and
+  `spearman_min` is calibrated to 0.83 instead (ADR 0007).
+- Each `verify` reads every stored observation file (1147 files and about
+  236 MB today, growing with each pass) for the Spearman check. S3 read time
+  is unmeasured (ADR 0007).
 - The `dea_wo_agreement` observation column is written as null on every row
   (`src/wetland_change/stats.py`). The DEA agreement per polygon and scene is
   in the verification report (`water_vs_dea_s2_wo`), not in the observation

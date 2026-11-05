@@ -1604,9 +1604,9 @@ def test_verify_run_scores_spearman_over_stored_history(
         (f"h{k}", k * 10, 0.5 - 0.02 * k, "backfill" if k % 2 else "run")
         for k in range(1, 13)
     ]
-    # Exactly history_days back is in the window; one day further is out, and so
-    # is a pass newer than the run's newest scene.
-    days += [("edge-in", 365, 0.1, "run"), ("edge-out", 366, 0.1, "run")]
+    # The whole stored history counts: a pass 400 days back is scored. A pass
+    # newer than the run's newest scene is not.
+    days += [("old", 400, 0.1, "run")]
     for item_id, back, wet, kind in days:
         _store_earlier_pass(
             store,
@@ -1629,10 +1629,66 @@ def test_verify_run_scores_spearman_over_stored_history(
     assert len(per_pass) == 1  # the verified run only
     (spearman,) = [c for c in checks if c.name == "water_spearman_vs_dea_waterbodies"]
     assert spearman.passed is not None
-    # run pass + 12 history passes + the pass exactly history_days back
+    # run pass + 12 history passes + the pass 400 days back; "later" is excluded
     assert spearman.detail["n_pairs"] == 14
     assert spearman.detail["n_run_pairs"] == 1
-    assert spearman.detail["history_days"] == 365
+    assert "history_days" not in spearman.detail
+
+
+def test_history_paths_takes_every_succeeded_entry_up_to_newest(
+    fixture_item: dict[str, Any],
+) -> None:
+    from datetime import timedelta
+
+    from wetland_change.catalogue.item import parse_item
+    from wetland_change.ledger import (
+        LEDGER_SCHEMA,
+        entry_for,
+        ledger_with,
+        rejected_entry,
+    )
+    from wetland_change.verify.run import _history_paths
+
+    template = parse_item(
+        fixture_item,
+        collection="sentinel-2-c1-l2a",
+        required_assets=("scl",),
+    )
+    newest = datetime(2026, 6, 1, tzinfo=UTC)
+    when = datetime(2026, 11, 1, tzinfo=UTC)
+
+    def entry(item_id: str, days_from_newest: int, **kwargs: Any) -> Any:
+        scene = replace(
+            template,
+            item_id=item_id,
+            datetime=newest + timedelta(days=days_from_newest),
+        )
+        return entry_for(
+            scene,
+            attempts=1,
+            run_id=f"r-{item_id}",
+            processed_at=when,
+            **{"status": "succeeded", "observation_path": f"obs/{item_id}", **kwargs},
+        )
+
+    ledger = ledger_with(
+        LEDGER_SCHEMA.empty_table(),
+        [
+            entry("newest", 0),
+            entry("old", -400),
+            entry("after", 1),
+            entry("failed", -5, status="failed", observation_path=None),
+            entry("no-path", -6, observation_path=None),
+            rejected_entry("rejected", "bad", run_id="r-rej", processed_at=when),
+        ],
+    )
+    assert _history_paths(ledger, newest=newest) == {"obs/newest", "obs/old"}
+    # A naive newest is read as UTC.
+    assert _history_paths(ledger, newest=newest.replace(tzinfo=None)) == {
+        "obs/newest",
+        "obs/old",
+    }
+    assert _history_paths(LEDGER_SCHEMA.empty_table(), newest=newest) == set()
 
 
 def _lake_dates_and_wets(

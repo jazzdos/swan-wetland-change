@@ -40,8 +40,8 @@ of the fraction because the area is constant).
 
 Scope: the per-pass checks cover the rows passed as `observations` (one run).
 The Spearman check scores the optional `history` frame instead, the stored
-observations of the last `[verify.waterbodies] history_days` days, because one
-daily run holds too few rows to reach `spearman_min_pairs`. The same tile and
+observations of all passes up to the newest scene of the verified run, because
+one daily run holds too few rows to reach `spearman_min_pairs`. The same tile and
 date rules de-duplicate the history rows of each polygon. With `history` None
 the Spearman check scores the same rows as the per-pass checks.
 
@@ -335,7 +335,6 @@ def _lake_checks(
             uid, polygon, mine, dea, cfg=cfg, min_valid_fraction=min_valid_fraction
         )
         rho = spearman_check(uid, h_pipe, h_dea, cfg=cfg, n_unpaired=h_unpaired)
-        rho.detail["history_days"] = cfg.history_days
         rho.detail["n_run_pairs"] = len(pipe_pairs)
     checks.append(rho)
     return checks

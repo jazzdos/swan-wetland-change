@@ -135,11 +135,8 @@ class WaterbodiesVerifyConfig(BaseModel):
 
     tolerance_pp: float = Field(default=10.0, gt=0.0, le=100.0)  # wet fraction, pp
     max_day_gap: int = Field(default=3, ge=1)  # days between the two passes
-    spearman_min: float = Field(default=0.9, ge=0.0, le=1.0)
+    spearman_min: float = Field(default=0.83, ge=0.0, le=1.0)
     spearman_min_pairs: int = Field(default=10, ge=3)
-    # Days of stored observations the Spearman check scores over, ending at the
-    # newest scene of the verified run.
-    history_days: int = Field(default=365, ge=1)
 
 
 class VerifyConfig(BaseModel):

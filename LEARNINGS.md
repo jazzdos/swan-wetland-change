@@ -419,3 +419,22 @@ Wheel: `dea_tools-0.4.10-py3-none-any.whl`, sha256 `8f42620975a8b904446718e561c2
 Only dea_tools/bandindices.py was loaded from the wheel; it imports only numpy and warnings. xarray was a `--with` overlay. No dependency was added, and pyproject.toml and uv.lock are unchanged.
 
 Decision context: dea-tools 0.4.10 resolves on Python 3.12, but its transitive geomad 1.0.0 (via odc-algo) has no macOS wheel and the sdist build fails with 'omp.h file not found'. The standing check therefore stays spyndex 0.12.0 in tests/test_indices.py (human decision 2026-10-30).
+
+### Spearman calibration rule and reconciliation check (2026-11-06)
+
+This is not a blind pre-registration. The rule was chosen with the whole-history rho already measured (2026-11-05), and R1 was predictable from the 2026-11-03 sensitivity numbers. Both were written down in the same change as the result.
+
+1. Calibration rule, set by Jarrod on 2026-11-06: `spearman_min` is the lowest whole-history per-lake rho from the gate's code path (`waterbody_checks` with `history` set to every stored observation up to the newest scene) minus 0.02, rounded down to two decimals.
+2. Reconciliation hypothesis R1: the legacy pairing (datetime-only de-duplication by highest `scene_coverage`, start 2022-12-01, end 2026-11-02) reproduces the H4 per-lake rho to three decimals and the H4 pair counts exactly (Forrestdale 0.870 with 93, Thomsons 0.897 with 99, Lake Clifton 0.858 with 98, Lake Preston 0.861 with 98). The result is recorded whether R1 holds or not.
+
+### Spearman threshold calibration (2026-11-06)
+
+Rows: [docs/research/2026-11-06-spearman-calibration.csv](docs/research/2026-11-06-spearman-calibration.csv), written by [docs/research/2026-11-06-spearman-calibration.py](docs/research/2026-11-06-spearman-calibration.py), reconciliation in [docs/research/2026-11-06-spearman-calibration.txt](docs/research/2026-11-06-spearman-calibration.txt). Decision: [docs/decisions/0007-spearman-threshold-from-whole-history.md](docs/decisions/0007-spearman-threshold-from-whole-history.md). The script ran the gate's code path (`waterbody_checks` with `history` set to every stored observation up to the newest scene, 2026-10-29T02:27:01Z) over 1147 files and 235,595,220 bytes. It is read only.
+
+Calibration, whole-history rho and n pairs: Forrestdale 0.8608 (88), Lake Clifton 0.8555 (95), Lake Preston 0.8568 (96), Thomsons 0.8932 (93). The lowest is 0.8555, so by the calibration rule `spearman_min` is floor((0.8554980859546633 - 0.02) * 100) / 100 = 0.83, set in `config/pipeline.toml` and as the `WaterbodiesVerifyConfig` default. H4 stays not supported: no lake reached 0.9.
+
+R1 held. The legacy pairing (datetime-only de-duplication, 2022-12-01 to 2026-11-02) reproduces the H4 rho to three decimals and the H4 pair counts exactly. Gate against H4, rho and pairs: Forrestdale 0.861 with 88 against 0.870 with 93; Lake Clifton 0.855 with 95 against 0.858 with 98; Lake Preston 0.857 with 96 against 0.861 with 98; Thomsons 0.893 with 93 against 0.897 with 99.
+
+Cause: commit 00e8fb0 (tile and date de-duplication) landed at 2026-11-03 18:49:11 +0800, after the H4 report at fc9f4ba (18:45:32 +0800). It drops 24, 6, 6 and 12 rows (Forrestdale, Lake Clifton, Lake Preston, Thomsons) that share a tile and a calendar date, which lowers rho by 0.0088, 0.0028, 0.0038 and 0.0041 and the pair counts by 5, 3, 2 and 6. No stored row falls outside the H4 date range, and the gate and range-restricted columns agree on every lake, so the range does not contribute.
+
+Limits: the threshold is calibrated on the same backfill it then gates. Each verify reads all 1147 files (235,595,220 bytes) and the count grows with each pass. S3 read time is unmeasured, against a 20 minute verify step timeout in `verify.yml`.

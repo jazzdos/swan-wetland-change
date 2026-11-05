@@ -214,7 +214,7 @@ def test_spearman_monotonic_passes() -> None:
     assert check.name == SPEARMAN_CHECK_NAME
     assert check.passed is True
     assert check.measured == pytest.approx(1.0)
-    assert check.threshold == 0.9
+    assert check.threshold == CFG.spearman_min
 
 
 def test_spearman_weak_fails() -> None:
@@ -230,7 +230,7 @@ def test_spearman_too_few_pairs_skipped() -> None:
     check = spearman_check(UID, ref, ref, cfg=CFG)
     assert check.passed is None
     assert check.measured is None
-    assert check.threshold == 0.9
+    assert check.threshold == CFG.spearman_min
     assert check.detail["reason"]
     assert check.detail["n_pairs"] == 9
 
@@ -434,7 +434,7 @@ def test_history_scores_spearman_while_per_pass_stays_on_run_rows() -> None:
     assert rho.passed is True
     assert rho.detail["n_pairs"] == 12
     assert rho.detail["n_run_pairs"] == 1
-    assert rho.detail["history_days"] == CFG.history_days
+    assert "history_days" not in rho.detail
     assert checks[-1] is rho
 
 

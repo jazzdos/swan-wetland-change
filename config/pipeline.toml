@@ -56,10 +56,10 @@ min_clear_pixels = 100
 
 # Water extent, history: LEARNINGS.md "S9 historical tolerance" chose 10 pp.
 [verify.waterbodies]
+# The Spearman check scores every stored pass up to the newest scene of the verified run.
 tolerance_pp = 10.0
 max_day_gap = 3
-spearman_min = 0.9
+# Calibrated from the whole stored history (lowest per-lake rho minus 0.02, rounded
+# down); see docs/decisions/0007-spearman-threshold-from-whole-history.md.
+spearman_min = 0.83
 spearman_min_pairs = 10
-# Window of stored observations the Spearman check scores over, in days, ending
-# at the newest scene of the verified run. Per-pass checks cover the run only.
-history_days = 365

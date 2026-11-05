@@ -1,0 +1,32 @@
+Spearman calibration, 2026-11-06
+
+Newest scene: 2026-10-29T02:27:01.008000+00:00. Files read: 1147. Bytes read: 235595220. Lake rows in the history: 333004.
+max_day_gap 3, spearman_min_pairs 10, spearman_min in config 0.9.
+
+Gate = waterbody_checks over the whole stored history. Range = the same code over 2022-12-01 to 2026-11-02. Legacy = pairing before 00e8fb0 over that range. H4 = LEARNINGS.md, report fc9f4ba.
+
+lake                gate rho    n  range rho    n  legacy rho    n   H4 rho    n
+Forrestdale Lake       0.861   88      0.861   88       0.870   93    0.870   93
+Lake Clifton           0.855   95      0.855   95       0.858   98    0.858   98
+Lake Preston           0.857   96      0.857   96       0.861   98    0.861   98
+Thomsons Lake          0.893   93      0.893   93       0.897   99    0.897   99
+
+lake                rows dt dedupe tile+date dropped outside DEA rows  DEA last date
+Forrestdale Lake     346       346       322      24       0      795  2026-09-16
+Lake Clifton         145       145       139       6       0      695  2026-10-02
+Lake Preston         145       145       139       6       0      708  2026-10-02
+Thomsons Lake        171       171       159      12       0      758  2026-10-10
+
+rows: stored rows of the polygon. dt dedupe: after datetime-only de-duplication over the whole history. tile+date: after the gate's tile and date rule. dropped: dt dedupe minus tile+date. outside: stored rows dated outside 2022-12-01 to 2026-11-02.
+
+R1 (legacy reproduces the H4 rho to three decimals and the H4 pair counts exactly): holds.
+
+Legacy minus gate, per lake: Forrestdale Lake rho +0.0088, pairs +5; Lake Clifton rho +0.0028, pairs +3; Lake Preston rho +0.0038, pairs +2; Thomsons Lake rho +0.0041, pairs +6.
+Gate and range columns agree on every lake: yes (stored rows outside the H4 range: 0).
+Commits: fc9f4ba (H4 report) 2026-11-03 18:45:32 +0800; 00e8fb0 (tile and date de-duplication) 2026-11-03 18:49:11 +0800.
+
+Lowest gate rho: 0.8554980859546633. Proposed spearman_min = floor((0.8554980859546633 - 0.02) * 100) / 100 = 0.83.
+
+Windowed measurements (2026-11-05): 2026-11-05-spearman-windows.py and 2026-11-05-spearman-windows.csv measured rho over 365-day and 730-day windows at monthly run ends. They ran against commit 46e0e20, before history_days was removed, so the script does not run on the branch head. They are read only. sha256:
+  5e01fb0e1f5d43b2a6c962428912ff1fb4d6938b4770dfe65b92c99e91f2fbe7  2026-11-05-spearman-windows.py
+  123f00c8a265b0ceeb9f292b4a98127fe045a5316a44f79872dd75cb1f2a13e0  2026-11-05-spearman-windows.csv

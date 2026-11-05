@@ -5,7 +5,7 @@ from __future__ import annotations
 import json
 import logging
 from collections.abc import Callable
-from datetime import UTC, datetime, timedelta
+from datetime import UTC, datetime
 from io import BytesIO
 from pathlib import Path
 
@@ -66,21 +66,17 @@ from wetland_change.windows import PlannedWindow, plan_window
 logger = logging.getLogger(__name__)
 
 
-def _history_paths(
-    ledger: pa.Table, *, newest: datetime, history_days: int
-) -> set[str]:
-    """Observation files of succeeded items from `history_days` before `newest`
-    up to and including `newest`, so re-verifying an older run is repeatable."""
+def _history_paths(ledger: pa.Table, *, newest: datetime) -> set[str]:
+    """Observation files of every succeeded item up to and including `newest`,
+    so re-verifying an older run is repeatable after later passes are stored."""
     latest = latest_entries(ledger)
     if latest.empty:
         return set()
     stamp = pd.Timestamp(newest)
     stamp = stamp.tz_localize("UTC") if stamp.tzinfo is None else stamp
-    start = stamp - timedelta(days=history_days)
     stored = latest[
         (latest["status"] == "succeeded")
         & latest["observation_path"].notna()
-        & (latest["datetime"] >= start)
         & (latest["datetime"] <= stamp)
     ]
     return {str(p) for p in stored["observation_path"]}
@@ -474,10 +470,9 @@ def verify_run(
             history_paths = _history_paths(
                 ledger,
                 newest=max(s.datetime for s in scenes),
-                history_days=cfg.verify.waterbodies.history_days,
             )
-            # One listing, not one exists call per path: the history can hold a
-            # year of files.
+            # One listing, not one exists call per path: the history holds every
+            # stored pass.
             stored = set(store.list_files("observations"))
             paths = sorted((run_paths | history_paths) & stored)
             history = read_observations(store, paths)
