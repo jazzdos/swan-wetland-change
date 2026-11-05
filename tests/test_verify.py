@@ -540,6 +540,36 @@ def test_latest_run_id_skips_a_malformed_manifest(tmp_path: Path) -> None:
     assert latest_run_id(store) == "20261029T100000Z"
 
 
+def test_latest_run_id_skips_a_newer_backfill_manifest(tmp_path: Path) -> None:
+    store = OutputStore(str(tmp_path / "store"))
+    store.write_bytes("runs/20261029T100000Z.json", b'{"processed": 1, "kind": "run"}')
+    store.write_bytes(
+        "runs/20261030T100000Z.json", b'{"processed": 40, "kind": "backfill"}'
+    )
+    assert latest_run_id(store) == "20261029T100000Z"
+
+
+def test_latest_run_id_treats_a_manifest_without_kind_as_a_run(
+    tmp_path: Path,
+) -> None:
+    store = OutputStore(str(tmp_path / "store"))
+    store.write_bytes("runs/20261029T100000Z.json", b'{"processed": 1}')
+    store.write_bytes(
+        "runs/20261030T100000Z.json", b'{"processed": 5, "kind": "backfill"}'
+    )
+    assert latest_run_id(store) == "20261029T100000Z"
+
+
+def test_latest_run_id_returns_none_when_only_backfills_processed(
+    tmp_path: Path,
+) -> None:
+    store = OutputStore(str(tmp_path / "store"))
+    store.write_bytes(
+        "runs/20261030T100000Z.json", b'{"processed": 3, "kind": "backfill"}'
+    )
+    assert latest_run_id(store) is None
+
+
 def test_verify_run_with_injected_dependencies(
     fixture_item: dict[str, Any], fixture_polygon: BaseGeometry, tmp_path: Path
 ) -> None:

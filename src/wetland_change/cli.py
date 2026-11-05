@@ -281,7 +281,10 @@ def verify(
     config: ConfigOption = Path("config/pipeline.toml"),
     output_root: OutputRootOption = None,
     run_id: Annotated[
-        str | None, typer.Option(help="Defaults to the latest run")
+        str | None,
+        typer.Option(
+            help="Defaults to the latest daily run (kind run) with processed scenes"
+        ),
     ] = None,
 ) -> None:
     """Score the known-good checks for one run and write the report."""
@@ -302,7 +305,9 @@ def verify(
         typer.echo(str(exc), err=True)
         raise typer.Exit(code=5) from exc
     if target is None:
-        raise typer.BadParameter("no run with processed scenes in the output root")
+        raise typer.BadParameter(
+            "no daily run with processed scenes in the output root"
+        )
     if not run_exists(store, target):
         raise typer.BadParameter(f"no run {target!r} in the output root")
     try:

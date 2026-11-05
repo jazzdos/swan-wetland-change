@@ -91,7 +91,7 @@ on later runs; it does not abort the run.
   processed scenes, and commits the verification report. The commit keeps the repository active so GitHub
   does not disable the schedule after 60 days.
 - `.github/workflows/verify.yml`: Sundays at 22:00 UTC and on manual
-  dispatch. Runs the live contract tests, `verify` on the latest run and
+  dispatch. Runs the live contract tests, `verify` on the latest daily run and
   `freshness`, and opens a GitHub issue on any failure.
 - `.github/workflows/test.yml`: ruff, mypy and pytest on every push to
   `main` and every pull request targeting it.
@@ -136,7 +136,7 @@ recorded in `LEARNINGS.md`, and the Collection 1 backfill
 | Incremental and idempotent | pytest-regressions golden run; watermark replay | `tests/test_golden_run.py`, `tests/test_pipeline.py`, `tests/test_ledger.py`, `tests/test_catalogue.py` | Implemented: byte-identical outputs on rerun, no duplicates after watermark replay, golden observation rows. The ledger-against-Copernicus count is covered per tile over 30 days by the freshness row; the backfill reached coverage 1.0 against a fresh Earth Search reference. |
 | Change detection | DEA Waterbodies Forrestdale record | `src/wetland_change/change.py`, `src/wetland_change/outputs/changes.py`; `tests/test_change.py`, `tests/test_change_outputs.py` | Implemented. Backfill 2022-12-01 to 2026-11-02 (1147 items): H1 supported, H2 untestable, H3 not supported, H4 not supported. See below. |
 | Scheduled job alive | Earth Search and Copernicus counts per tile per 30 days | `src/wetland_change/verify/freshness.py` (`freshness_*`); `tests/test_verify_freshness.py`; issue step in `.github/workflows/verify.yml`, `tests/test_workflows.py` | Implemented. Not yet run on a schedule (see Limitations). |
-| End to end | `verify` over the latest run | `src/wetland_change/verify/run.py`, `src/wetland_change/verify/checks.py`; `tests/test_verify.py`, `tests/test_workflows.py` | Implemented and run locally (first live run: 127 checks, 115 passed, 12 failed, all 12 explained in `docs/handoffs/2026-10-29-milestone-1.md`). A green weekly `verify.yml` run has not happened (see Limitations). |
+| End to end | `verify` over the latest daily run | `src/wetland_change/verify/run.py`, `src/wetland_change/verify/checks.py`; `tests/test_verify.py`, `tests/test_workflows.py` | Implemented and run locally (first live run: 127 checks, 115 passed, 12 failed, all 12 explained in `docs/handoffs/2026-10-29-milestone-1.md`). A green weekly `verify.yml` run has not happened (see Limitations). |
 
 ### Backfill results
 
@@ -194,8 +194,9 @@ uv run wetland-change freshness
   item. It exits 2 for an id that is not exhausted, or when nothing is
   exhausted. It does not edit existing ledger files and does not build the
   catalogue.
-- `verify` scores the verification matrix for the latest run, or the run
-  given with `--run-id`, and writes the JSON and Markdown reports. It exits 5
+- `verify` scores the verification matrix for the latest daily run, or the run
+  given with `--run-id`, and writes the JSON and Markdown reports. A backfill
+  chunk is verified only by naming it with `--run-id`. It exits 5
   and names the manifest path when a run manifest cannot be read, rather than
   checking an older run.
 - `build-catalogue` rebuilds the STAC catalogue from the ledger. Run it after

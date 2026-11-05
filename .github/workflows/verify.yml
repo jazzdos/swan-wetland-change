@@ -1,4 +1,4 @@
-# Weekly verify: run the live contract tests, verify the latest run in the S3
+# Weekly verify: run the live contract tests, verify the latest daily run in the S3
 # output store against the independent references, and check freshness. Any
 # failure opens a GitHub issue that links to the workflow run.
 #
@@ -101,7 +101,7 @@ jobs:
       # `!cancelled()` drops the implicit success(), so verify and freshness
       # still run after a failed earlier step and every problem shows up in
       # one run. The job still ends red.
-      - name: Verify the latest run
+      - name: Verify the latest daily run
         if: ${{ !cancelled() }}
         timeout-minutes: 20
         run: >-
