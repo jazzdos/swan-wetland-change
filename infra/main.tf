@@ -22,6 +22,11 @@ resource "aws_s3_bucket_ownership_controls" "outputs" {
   }
 }
 
+# DuckDB cannot expand an s3:// glob without listing the bucket, so anonymous
+# callers also get s3:ListBucket, limited by the s3:prefix condition to the
+# observations/ prefix. Every other prefix (changes/, ledger/, runs/, stac/,
+# verification/) stays unlistable. Objects remain readable by key through the
+# GetObject statement. There is no public put or delete.
 data "aws_iam_policy_document" "public_read" {
   statement {
     sid       = "PublicReadObjects"
@@ -32,6 +37,24 @@ data "aws_iam_policy_document" "public_read" {
     principals {
       type        = "*"
       identifiers = ["*"]
+    }
+  }
+
+  statement {
+    sid       = "PublicListObservationPrefix"
+    effect    = "Allow"
+    actions   = ["s3:ListBucket"]
+    resources = [aws_s3_bucket.outputs.arn]
+
+    principals {
+      type        = "*"
+      identifiers = ["*"]
+    }
+
+    condition {
+      test     = "StringLike"
+      variable = "s3:prefix"
+      values   = ["observations/*"]
     }
   }
 }

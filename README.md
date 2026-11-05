@@ -131,7 +131,7 @@ recorded in `LEARNINGS.md`, and the Collection 1 backfill
 | Water extent, live | DEA `ga_s2_wo_provisional_3`, same pass and grid | `src/wetland_change/verify/wo.py` (`water_vs_dea_s2_wo`); `tests/test_verify.py` | Implemented for pixel agreement on mutually clear pixels, with per-polygon thresholds (0.91 default, 0.94, 0.92 and 0.95 for the three overrides) instead of the design's 0.95, because the best calibrated agreement was 0.9303 (handoff, ADR 0005). The design's "wet area within 5 pp" clause is not implemented; no design document, decision or handoff records a reason. |
 | Water extent, history | DEA Waterbodies v3 CSV per lake; DEA `ga_ls_wo_3` per scene | `src/wetland_change/verify/waterbodies.py` (`water_vs_dea_waterbodies`, `water_spearman_vs_dea_waterbodies`); `tests/test_verify_waterbodies.py` | Implemented against the Waterbodies CSV with a 10 pp per-pass tolerance (spike S9). The `ga_ls_wo_3` per-scene comparison is not implemented as a standing check: S9 found Waterbodies v3 within 0.2 pp of `ga_ls_wo_3` on all 129 passes, consistent with Waterbodies being derived from it, and used it once to set the tolerance (`LEARNINGS.md`, "S9 historical tolerance"). The backfill Spearman rho was 0.858 to 0.897 on four lakes, below 0.9. |
 | NDVI | DEA NBART, same acquisition | `src/wetland_change/verify/ndvi.py` (`ndvi_vs_dea_nbart`, `ndvi_correlation_vs_dea_nbart`); `tests/test_verify_ndvi.py` | Implemented. One live check on 2026-10-30 passed with an absolute difference of about 0.003 against a 0.05 tolerance (`LEARNINGS.md`, "DEA NBART scale"). |
-| GeoParquet output | geoparquet-validator; DuckDB and GDAL as readers | `src/wetland_change/outputs/geoparquet.py`; `tests/test_geoparquet.py`, `tests/test_pipeline.py`, `tests/test_readme.py` | Implemented. The validator and DuckDB tests run in the default suite; the GDAL read skips when the GDAL build has no Parquet driver. |
+| GeoParquet output | geoparquet-validator; DuckDB and GDAL as readers | `src/wetland_change/outputs/geoparquet.py`; `tests/test_geoparquet.py`, `tests/test_pipeline.py`, `tests/test_readme.py` | Implemented. The validator, DuckDB, pyarrow and geopandas readers run in the default suite and agree on row counts and bounds (`tests/test_geoparquet.py`). GDAL is not exercised because the pinned pyogrio wheel has no Parquet driver. |
 | STAC catalogue | stac-validator (through stac-check 1.14), stac-check, pystac validate, stac-browser | `src/wetland_change/stac/catalogue.py`; `tests/test_catalogue.py`, `tests/test_run_catalogue.py`; CORS in `infra/main.tf`, `tests/test_infra.py` | Implemented offline: pystac `validate_all` and stac-check pass, and all hrefs are absolute https. The live checks (bucket returns `Access-Control-Allow-Origin`, catalogue opens in stac-browser) are not implemented because the infrastructure has not been applied and no bucket exists. |
 | Incremental and idempotent | pytest-regressions golden run; watermark replay | `tests/test_golden_run.py`, `tests/test_pipeline.py`, `tests/test_ledger.py`, `tests/test_catalogue.py` | Implemented: byte-identical outputs on rerun, no duplicates after watermark replay, golden observation rows. The ledger-against-Copernicus count is covered per tile over 30 days by the freshness row; the backfill reached coverage 1.0 against a fresh Earth Search reference. |
 | Change detection | DEA Waterbodies Forrestdale record | `src/wetland_change/change.py`, `src/wetland_change/outputs/changes.py`; `tests/test_change.py`, `tests/test_change_outputs.py` | Implemented. Backfill 2022-12-01 to 2026-11-02 (1147 items): H1 supported, H2 untestable, H3 not supported, H4 not supported. See below. |
@@ -233,9 +233,24 @@ WHERE valid_fraction > 0.8
 ORDER BY polygon_id, datetime
 ```
 
-Against the S3 output store, replace the path with
-`s3://<bucket>/observations/*/*/*.parquet` after `INSTALL httpfs; LOAD httpfs;`
-and setting `s3_region`. Change rows use the same layout under `changes/`.
+The public S3 bucket serves the same files to an anonymous reader. No
+credentials are needed: the secret below names the region and nothing else.
+The bucket policy allows anonymous listing only under `observations/`, so a
+glob rooted anywhere else, including `changes/`, is denied.
+
+```sql
+INSTALL httpfs;
+LOAD httpfs;
+CREATE OR REPLACE SECRET public_outputs (TYPE s3, PROVIDER config, REGION '<aws_region>');
+
+SELECT year, tile, site, polygon_id, datetime, water_ha_index, water_ha_scl, ndvi_median
+FROM read_parquet('s3://<bucket>/observations/*/*/*.parquet', hive_partitioning = true)
+WHERE valid_fraction > 0.8
+ORDER BY polygon_id, datetime
+```
+
+Change rows use the same layout under `changes/`. They are readable by exact
+object key but not by glob.
 
 ## Deployment
 
@@ -269,6 +284,9 @@ As of this commit:
   The workflows' "Fetch the AOI" step downloads the DEA Waterbodies polygons
   from the DEA WFS, so an unreachable host fails that step.
 - The live STAC checks (bucket CORS header, stac-browser) wait on the bucket.
+- The anonymous S3 query in "Querying with DuckDB" has not been run against the
+  project bucket because none is applied yet. It needs an apply of the
+  `s3:ListBucket` list statement first.
 - Water thresholds are calibrated against DEA Sentinel-2 Water Observations
   over August to October 2026 only, and DEA's product is itself unvalidated,
   so agreement measures consistency with DEA, not accuracy (ADR 0005).

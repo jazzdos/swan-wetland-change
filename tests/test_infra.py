@@ -71,14 +71,38 @@ def test_trust_policy_pins_audience_and_main_branch_subject() -> None:
     }
 
 
-def test_public_read_policy_is_anonymous_getobject_only() -> None:
+def test_public_read_policy_is_getobject_plus_observations_list() -> None:
     policy = _policy("public_read")
-    assert len(re.findall(r"^\s*statement\s*\{", policy, re.MULTILINE)) == 1
-    assert re.search(r'actions\s*=\s*\["s3:GetObject"\]', policy)
-    principals = _block(policy, "principals")
-    assert re.search(r'identifiers\s*=\s*\["\*"\]', principals)
-    for forbidden in ("s3:ListBucket", "s3:PutObject", "s3:DeleteObject", "s3:*"):
+    statements = _blocks(policy, r"^\s*statement\s*\{")
+    assert len(statements) == 2
+    get_stmts = [s for s in statements if "s3:GetObject" in s]
+    list_stmts = [s for s in statements if "s3:ListBucket" in s]
+    assert len(get_stmts) == 1
+    assert len(list_stmts) == 1
+    get_stmt, list_stmt = get_stmts[0], list_stmts[0]
+
+    assert re.search(r'actions\s*=\s*\["s3:GetObject"\]', get_stmt)
+    assert re.search(
+        r'resources\s*=\s*\["\$\{aws_s3_bucket\.outputs\.arn\}/\*"\]', get_stmt
+    )
+    assert not re.search(r"^\s*condition\s*\{", get_stmt, re.MULTILINE)
+
+    assert re.search(r'actions\s*=\s*\["s3:ListBucket"\]', list_stmt)
+    assert re.search(r"resources\s*=\s*\[aws_s3_bucket\.outputs\.arn\]", list_stmt)
+    conditions = _blocks(list_stmt, r"^\s*condition\s*\{")
+    assert len(conditions) == 1
+    assert re.search(r'test\s*=\s*"StringLike"', conditions[0])
+    assert re.search(r'variable\s*=\s*"s3:prefix"', conditions[0])
+    assert re.search(r'values\s*=\s*\["observations/\*"\]', conditions[0])
+
+    for stmt in statements:
+        principals = _block(stmt, "principals")
+        assert re.search(r'identifiers\s*=\s*\["\*"\]', principals)
+
+    for forbidden in ("s3:PutObject", "s3:DeleteObject", "s3:*"):
         assert forbidden not in policy
+    # An unconditioned public list would expose ledger/ and runs/.
+    assert policy.count("s3:ListBucket") == 1
 
 
 def test_cors_allows_only_get_and_head_from_any_origin() -> None:

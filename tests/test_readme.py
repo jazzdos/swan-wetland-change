@@ -128,6 +128,33 @@ def test_readme_duckdb_query_returns_rows(
     assert len(rows) >= 1
 
 
+def _public_list_prefixes() -> list[str]:
+    """Prefixes the public_read policy lets anonymous callers list."""
+    main_tf = (REPO / "infra" / "main.tf").read_text(encoding="utf-8")
+    policy = main_tf[main_tf.index('data "aws_iam_policy_document" "public_read"') :]
+    policy = policy[: policy.index('resource "aws_s3_bucket_policy"')]
+    match = re.search(
+        r'variable\s*=\s*"s3:prefix".*?values\s*=\s*\[(.*?)\]', policy, re.DOTALL
+    )
+    assert match, "no s3:prefix condition in the public_read policy"
+    return [v.removesuffix("/*") for v in re.findall(r'"([^"]+)"', match.group(1))]
+
+
+def test_readme_anonymous_s3_query_matches_public_list_policy() -> None:
+    section = _section(_readme(), "Querying with DuckDB")
+    blocks = re.findall(r"```sql\n(.*?)```", section, flags=re.DOTALL)
+    assert len(blocks) >= 2, "expected a local and an anonymous S3 sql block"
+    block = blocks[1]
+    lowered = block.lower()
+    assert "LOAD httpfs" in block
+    assert "hive_partitioning = true" in block
+    assert "key_id" not in lowered
+    assert "session_token" not in lowered
+    glob = re.search(r"s3://[^/'\s]+/([^/'\s*]+)/", block)
+    assert glob, "no s3://<bucket>/<first-segment>/ glob in the S3 sql block"
+    assert glob.group(1) in _public_list_prefixes()
+
+
 def _running_locally_subcommands() -> list[str]:
     section = _section(_readme(), "Running locally")
     blocks = re.findall(r"```\w*\n(.*?)```", section, flags=re.DOTALL)

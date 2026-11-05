@@ -4,7 +4,7 @@ OpenTofu/Terraform module for the AWS resources the swan-wetland-change pipeline
 
 ## What the module creates
 
-- A public-read S3 bucket. Anonymous callers get `s3:GetObject` only; there is no public list, put or delete. CORS allows GET and HEAD from any origin because stac-browser on GitHub Pages reads the STAC catalogue from the bucket.
+- A public-read S3 bucket. Anonymous callers get `s3:GetObject` plus `s3:ListBucket` limited to the `observations/` prefix, so a DuckDB glob over the observation files works without credentials. Other prefixes (`changes/`, `ledger/`, `runs/`, `stac/`, `verification/`) cannot be listed, and there is no public put or delete. The list statement takes effect only after an apply. Anonymous list and get requests are billed to the bucket owner. CORS allows GET and HEAD from any origin because stac-browser on GitHub Pages reads the STAC catalogue from the bucket.
 - The GitHub OIDC provider `token.actions.githubusercontent.com` with audience `sts.amazonaws.com`, when `create_oidc_provider` is true (the default). An AWS account can hold only one such provider, and other repositories usually share it. If the account already has one, pass `-var create_oidc_provider=false`, as the commands below do. The module then looks the provider up with a data source and leaves it unmanaged. Do not import an existing provider into this state: a later `destroy` would delete it and break GitHub-to-AWS authentication for every other repository in the account.
 - An IAM role `swan-wetland-change-pipeline`, assumable only from the repository's `main` branch. The trust policy requires `token.actions.githubusercontent.com:aud` = `sts.amazonaws.com` and `token.actions.githubusercontent.com:sub` = `repo:<owner>@<owner_id>/<name>@<repo_id>:ref:refs/heads/main`. The role has `s3:ListBucket` on the bucket and `s3:GetObject`, `s3:PutObject` and `s3:DeleteObject` on its objects, and nothing else. The role's maximum session duration is 3 hours (10800 s), and the workflow requests all of it so credentials outlast the 120 minute job.
 
@@ -112,6 +112,6 @@ A bucket that is not seeded still converges: each run does at most what fits in 
 ## Notes
 
 - State is local by default. `terraform.tfstate` is gitignored; keep it safe or add a remote backend.
-- The bucket is intentionally public-read for objects. Never write private data to it.
+- The bucket is intentionally public-read for objects, and listable under `observations/` only. There is no public put or delete. Never write private data to it.
 - The role only works from runs on `main`. A `workflow_dispatch` run from another branch cannot assume it.
 - The 3 hour session duration takes effect only after an apply. An existing deployment must be applied again before the next pipeline run, because requesting a duration above the role maximum makes the role assumption fail.
