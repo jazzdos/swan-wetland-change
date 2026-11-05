@@ -2,13 +2,26 @@
 
 A plain path becomes a `file://` URI; `s3://bucket/prefix` resolves to
 `S3FileSystem` with the same interface, so Milestone 2 changes only config.
+
+Writes carry a Content-Type: by key suffix (`CONTENT_TYPES`) or the caller's
+`content_type`. S3 stores it as the object's content type; local files ignore it.
 """
 
 from __future__ import annotations
 
-from pathlib import Path
+from pathlib import Path, PurePosixPath
+from typing import Final
 
 from pyarrow import fs as pafs
+
+CONTENT_TYPES: Final[dict[str, str]] = {
+    ".json": "application/json",
+    ".parquet": "application/vnd.apache.parquet",
+}
+
+
+def _content_type_for(relpath: str) -> str | None:
+    return CONTENT_TYPES.get(PurePosixPath(relpath).suffix.lower())
 
 
 class OutputStore:
@@ -24,10 +37,14 @@ class OutputStore:
             return self.root.rstrip("/")
         return f"{self.root.rstrip('/')}/{relpath.lstrip('/')}"
 
-    def write_bytes(self, relpath: str, data: bytes) -> str:
+    def write_bytes(
+        self, relpath: str, data: bytes, *, content_type: str | None = None
+    ) -> str:
         full = self._full(relpath)
         self.fs.create_dir(full.rsplit("/", 1)[0], recursive=True)
-        with self.fs.open_output_stream(full) as stream:
+        ctype = content_type or _content_type_for(relpath)
+        metadata = {"Content-Type": ctype} if ctype else None
+        with self.fs.open_output_stream(full, metadata=metadata) as stream:
             stream.write(data)
         return relpath
 

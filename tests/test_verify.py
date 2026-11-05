@@ -21,6 +21,7 @@ from wetland_change.verify.wo import (
     pooled_agreement,
     wo_agreement,
     wo_candidates,
+    wo_wet_area,
 )
 
 
@@ -97,6 +98,38 @@ def test_wo_agreement_with_nothing_clear_is_nan() -> None:
         np.zeros((1, 1), bool), np.zeros((1, 1), bool), np.zeros((1, 1), np.uint8)
     )
     assert n == 0 and np.isnan(agreement)
+
+
+def test_wo_wet_area_on_mutually_clear_pixels() -> None:
+    water = np.array([[True, True, False, False], [True, False, False, True]])
+    clear = np.array([[True, True, True, True], [True, True, True, False]])
+    wo = np.array(
+        [[WO_WET, WO_WET, WO_WET, 64], [WO_WET, 1, WO_WET | 4, WO_WET]],
+        dtype=np.uint8,
+    )
+    # Flagged WO pixels (64, 1, 128|4) and the pipeline-unclear pixel drop out
+    # of both shares, leaving four mutually clear pixels.
+    pipeline_wet, wo_wet, n = wo_wet_area(water, clear, wo)
+    assert (pipeline_wet, wo_wet, n) == (3, 4, 4)
+
+    assert wo_wet_area(
+        np.zeros((1, 1), bool), np.zeros((1, 1), bool), np.zeros((1, 1), np.uint8)
+    ) == (0, 0, 0)
+
+
+def test_wo_wet_area_gap_is_bounded_by_disagreement() -> None:
+    rng = np.random.default_rng(20261105)
+    for _ in range(5):
+        water = rng.random((40, 40)) < rng.uniform(0.1, 0.9)
+        clear = rng.random((40, 40)) < 0.9
+        wo = np.where(rng.random((40, 40)) < rng.uniform(0.1, 0.9), WO_WET, 0).astype(
+            np.uint8
+        )
+        wo[rng.random((40, 40)) < 0.1] |= 4
+        agreement, n_agree = wo_agreement(water, clear, wo)
+        pipeline_wet, wo_wet, n = wo_wet_area(water, clear, wo)
+        assert n == n_agree > 0
+        assert abs(pipeline_wet - wo_wet) / n <= 1 - agreement + 1e-12
 
 
 def test_write_report(tmp_path: Path) -> None:
@@ -181,7 +214,7 @@ from wetland_change.verify.run import (  # noqa: E402
     verify_run,
 )
 from wetland_change.verify.scl import scl_checks  # noqa: E402
-from wetland_change.verify.wo import wo_check  # noqa: E402
+from wetland_change.verify.wo import WET_AREA_MAX_PP, wo_check  # noqa: E402
 from wetland_change.windows import Grid, plan_window  # noqa: E402
 
 
@@ -368,9 +401,13 @@ def test_wo_check_branches(
     assert nothing_clear.measured is None
     assert nothing_clear.detail["n_mutually_clear"] == 0
 
-    wet = run(FakeReader(grid=grid, data=np.full(shape, WO_WET, np.uint8)))
+    # WO equal to the pipeline's own water, so agreement and wet area both hold.
+    clear = clear_mask(stack.scl, stack.green, stack.nir, stack.swir16) & inside
+    own = water_pixels(WaterConfig(agreement_min=0.5).for_polygon(None), stack, clear)
+    wet = run(FakeReader(grid=grid, data=np.where(own, WO_WET, 0).astype(np.uint8)))
     assert wet.detail["n_mutually_clear"] > 0
     assert wet.passed is True
+    assert wet.detail["wet_area_diff_pp"] == 0
     dry = run(FakeReader(grid=grid, data=np.zeros(shape, np.uint8)))
     assert dry.passed is False
 
@@ -518,6 +555,7 @@ def test_wo_check_scores_each_polygon_with_its_own_setting(
     assert other.measured == 1.0
     assert other.threshold == 0.5
     assert other.passed is True
+    assert other.detail["wet_area_diff_pp"] == 0
     assert other.reference == "wo.tif"
     assert other.detail["method"] == "mndwi"
     assert other.detail["override"] is False
@@ -529,6 +567,145 @@ def test_wo_check_scores_each_polygon_with_its_own_setting(
     assert "polygon_id" not in glob.detail
 
 
+def _wo_flipped(
+    fixture_scene: SceneItem,
+    fixture_polygon: BaseGeometry,
+    water: WaterConfig,
+    *,
+    polygon_id: str,
+    dry_to_wet: int = 0,
+    wet_to_dry: int = 0,
+) -> Check:
+    """wo_check against a WO array equal to the pipeline's own water, with
+    clear pixels flipped so the agreement and the wet-area gap are known."""
+    stack, planned, inside, grid = _stack_and_window(fixture_scene, fixture_polygon)
+    clear = clear_mask(stack.scl, stack.green, stack.nir, stack.swir16) & inside
+    pipeline = water_pixels(water.for_polygon(polygon_id), stack, clear)
+    wo = np.where(pipeline, WO_WET, 0).astype(np.uint8)
+    dry = np.flatnonzero(clear & ~pipeline)
+    wet = np.flatnonzero(clear & pipeline)
+    assert len(dry) >= dry_to_wet and len(wet) >= wet_to_dry
+    wo.flat[dry[:dry_to_wet]] = WO_WET
+    wo.flat[wet[:wet_to_dry]] = 0
+    return wo_check(
+        fixture_scene,
+        stack,
+        planned,
+        inside,
+        water=water,
+        wo_href="wo.tif",
+        reader=FakeReader(grid=grid, data=wo),
+        scene_grid=grid,
+        polygon_id=polygon_id,
+    )
+
+
+def _ndwi_water(agreement_min: float = 0.9) -> WaterConfig:
+    return WaterConfig(
+        overrides={
+            "ramsar-52": WaterSetting(
+                method="ndwi", threshold=0.0, agreement_min=agreement_min
+            )
+        }
+    )
+
+
+def test_wo_check_fails_on_wet_area_even_when_agreement_passes(
+    fixture_scene: SceneItem, fixture_polygon: BaseGeometry
+) -> None:
+    result = _wo_flipped(
+        fixture_scene,
+        fixture_polygon,
+        _ndwi_water(0.9),
+        polygon_id="ramsar-52",
+        dry_to_wet=136,
+    )
+    n = result.detail["n_mutually_clear"]
+    assert result.measured == pytest.approx(1 - 136 / n)
+    assert result.measured is not None and result.measured > 0.9
+    assert result.threshold == 0.9
+    assert result.passed is False
+    assert result.detail["wet_area_passed"] is False
+    assert result.detail["wet_area_diff_pp"] == pytest.approx(-100 * 136 / n)
+    assert result.detail["wet_area_diff_pp"] < -5
+    assert result.detail["wet_area_max_pp"] == 5.0 == WET_AREA_MAX_PP
+    gap = result.detail["wet_area_wo"] - result.detail["wet_area_pipeline"]
+    assert gap == pytest.approx(136 / n)
+
+
+def test_wo_check_fails_on_wet_area_when_wo_is_drier(
+    fixture_scene: SceneItem, fixture_polygon: BaseGeometry
+) -> None:
+    result = _wo_flipped(
+        fixture_scene,
+        fixture_polygon,
+        _ndwi_water(0.9),
+        polygon_id="ramsar-52",
+        wet_to_dry=136,
+    )
+    n = result.detail["n_mutually_clear"]
+    assert result.measured is not None and result.measured > 0.9
+    assert result.passed is False
+    assert result.detail["wet_area_passed"] is False
+    assert result.detail["wet_area_diff_pp"] == pytest.approx(100 * 136 / n)
+
+
+def test_wo_check_passes_when_wet_area_within_5pp(
+    fixture_scene: SceneItem, fixture_polygon: BaseGeometry
+) -> None:
+    result = _wo_flipped(
+        fixture_scene,
+        fixture_polygon,
+        _ndwi_water(0.9),
+        polygon_id="ramsar-52",
+        dry_to_wet=40,
+    )
+    n = result.detail["n_mutually_clear"]
+    assert result.measured is not None and result.measured > 0.9
+    assert result.passed is True
+    assert result.detail["wet_area_passed"] is True
+    assert result.detail["wet_area_diff_pp"] == pytest.approx(-100 * 40 / n)
+    assert result.detail["wet_area_max_pp"] == 5.0
+
+
+@pytest.mark.parametrize(("pipeline_wet", "expected"), [(11, True), (12, False)])
+def test_wo_check_wet_area_limit_is_exact_at_5pp(
+    fixture_scene: SceneItem,
+    fixture_polygon: BaseGeometry,
+    pipeline_wet: int,
+    expected: bool,
+) -> None:
+    # 20 mutually clear pixels and 10 WO-wet. 11 pipeline-wet is exactly 5 pp
+    # (agreement 0.95) and passes; 12 is 10 pp and fails. Float shares gave
+    # 5.000000000000004 at the limit.
+    water = _ndwi_water(0.5 if not expected else 0.95)
+    stack, planned, inside, grid = _stack_and_window(fixture_scene, fixture_polygon)
+    clear = clear_mask(stack.scl, stack.green, stack.nir, stack.swir16) & inside
+    pipeline = water_pixels(water.for_polygon("ramsar-52"), stack, clear)
+    wet = np.flatnonzero(clear & pipeline)[:pipeline_wet]
+    dry = np.flatnonzero(clear & ~pipeline)[: 20 - pipeline_wet]
+    assert len(wet) == pipeline_wet and len(dry) == 20 - pipeline_wet
+    small = np.zeros(inside.shape, bool)
+    small.flat[np.concatenate([wet, dry])] = True
+    wo = np.zeros(inside.shape, np.uint8)
+    wo.flat[wet[:10]] = WO_WET
+    result = wo_check(
+        fixture_scene,
+        stack,
+        planned,
+        small,
+        water=water,
+        wo_href="wo.tif",
+        reader=FakeReader(grid=grid, data=wo),
+        scene_grid=grid,
+        polygon_id="ramsar-52",
+    )
+    assert result.detail["n_mutually_clear"] == 20
+    assert result.detail["wet_area_diff_pp"] == (5.0 if expected else 10.0)
+    assert result.detail["wet_area_passed"] is expected
+    assert result.passed is expected
+
+
 @pytest.mark.parametrize(("agreement_min", "expected"), [(0.55, True), (0.60, False)])
 def test_wo_check_agreement_min_alone_decides_pass(
     fixture_scene: SceneItem,
@@ -536,17 +713,22 @@ def test_wo_check_agreement_min_alone_decides_pass(
     agreement_min: float,
     expected: bool,
 ) -> None:
-    water = WaterConfig(
-        overrides={
-            "ramsar-52": WaterSetting(
-                method="ndwi", threshold=0.0, agreement_min=agreement_min
-            )
-        }
+    # Equal flips each way keep the wet-area gap at zero, so only the
+    # agreement floor can decide.
+    result = _wo_flipped(
+        fixture_scene,
+        fixture_polygon,
+        _ndwi_water(agreement_min),
+        polygon_id="ramsar-52",
+        dry_to_wet=406,
+        wet_to_dry=406,
     )
-    result = _wo_with(fixture_scene, fixture_polygon, water, polygon_id="ramsar-52")
+    n = result.detail["n_mutually_clear"]
     assert result.passed is expected
     assert result.threshold == agreement_min
-    assert result.measured == pytest.approx(1125 / 1936)
+    assert result.measured == pytest.approx(1 - 812 / n)
+    assert result.detail["wet_area_diff_pp"] == pytest.approx(0.0)
+    assert result.detail["wet_area_passed"] is True
 
 
 def test_wo_check_scl6_override_scores_scl_class_6(
@@ -562,6 +744,7 @@ def test_wo_check_scl6_override_scores_scl_class_6(
     assert scl.detail["threshold"] is None
     assert scl.threshold == 0.94
     assert scl.passed is True
+    assert scl.detail["wet_area_diff_pp"] == 0
 
     index = _wo_with(fixture_scene, fixture_polygon, water, polygon_id="ramsar-52")
     assert index.measured == pytest.approx(1125 / 1936)

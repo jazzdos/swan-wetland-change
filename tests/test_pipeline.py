@@ -23,6 +23,7 @@ from shapely.geometry.base import BaseGeometry
 from shapely.ops import transform as shapely_transform
 
 from tests.conftest import REQUIRED_ASSETS
+from wetland_change import pipeline as pipeline_module
 from wetland_change.aoi import AoiPolygon
 from wetland_change.catalogue.item import SceneItem, parse_timestamp
 from wetland_change.config import (
@@ -33,6 +34,7 @@ from wetland_change.config import (
     WaterConfig,
 )
 from wetland_change.ledger import (
+    RUN_KIND_BACKFILL,
     attempts_so_far,
     compact_ledger,
     entry_for,
@@ -45,7 +47,7 @@ from wetland_change.ledger import (
     watermark,
     write_ledger,
 )
-from wetland_change.manifest import KIND_REQUEUE, KIND_SCORE, RunManifest
+from wetland_change.manifest import KIND_REQUEUE, KIND_SCORE, RunManifest, new_run_id
 from wetland_change.outputs.changes import CHANGE_COLUMNS, change_path
 from wetland_change.outputs.geoparquet import observation_path, write_observations
 from wetland_change.pipeline import (
@@ -60,6 +62,7 @@ from wetland_change.raster.read import Grid, RasterioReader
 from wetland_change.stac import PlaceholderBaseUrlError
 from wetland_change.stats import ObservationRow
 from wetland_change.store import OutputStore
+from wetland_change.verify.run import latest_run_id
 
 NOW = datetime(2026, 10, 29, 10, 0, tzinfo=UTC)
 TO_4326 = pyproj.Transformer.from_crs(32750, 4326, always_xy=True).transform
@@ -184,10 +187,11 @@ def _run(
     reader: RasterioReader | None = None,
     store: OutputStore | None = None,
     build_catalogue: bool = True,
+    config_text: str = "# test\n",
 ) -> RunManifest:
     cfg = cfg or _config(tmp_path)
     config_path = tmp_path / "pipeline.toml"
-    config_path.write_text("# test\n")
+    config_path.write_text(config_text)
     return run_once(
         cfg,
         client=client,
@@ -655,6 +659,9 @@ def test_run_once_scoring_skips_observation_files_from_other_months(
         processed_at=NOW - timedelta(days=30),
         n_rows=1,
         observation_path=off_path,
+        # A seeded row is backfill, so run_once does not take it for a daily
+        # run that crashed and rescore its date.
+        run_kind=RUN_KIND_BACKFILL,
     )
     write_ledger([seeded], store, run_id="seed")
     store.read_paths.clear()
@@ -1141,9 +1148,9 @@ class LedgerCountingStore(OutputStore):
             self.ledger_reads.append(relpath)
         return super().read_bytes(relpath)
 
-    def write_bytes(self, relpath: str, data: bytes) -> str:
+    def write_bytes(self, relpath: str, data: bytes, **kwargs: Any) -> str:
         self.writes.append(relpath)
-        return super().write_bytes(relpath, data)
+        return super().write_bytes(relpath, data, **kwargs)
 
     def reset(self) -> None:
         self.ledger_listings = 0
@@ -1389,3 +1396,375 @@ def test_run_once_refuses_a_run_id_whose_parts_were_compacted_away(
     with pytest.raises(ValueError, match="run id"):
         _run(tmp_path, FakeClient(items), polygons, NOW)
     assert store.list_files("") == before
+
+
+# --- a run that did not finish is finished by the next run -----------------
+
+
+def _flaky(
+    monkeypatch: pytest.MonkeyPatch, name: str, *, failures: int = 1, after: int = 0
+) -> list[dict[str, Any]]:
+    """Patch `wetland_change.pipeline.<name>` to raise OSError on calls
+    `after + 1` to `after + failures` (1-based) and delegate otherwise.
+
+    Returns the kwargs of every call, so a test can count calls and read the
+    arguments.
+    """
+    real = getattr(pipeline_module, name)
+    calls: list[dict[str, Any]] = []
+
+    def wrapper(*args: Any, **kwargs: Any) -> Any:
+        calls.append(kwargs)
+        if after < len(calls) <= after + failures:
+            raise OSError(f"injected {name} failure")
+        return real(*args, **kwargs)
+
+    monkeypatch.setattr(f"wetland_change.pipeline.{name}", wrapper)
+    return calls
+
+
+def _spy(monkeypatch: pytest.MonkeyPatch, name: str) -> list[dict[str, Any]]:
+    return _flaky(monkeypatch, name, failures=0)
+
+
+def _flagged_store(
+    tmp_path: Path, item: dict[str, Any], fixture_polygon: BaseGeometry
+) -> tuple[dict[str, Any], OutputStore, str]:
+    """The probe row, a store seeded so the fixture scene is flagged, and the
+    expected change file path."""
+    probe = _probe(tmp_path, item, fixture_polygon)
+    store = OutputStore(str(tmp_path / "out"))
+    _seed_october_baseline(store, probe, fixture_polygon)
+    return probe, store, change_path(2026, probe["tile"], probe["item_id"])
+
+
+def _control_bytes(
+    tmp_path: Path,
+    items: list[dict[str, Any]],
+    probe: dict[str, Any],
+    fixture_polygon: BaseGeometry,
+    expected: list[str],
+) -> dict[str, bytes]:
+    """Change files from one uninterrupted run on a separate clean store."""
+    control = tmp_path / "control"
+    control.mkdir()
+    _seed_october_baseline(OutputStore(str(control / "out")), probe, fixture_polygon)
+    _run(control, FakeClient(items), _polygons(fixture_polygon), NOW)
+    return {path: (control / "out" / path).read_bytes() for path in expected}
+
+
+def _later_day_item(item: dict[str, Any]) -> dict[str, Any]:
+    """A copy of the fixture scene acquired a day later, as its own scene."""
+    later = copy.deepcopy(item)
+    later["id"] = f"{item['id']}_next"
+    later["properties"]["s2:product_uri"] = f"next_{item['id']}.SAFE"
+    acquired = parse_timestamp(item["properties"]["datetime"]) + timedelta(days=1)
+    created = _z(NOW - timedelta(hours=2))
+    later["properties"]["datetime"] = _z(acquired)
+    later["properties"]["created"] = created
+    later["properties"]["updated"] = created
+    return later
+
+
+def _manifest_json(store: OutputStore, run_id: str) -> dict[str, Any]:
+    loaded: dict[str, Any] = json.loads(store.read_bytes(f"runs/{run_id}.json"))
+    return loaded
+
+
+def _run_ids(store: OutputStore) -> list[str]:
+    return [Path(p).stem for p in store.list_files("runs") if p.endswith(".json")]
+
+
+RUN1 = new_run_id(NOW)
+RUN2 = new_run_id(NOW + timedelta(days=1))
+RUN3 = new_run_id(NOW + timedelta(days=2))
+
+
+def test_scoring_failure_is_finished_by_the_next_run(
+    fixture_item: dict[str, Any],
+    fixture_polygon: BaseGeometry,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    probe, store, expected = _flagged_store(tmp_path, fixture_item, fixture_polygon)
+    control = _control_bytes(
+        tmp_path, [fixture_item], probe, fixture_polygon, [expected]
+    )
+    polygons = _polygons(fixture_polygon)
+    client = FakeClient([fixture_item])
+    _flaky(monkeypatch, "score_changes")
+    with pytest.raises(OSError, match="score_changes"):
+        _run(tmp_path, client, polygons, NOW, store=store)
+    out = tmp_path / "out"
+    assert not store.exists(f"runs/{RUN1}.json")
+    assert not (out / expected).exists()
+    assert set(read_ledger(store).to_pandas()["status"]) == {"succeeded"}
+
+    second = _run(tmp_path, client, polygons, NOW + timedelta(days=1), store=store)
+    assert (second.discovered, second.skipped_seen) == (0, 1)
+    assert (out / expected).read_bytes() == control[expected]
+    assert second.recovered_runs == [RUN1]
+    assert second.recovered_by is None
+    recovered = _manifest_json(store, RUN1)
+    assert recovered["processed"] == 1
+    assert recovered["failed"] == 0
+    assert recovered["observation_files"] == [
+        f"observations/year=2026/tile={probe['tile']}/obs_{probe['item_id']}.parquet"
+    ]
+    assert recovered["change_files"] == [expected]
+    assert recovered["change_rows"] == 2
+    assert recovered["recovered_by"] == RUN2
+    assert recovered["finished_at"] is not None
+    assert recovered["kind"] == "run"
+    assert recovered["skipped_seen"] == 0
+    assert recovered["skipped_filter"] == 0
+    assert recovered["watermark_before"] is None
+    assert recovered["watermark_after"] is None
+    assert recovered["recovered_runs"] == []
+    assert recovered["ledger_files"] == [
+        f"ledger/year=2026/ledger_{RUN1}_00000.parquet"
+    ]
+    assert latest_run_id(store) == RUN1
+
+
+def test_a_recovered_manifest_does_not_take_the_recovering_runs_config(
+    fixture_item: dict[str, Any],
+    fixture_polygon: BaseGeometry,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    probe, store, _ = _flagged_store(tmp_path, fixture_item, fixture_polygon)
+    polygons = _polygons(fixture_polygon)
+    client = FakeClient([fixture_item])
+    _flaky(monkeypatch, "score_changes")
+    with pytest.raises(OSError, match="score_changes"):
+        _run(tmp_path, client, polygons, NOW, store=store, config_text="# a\n")
+
+    second = _run(
+        tmp_path,
+        client,
+        polygons,
+        NOW + timedelta(days=1),
+        store=store,
+        config_text="# b\n",
+    )
+    recovered = _manifest_json(store, RUN1)
+    assert recovered["recovered_by"] == RUN2
+    assert recovered["package_version"] is None
+    assert recovered["config_sha256"] is None
+    own = _manifest_json(store, RUN2)
+    assert own["config_sha256"] == hashlib.sha256(b"# b\n").hexdigest()
+    assert own["package_version"] is not None
+    assert second.config_sha256 == own["config_sha256"]
+
+
+def test_manifest_write_failure_is_finished_by_the_next_run(
+    fixture_item: dict[str, Any],
+    fixture_polygon: BaseGeometry,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _, store, expected = _flagged_store(tmp_path, fixture_item, fixture_polygon)
+    polygons = _polygons(fixture_polygon)
+    client = FakeClient([fixture_item])
+    _flaky(monkeypatch, "write_manifest")
+    with pytest.raises(OSError, match="write_manifest"):
+        _run(tmp_path, client, polygons, NOW, store=store)
+    written = (tmp_path / "out" / expected).read_bytes()
+    assert not store.exists(f"runs/{RUN1}.json")
+
+    second = _run(tmp_path, client, polygons, NOW + timedelta(days=1), store=store)
+    assert second.recovered_runs == [RUN1]
+    assert (tmp_path / "out" / expected).read_bytes() == written
+    recovered = _manifest_json(store, RUN1)
+    assert recovered["processed"] == 1
+    assert recovered["change_files"] == [expected]
+
+
+def test_a_persistent_scoring_failure_is_finished_by_the_third_run(
+    fixture_item: dict[str, Any],
+    fixture_polygon: BaseGeometry,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _, store, expected = _flagged_store(tmp_path, fixture_item, fixture_polygon)
+    polygons = _polygons(fixture_polygon)
+    client = FakeClient([fixture_item])
+    _flaky(monkeypatch, "score_changes", failures=2)
+    with pytest.raises(OSError):
+        _run(tmp_path, client, polygons, NOW, store=store)
+    with pytest.raises(OSError):
+        _run(tmp_path, client, polygons, NOW + timedelta(days=1), store=store)
+    assert not (tmp_path / "out" / expected).exists()
+
+    third = _run(tmp_path, client, polygons, NOW + timedelta(days=2), store=store)
+    assert (tmp_path / "out" / expected).exists()
+    assert third.recovered_runs == [RUN1]
+    # Run 2 raised before writing any ledger row, so it has nothing to recover
+    # and gets no manifest.
+    assert sorted(_run_ids(store)) == [RUN1, RUN3]
+    assert _manifest_json(store, RUN1)["recovered_by"] == RUN3
+
+
+def test_a_raise_inside_the_scene_loop_loses_no_scene(
+    fixture_item: dict[str, Any],
+    fixture_polygon: BaseGeometry,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    items = [fixture_item, _later_day_item(fixture_item)]
+    probe, store, _ = _flagged_store(tmp_path, items[0], fixture_polygon)
+    expected = [change_path(2026, probe["tile"], item["id"]) for item in items]
+    control = _control_bytes(tmp_path, items, probe, fixture_polygon, expected)
+    polygons = _polygons(fixture_polygon)
+    client = FakeClient(items)
+    # The checkpoint of the second scene fails.
+    _flaky(monkeypatch, "write_ledger", after=1)
+    with pytest.raises(OSError, match="write_ledger"):
+        _run(tmp_path, client, polygons, NOW, store=store)
+    assert [r for r in read_ledger(store).to_pandas()["item_id"]] == [items[0]["id"]]
+    assert not store.exists(f"runs/{RUN1}.json")
+
+    second = _run(tmp_path, client, polygons, NOW + timedelta(days=1), store=store)
+    assert (second.skipped_seen, second.processed) == (1, 1)
+    assert second.recovered_runs == [RUN1]
+    assert second.observation_files == [
+        f"observations/year=2026/tile={probe['tile']}/obs_{items[1]['id']}.parquet"
+    ]
+    recovered = _manifest_json(store, RUN1)
+    assert recovered["processed"] == 1
+    assert recovered["observation_files"] == [
+        f"observations/year=2026/tile={probe['tile']}/obs_{items[0]['id']}.parquet"
+    ]
+    for path in expected:
+        assert (tmp_path / "out" / path).read_bytes() == control[path]
+    assert sorted(second.change_files) == sorted(expected)
+
+
+def test_a_finished_recovery_is_not_repeated(
+    fixture_item: dict[str, Any],
+    fixture_polygon: BaseGeometry,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _, store, _ = _flagged_store(tmp_path, fixture_item, fixture_polygon)
+    polygons = _polygons(fixture_polygon)
+    client = FakeClient([fixture_item])
+    _flaky(monkeypatch, "write_manifest")
+    with pytest.raises(OSError):
+        _run(tmp_path, client, polygons, NOW, store=store)
+    _run(tmp_path, client, polygons, NOW + timedelta(days=1), store=store)
+    before = store.read_bytes(f"runs/{RUN1}.json")
+
+    calls = _spy(monkeypatch, "score_changes")
+    third = _run(tmp_path, client, polygons, NOW + timedelta(days=2), store=store)
+    assert calls == []
+    assert third.recovered_runs == []
+    assert store.read_bytes(f"runs/{RUN1}.json") == before
+    assert sorted(_run_ids(store)) == [RUN1, RUN2, RUN3]
+
+
+def test_a_normal_run_recovers_nothing_and_writes_one_manifest(
+    fixture_item: dict[str, Any], fixture_polygon: BaseGeometry, tmp_path: Path
+) -> None:
+    store = OutputStore(str(tmp_path / "out"))
+    manifest = _run(
+        tmp_path, FakeClient([fixture_item]), _polygons(fixture_polygon), NOW
+    )
+    assert manifest.recovered_runs == []
+    assert manifest.recovered_by is None
+    assert _run_ids(store) == [RUN1]
+
+
+def test_backfill_rows_without_a_manifest_are_not_recovered(
+    fixture_item: dict[str, Any],
+    fixture_polygon: BaseGeometry,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    probe, store, _ = _flagged_store(tmp_path, fixture_item, fixture_polygon)
+    cfg = _config(tmp_path)
+    config_path = tmp_path / "pipeline.toml"
+    config_path.write_text("# test\n")
+    polygons = _polygons(fixture_polygon)
+    backfilled = backfill_once(
+        cfg,
+        start=datetime(2026, 10, 26, tzinfo=UTC),
+        end=datetime(2026, 10, 28, 23, 59, 59, tzinfo=UTC),
+        client=FakeClient([fixture_item]),
+        reader=RasterioReader(),
+        store=store,
+        polygons=polygons,
+        now=NOW,
+        config_path=config_path,
+    )
+    assert store.delete(f"runs/{backfilled.run_id}.json")
+    assert _run_ids(store) == []
+
+    calls = _spy(monkeypatch, "score_changes")
+    later = _run(
+        tmp_path,
+        FakeClient([fixture_item]),
+        polygons,
+        NOW + timedelta(days=1),
+        store=store,
+    )
+    assert calls == []
+    assert later.recovered_runs == []
+    assert _run_ids(store) == [RUN2]
+
+
+def test_unfinished_run_and_new_scenes_are_scored_in_one_call(
+    fixture_item: dict[str, Any],
+    fixture_polygon: BaseGeometry,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    first_item = fixture_item
+    next_item = _later_day_item(fixture_item)
+    probe, store, _ = _flagged_store(tmp_path, first_item, fixture_polygon)
+    polygons = _polygons(fixture_polygon)
+    client = FakeClient([first_item])
+    _flaky(monkeypatch, "score_changes")
+    with pytest.raises(OSError):
+        _run(tmp_path, client, polygons, NOW, store=store)
+
+    calls = _spy(monkeypatch, "score_changes")
+    client.items = [first_item, next_item]
+    second = _run(tmp_path, client, polygons, NOW + timedelta(days=1), store=store)
+    assert second.processed == 1
+    assert second.recovered_runs == [RUN1]
+    (call,) = calls
+    assert set(call["dates"]) == {probe["datetime"].date(), date(2026, 10, 28)}
+    assert call["rescore_later"] is True
+
+
+def test_a_crashed_run_with_only_failed_rows_is_recovered_without_scoring(
+    fixture_item: dict[str, Any],
+    fixture_polygon: BaseGeometry,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    broken = copy.deepcopy(fixture_item)
+    broken["assets"]["green"]["href"] = str(tmp_path / "missing.tif")
+    items = [_wrong_collection(fixture_item), broken]
+    polygons = _polygons(fixture_polygon)
+    store = OutputStore(str(tmp_path / "out"))
+    client = FakeClient(items)
+    _flaky(monkeypatch, "write_manifest")
+    with pytest.raises(OSError):
+        _run(tmp_path, client, polygons, NOW, store=store)
+
+    calls = _spy(monkeypatch, "score_changes")
+    second = _run(tmp_path, client, polygons, NOW + timedelta(days=1), store=store)
+    assert calls == []
+    assert second.recovered_runs == [RUN1]
+    recovered = _manifest_json(store, RUN1)
+    assert recovered["processed"] == 0
+    assert recovered["failed"] == 1
+    assert recovered["rejected"] == 1
+    assert recovered["discovered"] == 1
+    assert recovered["observation_files"] == []
+    assert recovered["change_files"] == []
+    assert recovered["change_rows"] == 0
+    assert recovered["recovered_by"] == RUN2

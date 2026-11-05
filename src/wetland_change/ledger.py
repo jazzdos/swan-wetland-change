@@ -23,7 +23,7 @@ from __future__ import annotations
 
 import datetime as dt
 import json
-from collections.abc import Sequence
+from collections.abc import Collection, Sequence
 from dataclasses import dataclass, replace
 from io import BytesIO
 from typing import Any
@@ -319,6 +319,43 @@ def watermark(ledger: pa.Table) -> dt.datetime | None:
         return None
     value = pc.max(created).as_py()
     return value if isinstance(value, dt.datetime) else None
+
+
+def unfinished_runs(
+    ledger: pa.Table, finished_run_ids: Collection[str]
+) -> dict[str, pd.DataFrame]:
+    """Daily-run ledger rows of every run not in `finished_run_ids`, by run_id.
+
+    A daily run with ledger rows and no manifest did not finish. Backfill rows
+    are skipped, and a null `run_kind` counts as a daily row, as in
+    `watermark`. All rows are used, not `latest_entries`, so a later attempt
+    by another run does not hide what the crashed run did.
+    """
+    if ledger.num_rows == 0:
+        return {}
+    mask = pc.fill_null(pc.not_equal(ledger["run_kind"], RUN_KIND_BACKFILL), True)
+    frame = ledger.filter(mask).to_pandas()
+    finished = set(finished_run_ids)
+    return {
+        str(run_id): rows.reset_index(drop=True)
+        for run_id, rows in frame.groupby("run_id", sort=True)
+        if run_id not in finished
+    }
+
+
+def scored_dates(rows: pd.DataFrame) -> set[dt.date]:
+    """UTC dates of succeeded rows that wrote observations.
+
+    Matches the condition `run_once` uses to collect the dates it scores.
+    """
+    done = rows[
+        (rows["status"] == "succeeded")
+        & rows["observation_path"].notna()
+        & rows["datetime"].notna()
+    ]
+    return {
+        stamp.to_pydatetime().astimezone(dt.UTC).date() for stamp in done["datetime"]
+    }
 
 
 def latest_entries(ledger: pa.Table) -> pd.DataFrame:

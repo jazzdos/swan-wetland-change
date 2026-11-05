@@ -32,8 +32,11 @@ class RunManifest:
     run_id: str
     started_at: datetime
     finished_at: datetime | None
-    package_version: str
-    config_sha256: str
+    # None on a recovered manifest: the ledger does not record which version
+    # or config produced a row, and the recovering run's own are not the
+    # crashed run's.
+    package_version: str | None
+    config_sha256: str | None
     endpoint: str
     collection: str
     watermark_before: datetime | None
@@ -58,6 +61,12 @@ class RunManifest:
     exhausted: int = 0
     exhausted_items: list[str] = field(default_factory=list)
     requeued_items: list[str] = field(default_factory=list)
+    # The later run that finished scoring for this run and wrote this manifest
+    # from the ledger. On such a manifest skipped_seen, skipped_filter and both
+    # watermarks are empty, because only the crashed process knew them.
+    recovered_by: str | None = None
+    # Runs this run finished.
+    recovered_runs: list[str] = field(default_factory=list)
 
     def to_json(self) -> str:
         def _default(value: Any) -> str:

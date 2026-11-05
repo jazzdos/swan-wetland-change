@@ -82,3 +82,20 @@ def test_exhausted_and_requeued_fields_default_and_round_trip(
     assert payload["exhausted"] == 2
     assert payload["exhausted_items"] == ["a", "b"]
     assert payload["requeued_items"] == ["c"]
+
+
+def test_recovery_fields_default_to_null_and_empty_in_json() -> None:
+    manifest = RunManifest(
+        run_id="r3",
+        started_at=NOW,
+        finished_at=NOW,
+        package_version="0.1.0",
+        config_sha256="abc",
+        endpoint="https://example",
+        collection="sentinel-2-c1-l2a",
+        watermark_before=None,
+        watermark_after=None,
+    )
+    payload = json.loads(manifest.to_json())
+    assert payload["recovered_by"] is None
+    assert payload["recovered_runs"] == []

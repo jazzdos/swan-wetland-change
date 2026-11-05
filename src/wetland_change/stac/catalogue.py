@@ -35,14 +35,15 @@ from shapely.geometry import shape
 from wetland_change.catalogue.item import parse_timestamp
 from wetland_change.ledger import read_ledger
 from wetland_change.outputs.changes import change_path
-from wetland_change.store import OutputStore
+from wetland_change.store import CONTENT_TYPES, OutputStore
 from wetland_change.verify.checks import report_path
 
 CATALOG_ID = "swan-wetland-change-catalog"
 COLLECTION_ID = "swan-wetland-change"
 LICENSE = "CC-BY-SA-4.0"
 SWAN_COASTAL_PLAIN_BBOX = [114.9, -33.3, 115.9, -31.5]
-PARQUET_MEDIA_TYPE = "application/vnd.apache.parquet"
+PARQUET_MEDIA_TYPE = CONTENT_TYPES[".parquet"]
+ITEM_MEDIA_TYPE = "application/geo+json"
 ITEMS_PARQUET_KEY = f"stac/{COLLECTION_ID}/items.parquet"
 WRITE_INDEX_KEY = "stac/write-index.json"
 KEPT_PROPERTIES = (
@@ -114,9 +115,7 @@ def _item(
             "https://"
         ):
             item.add_link(
-                pystac.Link(
-                    "derived_from", link["href"], media_type="application/geo+json"
-                )
+                pystac.Link("derived_from", link["href"], media_type=ITEM_MEDIA_TYPE)
             )
     if entry["observation_path"] is not None:
         item.add_asset(
@@ -244,6 +243,7 @@ def write_catalogue(
         *catalog.get_items(recursive=True),
     ]
     keys: list[str] = []
+    item_keys: set[str] = set()
     for obj in objects:
         href = obj.get_self_href()
         if href is None or not href.startswith(prefix):
@@ -252,6 +252,8 @@ def write_catalogue(
                 "write_catalogue base_url must match build_catalogue base_url"
             )
         keys.append(href.removeprefix(prefix))
+        if isinstance(obj, pystac.Item):
+            item_keys.add(keys[-1])
     collection_assets = [
         c.assets.get("items")
         for c in catalog.get_children()
@@ -295,7 +297,11 @@ def write_catalogue(
         if not same_url or key not in listing or old_digests.get(key) != digest
     )
     for key in written:
-        store.write_bytes(key, payloads[key])
+        store.write_bytes(
+            key,
+            payloads[key],
+            content_type=ITEM_MEDIA_TYPE if key in item_keys else None,
+        )
     if written or not same_url or old_digests != digests:
         index = {"base_url": normalised, "objects": digests}
         store.write_bytes(

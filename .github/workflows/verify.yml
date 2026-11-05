@@ -1,13 +1,15 @@
 # Weekly verify: run the live contract tests, verify the latest daily run in the S3
 # output store against the independent references, and check freshness. Any
-# failure opens a GitHub issue that links to the workflow run.
+# scheduled run that does not succeed is reported by alert.yml, which opens or
+# updates a GitHub issue that links to the workflow run.
 #
-# Runs at 22:00 UTC every Sunday and on manual dispatch. The time is clear of
-# the 10:00 UTC daily pipeline.
+# Runs at 22:43 UTC every Sunday and on manual dispatch. The time is clear of
+# the 10:17 UTC daily pipeline, which has a 120 minute limit.
 #
-# This is the alert path. The daily pipeline commits its verification report,
-# which keeps the schedule alive but does not notify anyone; this workflow
-# opens an issue when something is wrong.
+# This is the check that notices problems. The daily pipeline commits its
+# verification report, which keeps the schedule alive but does not notify
+# anyone; when this workflow's scheduled run does not succeed, alert.yml opens
+# an issue.
 #
 # AWS access is through OIDC. The IAM role trusts only runs on
 # refs/heads/main, so workflow_dispatch only works from main. The role ARN,
@@ -22,18 +24,18 @@
 # shares the `pipeline` concurrency group so the write never overlaps a
 # pipeline run.
 #
-# Timeouts. A job-level timeout ends the job as cancelled or timed out, not
-# failed, so the issue step would skip. Each long step therefore has its own
-# `timeout-minutes` (a step timeout fails the step and `failure()` fires):
-# 5 + 15 + 20 + 5 = 45 minutes of the 60 minute job limit. Checkout, install
-# and the credential step have no step timeout; if one of them hangs past
-# the remaining 15 minutes, the job limit cancels the run and no issue opens.
+# Timeouts. Each long step has its own `timeout-minutes`, so a hung step
+# fails with its own name in the log: 5 + 15 + 20 + 5 = 45 minutes of the 60
+# minute job limit. Checkout, install and the credential step have no step
+# timeout; if one of them hangs past the remaining 15 minutes, the job limit
+# ends the run. A job-level timeout is covered by alert.yml, which reads the
+# conclusion of the finished run.
 
 name: verify
 
 on:
   schedule:
-    - cron: "0 22 * * 0"
+    - cron: "43 22 * * 0"
   workflow_dispatch:
 
 permissions:
@@ -56,8 +58,6 @@ jobs:
       contents: read
       # Mint the OIDC token for the AWS role.
       id-token: write
-      # Open the failure issue.
-      issues: write
 
     steps:
       - name: Check out the repository
@@ -114,15 +114,3 @@ jobs:
         run: >-
           uv run --no-sync wetland-change freshness
           --output-root s3://${{ vars.OUTPUT_BUCKET }}/
-
-      # No --label: gh issue create fails when the label does not exist.
-      - name: Open an issue on failure
-        if: failure()
-        env:
-          GH_TOKEN: ${{ github.token }}
-          GH_REPO: ${{ github.repository }}
-          RUN_URL: "${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}"
-        run: >-
-          gh issue create
-          --title "Weekly verify failed (run ${GITHUB_RUN_ID})"
-          --body "The weekly verify workflow failed. Run: ${RUN_URL}"

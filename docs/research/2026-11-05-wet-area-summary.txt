@@ -1,0 +1,34 @@
+H1: rows passing agreement=251, with abs gap <= 5 pp=242, rate=0.9641, H1 held (threshold 0.90)
+H2: ramsar-28 rows passing agreement=22, with abs gap <= 5 pp=21, rate=0.9545, H2 held (threshold 0.90)
+
+By polygon group (rows with n >= 100):
+ramsar-15: rows=6 pass_agreement=5 within_5pp=5 rate=1.0000 median_abs_gap=0.445 p95_abs_gap=4.533 median_signed_gap=0.156
+ramsar-28: rows=22 pass_agreement=22 within_5pp=21 rate=0.9545 median_abs_gap=2.326 p95_abs_gap=4.967 median_signed_gap=-2.326
+ramsar-56: rows=10 pass_agreement=10 within_5pp=10 rate=1.0000 median_abs_gap=0.717 p95_abs_gap=1.709 median_signed_gap=0.435
+other (pooled): rows=215 pass_agreement=214 within_5pp=206 rate=0.9626 median_abs_gap=0.000 p95_abs_gap=4.839 median_signed_gap=0.000
+other polygons by id: ramsar-12=12, ramsar-13=12, ramsar-14=5, ramsar-16=6, ramsar-18=6, ramsar-19=6, ramsar-20=6, ramsar-21=6, ramsar-22=5, ramsar-23=6, ramsar-24=6, ramsar-25=6, ramsar-26=6, ramsar-27=12, ramsar-30=19, ramsar-31=19, ramsar-35=10, ramsar-36=10, ramsar-37=10, ramsar-41=10, ramsar-42=19, ramsar-50=6, ramsar-51=6, ramsar-52=6
+
+Per scene (scenes with at least one row, n >= 100): scenes=35, share with >=1 polygon failing agreement=0.0571 (2/35), share with >=1 failing agreement or 5 pp clause=0.2857 (10/35)
+
+Rows failing the 5 pp clause while passing agreement: 9 (up to 20 shown)
+  ramsar-12 2026-10-29 n=9422 agreement=0.9374 gap_pp=5.901
+  ramsar-12 2026-10-29 n=9922 agreement=0.9356 gap_pp=6.098
+  ramsar-12 2026-10-27 n=8941 agreement=0.9279 gap_pp=6.767
+  ramsar-12 2026-10-27 n=9882 agreement=0.9277 gap_pp=6.820
+  ramsar-12 2026-10-12 n=9848 agreement=0.9409 gap_pp=5.382
+  ramsar-13 2026-10-02 n=794 agreement=0.9458 gap_pp=5.164
+  ramsar-22 2026-09-17 n=3603 agreement=0.9395 gap_pp=-5.995
+  ramsar-52 2026-09-12 n=47781 agreement=0.9404 gap_pp=-5.688
+  ramsar-28 2026-08-30 n=5839 agreement=0.9202 gap_pp=-5.412
+
+Post hoc, not pre-registered:
+  dates with every polygon measured=6, with >=1 row failing agreement=2, with >=1 row failing agreement or the clause=6
+  rows dry in both sources=124 of 253
+  rows passing agreement with >=1 percent wet in either source=104, within 5 pp=95, rate=0.9135
+  rows passing agreement where the clause can bind=30, failing it=9
+
+Coverage:
+  rows in CSV=255, rows with n>=100 used=253, excluded for n<100=2
+  rows per pass_date (n>=100): 2026-10-29=34, 2026-10-27=45, 2026-10-12=45, 2026-10-02=45, 2026-09-17=45, 2026-09-12=29, 2026-09-07=2, 2026-08-30=2, 2026-08-28=2, 2026-08-23=1, 2026-08-13=1, 2026-08-03=2
+  ramsar-28 scene rows measured=22; dates=['2026-10-29', '2026-10-27', '2026-10-12', '2026-10-02', '2026-09-17', '2026-09-12', '2026-09-07', '2026-08-30', '2026-08-28', '2026-08-23', '2026-08-13', '2026-08-03']
+  missing/skipped polygon-scenes=0
