@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+from dataclasses import replace
 from datetime import UTC, datetime
 from pathlib import Path
 
@@ -14,7 +15,13 @@ from wetland_change.verify.checks import Check, write_report
 from wetland_change.verify.pixels import pc_item_id
 from wetland_change.verify.scaling import scaling_check
 from wetland_change.verify.scl import scl_shares
-from wetland_change.verify.wo import WO_EXCLUDE, WO_WET, wo_agreement
+from wetland_change.verify.wo import (
+    WO_EXCLUDE,
+    WO_WET,
+    pooled_agreement,
+    wo_agreement,
+    wo_candidates,
+)
 
 
 def test_scaling_check_passes_on_fixture(fixture_scene: SceneItem) -> None:
@@ -1137,3 +1144,98 @@ def test_verify_run_without_waterbodies_makes_no_history_check(
     names = {c.name for c in checks}
     assert "water_vs_dea_waterbodies" not in names
     assert "water_spearman_vs_dea_waterbodies" not in names
+
+
+BBOX = (115.8168, -32.1615, 115.8421, -32.1378)
+
+
+def _scene_on(
+    base: SceneItem, item_id: str, year: int, month: int, day: int
+) -> SceneItem:
+    return replace(
+        base, item_id=item_id, datetime=datetime(year, month, day, 2, 23, tzinfo=UTC)
+    )
+
+
+class _FakeFind:
+    def __init__(self, hrefs: dict[str, str | None]) -> None:
+        self.hrefs = hrefs
+        self.calls: list[tuple[str, tuple[float, float, float, float]]] = []
+
+    def __call__(
+        self, scene: SceneItem, bbox: tuple[float, float, float, float]
+    ) -> str | None:
+        self.calls.append((scene.item_id, bbox))
+        return self.hrefs.get(scene.item_id)
+
+
+def test_wo_candidates_newest_first_skips_scenes_without_wo(
+    fixture_scene: SceneItem,
+) -> None:
+    old = _scene_on(fixture_scene, "old", 2026, 12, 1)
+    mid = _scene_on(fixture_scene, "mid", 2026, 12, 11)
+    new = _scene_on(fixture_scene, "new", 2026, 12, 21)
+    find = _FakeFind({"old": "https://wo/old", "mid": None, "new": "https://wo/new"})
+    got = list(wo_candidates([old, mid, new], BBOX, find=find))
+    assert [(s.item_id, h) for s, h in got] == [
+        ("new", "https://wo/new"),
+        ("old", "https://wo/old"),
+    ]
+    assert all(bbox == BBOX for _, bbox in find.calls)
+    assert [i for i, _ in find.calls] == ["new", "mid", "old"]
+
+
+def test_wo_candidates_pinned_fixture_date_gone(fixture_scene: SceneItem) -> None:
+    pinned = _scene_on(fixture_scene, "pinned", 2026, 10, 27)
+    newer = _scene_on(fixture_scene, "newer", 2027, 2, 3)
+    find = _FakeFind({"pinned": None, "newer": "https://wo/newer"})
+    got = list(wo_candidates([pinned, newer], BBOX, find=find))
+    assert [(s.item_id, h) for s, h in got] == [("newer", "https://wo/newer")]
+
+
+def test_wo_candidates_empty_when_no_wo_anywhere(fixture_scene: SceneItem) -> None:
+    scenes = [
+        _scene_on(fixture_scene, "a", 2026, 12, 1),
+        _scene_on(fixture_scene, "b", 2026, 12, 6),
+    ]
+    assert list(wo_candidates(scenes, BBOX, find=_FakeFind({}))) == []
+
+
+def test_wo_candidates_limit(fixture_scene: SceneItem) -> None:
+    scenes = [
+        _scene_on(fixture_scene, f"s{day}", 2026, 12, day) for day in (1, 6, 11, 16)
+    ]
+    find = _FakeFind({s.item_id: f"https://wo/{s.item_id}" for s in scenes})
+    got = list(wo_candidates(scenes, BBOX, find=find, limit=2))
+    assert [s.item_id for s, _ in got] == ["s16", "s11"]
+    assert len(find.calls) == 2
+
+
+def _wo_check(item: str, agreement: float | None, n: int) -> Check:
+    return Check(
+        "water_vs_dea_s2_wo",
+        None if agreement is None else True,
+        agreement,
+        0.9,
+        "https://wo",
+        {"item": item, "n_mutually_clear": n},
+    )
+
+
+def test_pooled_agreement_is_pixel_weighted() -> None:
+    checks = [_wo_check("a", 0.99, 90000), _wo_check("b", 0.89, 10000)]
+    got = pooled_agreement(checks)
+    assert got is not None
+    agreement, n = got
+    assert n == 100000
+    assert agreement == pytest.approx(0.98)
+
+
+def test_pooled_agreement_skips_unmeasured_and_empty() -> None:
+    checks = [_wo_check("a", None, 0), _wo_check("b", 0.5, 0), _wo_check("c", 0.9, 10)]
+    assert pooled_agreement(checks) == pytest.approx((0.9, 10))
+
+
+def test_pooled_agreement_none_when_nothing_usable() -> None:
+    assert pooled_agreement([]) is None
+    assert pooled_agreement([_wo_check("a", None, 0)]) is None

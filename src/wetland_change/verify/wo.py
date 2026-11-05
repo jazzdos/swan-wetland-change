@@ -11,6 +11,7 @@ that agreement_min.
 
 from __future__ import annotations
 
+from collections.abc import Callable, Iterable, Iterator
 from typing import Any
 
 import numpy as np
@@ -66,6 +67,57 @@ def find_wo_href(
         if tile_token in href:
             return href.replace(_S3, _HTTPS)
     return None
+
+
+def wo_candidates(
+    scenes: Iterable[SceneItem],
+    bbox_4326: tuple[float, float, float, float],
+    *,
+    find: Callable[
+        [SceneItem, tuple[float, float, float, float]], str | None
+    ] = find_wo_href,
+    limit: int | None = None,
+) -> Iterator[tuple[SceneItem, str]]:
+    """Scenes DEA still holds a WO product for, newest first, with the href.
+
+    DEA keeps the provisional WO product for about three months, so a live
+    check must choose from scenes DEA still holds rather than a pinned date
+    (docs/research/2026-11-04-milestone-2-review.md finding L1). `find` is
+    called lazily, one scene at a time, and never after `limit` pairs have
+    been yielded; `limit=None` means no cap.
+    """
+    if limit is not None and limit <= 0:
+        return
+    yielded = 0
+    for scene in sorted(scenes, key=lambda s: (s.datetime, s.item_id), reverse=True):
+        href = find(scene, bbox_4326)
+        if href is None:
+            continue
+        yield scene, href
+        yielded += 1
+        if limit is not None and yielded >= limit:
+            return
+
+
+def pooled_agreement(checks: Iterable[Check]) -> tuple[float, int] | None:
+    """Pixel-weighted agreement over WO checks, with the pooled pixel count.
+
+    Each check contributes its measured agreement weighted by its
+    `n_mutually_clear`; checks with no measurement or no mutually clear pixels
+    are skipped. Returns None when nothing contributes. ADR 0005 derives
+    agreement_min from agreement pooled this way, not from a single pass.
+    """
+    agreed = 0.0
+    total = 0
+    for check in checks:
+        n = int(check.detail.get("n_mutually_clear", 0))
+        if check.measured is None or n <= 0:
+            continue
+        agreed += check.measured * n
+        total += n
+    if total == 0:
+        return None
+    return agreed / total, total
 
 
 def dea_reader() -> RasterioReader:

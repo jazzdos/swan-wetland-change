@@ -12,8 +12,8 @@ import pytest
 from shapely.geometry import box
 
 from tests.conftest import REQUIRED_ASSETS, load_fixture_item
-from wetland_change.catalogue.item import parse_item
-from wetland_change.catalogue.search import open_client
+from wetland_change.catalogue.item import SceneItem, parse_item
+from wetland_change.catalogue.search import discover, open_client
 from wetland_change.config import load_config
 from wetland_change.ledger import LEDGER_SCHEMA
 from wetland_change.raster.read import RasterioReader, read_stack
@@ -29,13 +29,21 @@ from wetland_change.verify.freshness import (
 )
 from wetland_change.verify.pixels import pixel_check
 from wetland_change.verify.scl import scl_checks
-from wetland_change.verify.wo import dea_reader, find_wo_href, wo_check
+from wetland_change.verify.wo import (
+    dea_reader,
+    pooled_agreement,
+    wo_candidates,
+    wo_check,
+)
 from wetland_change.windows import plan_window
 
 pytestmark = pytest.mark.live
 
 THOMSONS_32750 = box(388400, 6441050, 390800, 6443700)
 THOMSONS_4326 = (115.8168, -32.1615, 115.8421, -32.1378)
+WO_LOOKBACK_DAYS = 60
+WO_PASS_LIMIT = 20
+WO_MIN_POOLED_PIXELS = 10000
 
 
 @pytest.fixture(scope="module")
@@ -66,26 +74,71 @@ def test_pixels_match_planetary_computer(remote_scene) -> None:  # type: ignore[
     assert check.passed, check.detail
 
 
-def test_water_agrees_with_dea_wo(remote_scene) -> None:  # type: ignore[no-untyped-def]
-    reader = RasterioReader()
-    grid = reader.open_grid(remote_scene.bands["green"].href)
-    planned = plan_window(THOMSONS_32750, grid)
-    assert planned is not None
-    wo_href = find_wo_href(remote_scene, THOMSONS_4326)
-    assert wo_href is not None
-    stack = read_stack(remote_scene, planned, reader)
-    inside = rasterise(THOMSONS_32750, stack.transform, stack.shape)
-    check = wo_check(
-        remote_scene,
-        stack,
-        planned,
-        inside,
-        water=load_config(Path(__file__).parents[1] / "config" / "pipeline.toml").water,
-        wo_href=wo_href,
-        reader=dea_reader(),
+def _recent_scenes() -> list[SceneItem]:
+    cfg = load_config(Path(__file__).parents[1] / "config" / "pipeline.toml")
+    now = datetime.now(UTC)
+    found = discover(
+        open_client(cfg.stac.endpoint),
+        cfg.stac,
+        bbox=THOMSONS_4326,
+        polygons_4326=[box(*THOMSONS_4326)],
+        created_from=None,
+        seen=set(),
+        datetime_range=(now - timedelta(days=WO_LOOKBACK_DAYS), now),
     )
-    assert check.detail["n_mutually_clear"] > 10000
-    assert check.passed, check.detail
+    return found.scenes
+
+
+# Scenes are chosen from the last 60 days because DEA expires
+# ga_s2_wo_provisional_3 after about three months. agreement_min comes from
+# agreement pooled over many passes (ADR 0005), so one pass can sit below it
+# without a contract break; the assertion is on the pooled figure.
+def test_water_agrees_with_dea_wo() -> None:
+    cfg = load_config(Path(__file__).parents[1] / "config" / "pipeline.toml")
+    scenes = _recent_scenes()
+    reader = RasterioReader()
+    checks = []
+    for scene, wo_href in wo_candidates(scenes, THOMSONS_4326, limit=WO_PASS_LIMIT):
+        grid = reader.open_grid(scene.bands["green"].href)
+        planned = plan_window(THOMSONS_32750, grid)
+        if planned is None:
+            continue
+        stack = read_stack(scene, planned, reader)
+        inside = rasterise(THOMSONS_32750, stack.transform, stack.shape)
+        checks.append(
+            wo_check(
+                scene,
+                stack,
+                planned,
+                inside,
+                water=cfg.water,
+                wo_href=wo_href,
+                reader=dea_reader(),
+            )
+        )
+    scores = [
+        (
+            c.detail.get("item"),
+            c.measured,
+            c.detail.get("n_mutually_clear", 0),
+            c.detail.get("reason"),
+        )
+        for c in checks
+    ]
+    pooled = pooled_agreement(checks)
+    if pooled is None or pooled[1] <= WO_MIN_POOLED_PIXELS:
+        pytest.fail(
+            f"no usable scene: {len(scenes)} Earth Search scenes in the last "
+            f"{WO_LOOKBACK_DAYS} days; scenes with a DEA WO match tried "
+            f"(item id, agreement, mutually clear pixels, skip reason): {scores}"
+        )
+    agreement, n = pooled
+    agreement_min = cfg.water.agreement_min
+    assert agreement >= agreement_min, (
+        f"pooled agreement {agreement:.4f} over {n} pixels is below "
+        f"agreement_min {agreement_min}; per-pass (item id, agreement, "
+        f"mutually clear pixels, skip reason): {scores}"
+    )
 
 
 def test_discovery_lists_both_catalogues_for_50hlk() -> None:
