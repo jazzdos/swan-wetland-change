@@ -8,6 +8,9 @@ from pathlib import Path
 
 import duckdb
 import geopandas as gpd
+import pandas as pd
+import pyarrow as pa
+import pyarrow.compute as pc
 import pyarrow.parquet as pq
 import pytest
 from shapely.geometry import box
@@ -121,13 +124,49 @@ def test_duckdb_reads_bbox_column(tmp_path: Path) -> None:
     assert rows[0][1] == pytest.approx(115.82)
 
 
-def test_gdal_reads_file_when_parquet_driver_present(tmp_path: Path) -> None:
-    pyogrio = pytest.importorskip("pyogrio")
-    if "Parquet" not in pyogrio.list_drivers():
-        pytest.skip("GDAL build without the Parquet driver")
+def test_installed_readers_agree_on_rows_and_bounds(tmp_path: Path) -> None:
     store = OutputStore(str(tmp_path))
-    relpath = write_observations(ROWS, store)
-    assert len(gpd.read_file(tmp_path / relpath)) == 2
+    write_observations([_row("ramsar-56", 115.93), _row("ramsar-52", 115.82)], store)
+    second = "S2C_T50HLK_20261030T022351_L2A"
+    write_observations(
+        [
+            _row("ramsar-60", 115.50, item_id=second),
+            _row("ramsar-61", 116.10, item_id=second),
+        ],
+        store,
+    )
+    files = sorted((tmp_path / "observations").glob("*/*/*.parquet"))
+    assert len(files) == 2
+
+    duck = (
+        duckdb.connect()
+        .execute(
+            "SELECT count(*), min(bbox.xmin), min(bbox.ymin), max(bbox.xmax), "
+            "max(bbox.ymax) FROM read_parquet(?, hive_partitioning = true)",
+            [str(tmp_path / "observations" / "*" / "*" / "*.parquet")],
+        )
+        .fetchone()
+    )
+    assert duck is not None
+    duck_rows, duck_bounds = duck[0], tuple(duck[1:])
+
+    table = pa.concat_tables([pq.read_table(path) for path in files])
+    bbox = table.column("bbox").combine_chunks()
+    arrow_rows = table.num_rows
+    arrow_bounds = (
+        pc.min(bbox.field("xmin")).as_py(),
+        pc.min(bbox.field("ymin")).as_py(),
+        pc.max(bbox.field("xmax")).as_py(),
+        pc.max(bbox.field("ymax")).as_py(),
+    )
+
+    frame = pd.concat([gpd.read_parquet(path) for path in files])
+    geo_rows = len(frame)
+    geo_bounds = tuple(float(v) for v in gpd.GeoDataFrame(frame).total_bounds)
+
+    assert duck_rows == arrow_rows == geo_rows == 4
+    assert arrow_bounds == pytest.approx(duck_bounds, abs=1e-9)
+    assert geo_bounds == pytest.approx(duck_bounds, abs=1e-9)
 
 
 def test_rewrite_is_byte_identical() -> None:
