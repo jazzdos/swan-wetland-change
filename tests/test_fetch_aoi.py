@@ -13,6 +13,7 @@ from scripts.fetch_aoi import (
     PolygonIdentity,
     check_override_ids,
     fetch_bytes,
+    geometry_checksum,
     require_feature_collection,
     stable_geojson_checksum,
 )
@@ -138,6 +139,118 @@ def test_stable_geojson_checksum_known_answer() -> None:
         b'{"timeStamp": "keep", "name": "Yalgorup \xc3\xa9tang"}}]}'
     )
     assert stable_geojson_checksum(raw) == hashlib.sha256(canonical).hexdigest()
+
+
+REFRESHABLE_A = {
+    "dt_updated": "2026-10-29",
+    "dt_wetobs": "2026-10-20",
+    "dt_satpass": "2026-10-25",
+    "wet_sa_m2": 1000.0,
+}
+REFRESHABLE_B = {
+    "dt_updated": "2026-11-06",
+    "dt_wetobs": "2026-11-01",
+    "dt_satpass": "2026-11-04",
+    "wet_sa_m2": 1500.0,
+}
+
+
+def _with_properties(body: dict[str, Any], extra: dict[str, Any]) -> dict[str, Any]:
+    for feature in body["features"]:
+        feature["properties"].update(extra)
+    return body
+
+
+def test_geometry_checksum_ignores_refreshable_properties() -> None:
+    first = _dump(_with_properties(_collection(), REFRESHABLE_A))
+    second = _dump(
+        _with_properties(
+            _collection(timeStamp="2026-11-06T01:02:03.000Z"), REFRESHABLE_B
+        )
+    )
+    assert hashlib.sha256(first).hexdigest() != hashlib.sha256(second).hexdigest()
+    assert stable_geojson_checksum(first) != stable_geojson_checksum(second)
+    assert geometry_checksum(first) == geometry_checksum(second)
+
+
+def test_geometry_checksum_changes_when_one_feature_geometry_changes() -> None:
+    moved = _collection()
+    moved["features"][1]["geometry"]["coordinates"][0][1][0] = 116.1001
+    assert geometry_checksum(_dump(_collection())) != geometry_checksum(_dump(moved))
+
+
+def test_geometry_checksum_ignores_feature_order_and_formatting() -> None:
+    body = _collection()
+    reordered = _collection()
+    reordered["features"].reverse()
+    pretty = json.dumps(reordered, indent=2).encode("utf-8")
+    assert geometry_checksum(pretty) == geometry_checksum(_dump(body))
+
+
+def test_geometry_checksum_changes_when_a_uid_changes() -> None:
+    renamed = _collection()
+    renamed["features"][0]["properties"]["uid"] = "r3f9"
+    assert geometry_checksum(_dump(_collection())) != geometry_checksum(_dump(renamed))
+
+
+def test_geometry_checksum_ignores_other_top_level_fields_and_feature_ids() -> None:
+    changed = _collection(numberMatched=99)
+    changed["features"][0]["id"] = "wb.renumbered"
+    assert geometry_checksum(_dump(_collection())) == geometry_checksum(_dump(changed))
+
+
+def test_geometry_checksum_known_answer() -> None:
+    geometry = {"type": "Polygon", "coordinates": [[[115.8, -32.0], [115.9, -32.1]]]}
+    body = {
+        "type": "FeatureCollection",
+        "timeStamp": "2026-11-06T00:00:00Z",
+        "features": [
+            {
+                "type": "Feature",
+                "id": "wb.1",
+                "geometry": geometry,
+                "properties": {"uid": "r3f0\u00e9", "wet_sa_m2": 5.0},
+            }
+        ],
+    }
+    expected = hashlib.sha256(
+        json.dumps(
+            [["r3f0\u00e9", geometry]],
+            sort_keys=True,
+            separators=(",", ":"),
+            ensure_ascii=False,
+        ).encode("utf-8")
+    ).hexdigest()
+    assert geometry_checksum(_dump(body)) == expected
+
+
+_GEOM = {"type": "Point", "coordinates": [115.8, -32.0]}
+
+
+@pytest.mark.parametrize(
+    ("content", "message"),
+    [
+        (b"<html>not json</html>", "not valid JSON"),
+        (b"[1, 2, 3]", "JSON object"),
+        (b'{"type": "FeatureCollection"}', "features"),
+        (b'{"features": {"a": 1}}', "features"),
+        (_dump({"features": ["nope"]}), "feature 0"),
+        (_dump({"features": [{"geometry": _GEOM}]}), "uid"),
+        (_dump({"features": [{"geometry": _GEOM, "properties": {}}]}), "uid"),
+        (
+            _dump({"features": [{"geometry": _GEOM, "properties": {"uid": None}}]}),
+            "uid",
+        ),
+        (_dump({"features": [{"properties": {"uid": "r3f0"}}]}), "geometry"),
+        (
+            _dump({"features": [{"geometry": None, "properties": {"uid": "r3f0"}}]}),
+            "geometry",
+        ),
+    ],
+)
+def test_geometry_checksum_rejects_bad_payloads(content: bytes, message: str) -> None:
+    with pytest.raises(ValueError, match=message):
+        geometry_checksum(content)
 
 
 ARCGIS_ERROR = {"error": {"code": 400, "message": "Unable to complete operation."}}
@@ -463,6 +576,7 @@ def test_main_prints_stable_waterbodies_and_raw_ramsar_checksums(
     wb_row = next(r for r in rows if r.startswith("| DEA Waterbodies"))
     assert hashlib.sha256(ramsar).hexdigest() in ramsar_row
     assert stable_geojson_checksum(waterbodies) in wb_row
+    assert geometry_checksum(waterbodies) in wb_row
     assert hashlib.sha256(waterbodies).hexdigest() not in wb_row
     assert (out / "dea_waterbodies_v3_swan.geojson").read_bytes() == waterbodies
     assert (out / "dbca_010_ramsar_sites.geojson").read_bytes() == ramsar
