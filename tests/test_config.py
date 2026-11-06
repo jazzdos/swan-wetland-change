@@ -1,3 +1,4 @@
+import hashlib
 import re
 from pathlib import Path
 
@@ -8,6 +9,7 @@ from wetland_change.config import (
     DEFAULT_CATALOGUE_BASE_URL,
     CatalogueConfig,
     PipelineConfig,
+    VerifyConfig,
     WaterbodiesVerifyConfig,
     WaterConfig,
     WaterSetting,
@@ -15,6 +17,10 @@ from wetland_change.config import (
 )
 
 REPO_CONFIG = Path(__file__).resolve().parents[1] / "config" / "pipeline.toml"
+DECISIONS = REPO_CONFIG.parents[1] / "docs" / "decisions"
+# ADR 0007: lowest whole-history per-lake rho 0.8555 minus 0.02, rounded down.
+SPEARMAN_MIN = 0.83
+SHA_LINE = r"`(docs/research/[^`]+)` sha256 `([0-9a-f]{64})`"
 
 
 def test_load_repo_config() -> None:
@@ -181,8 +187,38 @@ def test_repo_config_waterbodies_verify_values() -> None:
     wb = cfg.verify.waterbodies
     assert wb.tolerance_pp == 10.0
     assert wb.max_day_gap == 3
-    assert wb.spearman_min == 0.9
+    assert wb.spearman_min == SPEARMAN_MIN
     assert wb.spearman_min_pairs == 10
+    assert WaterbodiesVerifyConfig().spearman_min == SPEARMAN_MIN
+
+
+def test_spearman_min_matches_adr_0007() -> None:
+    adrs = list(DECISIONS.glob("0007-*.md"))
+    assert len(adrs) == 1, f"expected one docs/decisions/0007-*.md, found {adrs}"
+    text = adrs[0].read_text()
+    decision = text.split("\n## Decision", 1)[1].split("\n## ", 1)[0]
+    match = re.search(r"^spearman_min = (\d+(?:\.\d+)?)$", decision, re.MULTILINE)
+    assert match is not None, "no 'spearman_min = <value>' line in the Decision section"
+    assert (
+        float(match.group(1))
+        == load_config(REPO_CONFIG).verify.waterbodies.spearman_min
+    )
+
+
+def test_adr_0007_recorded_sha256_match_committed_research_files() -> None:
+    adrs = list(DECISIONS.glob("0007-*.md"))
+    assert len(adrs) == 1
+    recorded = dict(re.findall(SHA_LINE, adrs[0].read_text()))
+    for name in (
+        "docs/research/2026-11-06-spearman-calibration.py",
+        "docs/research/2026-11-06-spearman-calibration.csv",
+    ):
+        assert name in recorded, f"ADR 0007 records no sha256 for {name}"
+    for name, digest in recorded.items():
+        actual = hashlib.sha256(
+            (REPO_CONFIG.parents[1] / name).read_bytes()
+        ).hexdigest()
+        assert digest == actual, f"ADR 0007 sha256 for {name} is stale"
 
 
 def test_waterbodies_tolerance_matches_learnings() -> None:
@@ -198,13 +234,16 @@ def test_waterbodies_tolerance_matches_learnings() -> None:
 
 
 def test_missing_verify_section_uses_defaults(tmp_path: Path) -> None:
-    text = REPO_CONFIG.read_text().split("# Water extent, history")[0]
+    text = REPO_CONFIG.read_text().split("[verify]")[0]
     assert "[verify" not in text
     path = tmp_path / "pipeline.toml"
     path.write_text(text)
     cfg = load_config(path)
     assert cfg.verify.waterbodies == WaterbodiesVerifyConfig(
-        tolerance_pp=10.0, max_day_gap=3, spearman_min=0.9, spearman_min_pairs=10
+        tolerance_pp=10.0,
+        max_day_gap=3,
+        spearman_min=SPEARMAN_MIN,
+        spearman_min_pairs=10,
     )
 
 
@@ -214,3 +253,24 @@ def test_waterbodies_tolerance_zero_rejected(tmp_path: Path) -> None:
     path.write_text(text)
     with pytest.raises(ValidationError, match="tolerance_pp"):
         load_config(path)
+
+
+def test_min_clear_pixels_default_and_repo_value() -> None:
+    assert VerifyConfig().min_clear_pixels == 100
+    assert load_config(REPO_CONFIG).verify.min_clear_pixels == 100
+
+
+def test_min_clear_pixels_zero_rejected(tmp_path: Path) -> None:
+    text = REPO_CONFIG.read_text().replace(
+        "min_clear_pixels = 100", "min_clear_pixels = 0"
+    )
+    path = tmp_path / "pipeline.toml"
+    path.write_text(text)
+    with pytest.raises(ValidationError, match="min_clear_pixels"):
+        load_config(path)
+
+
+def test_waterbodies_has_no_history_days_field() -> None:
+    assert "history_days" not in WaterbodiesVerifyConfig.model_fields
+    cfg = load_config(REPO_CONFIG)
+    assert not hasattr(cfg.verify.waterbodies, "history_days")

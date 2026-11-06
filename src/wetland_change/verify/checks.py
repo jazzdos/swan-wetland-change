@@ -21,6 +21,11 @@ class Check:
     reference: str
     detail: dict[str, Any] = field(default_factory=dict)
 
+    @property
+    def errored(self) -> bool:
+        """Skipped because its source raised; a reason-only skip is not errored."""
+        return self.passed is None and "error" in self.detail
+
 
 def _finite(value: Any) -> Any:
     """Map non-finite floats to None so the report is strict JSON."""
@@ -37,7 +42,12 @@ def report_path(run_id: str) -> str:
     return f"verification/{run_id}.json"
 
 
-def _markdown(run_id: str, checks: list[Check], generated_at: datetime) -> str:
+def _markdown(
+    run_id: str,
+    checks: list[Check],
+    generated_at: datetime,
+    matrix: list[dict[str, Any]],
+) -> str:
     lines = [
         f"# Verification report {run_id}",
         "",
@@ -57,6 +67,18 @@ def _markdown(run_id: str, checks: list[Check], generated_at: datetime) -> str:
         lines.append(
             f"| {c.name} | {status} | {measured} | {threshold} | {c.reference} |"
         )
+    lines += [
+        "",
+        "## Matrix",
+        "",
+        "| row | status | pass | fail | skipped | errored | note |",
+        "|---|---|---|---|---|---|---|",
+    ]
+    for r in matrix:
+        lines.append(
+            f"| {r['row']} | {r['status']} | {r['n_pass']} | {r['n_fail']} "
+            f"| {r['n_skipped']} | {r['n_errored']} | {r['note']} |"
+        )
     return "\n".join(lines) + "\n"
 
 
@@ -69,14 +91,20 @@ def write_report(
     generated_at: datetime | None = None,
 ) -> tuple[str, Path | None]:
     """JSON beside the outputs; Markdown under docs/research when given."""
+    from wetland_change.verify.matrix import matrix_status  # matrix imports Check
+
     when = generated_at or datetime.now(UTC)
     scored = [c for c in checks if c.passed is not None]
+    n_errored = sum(c.errored for c in checks)
+    matrix = matrix_status(checks)
     payload = {
         "run_id": run_id,
         "generated_at": when.isoformat(),
         "n_scored": len(scored),
         "n_skipped": len(checks) - len(scored),
-        "all_passed": bool(scored) and all(c.passed for c in scored),
+        "n_errored": n_errored,
+        "all_passed": bool(scored) and all(c.passed for c in scored) and n_errored == 0,
+        "matrix": matrix,
         "checks": [_finite(asdict(c)) for c in checks],
     }
     json_path = store.write_bytes(
@@ -87,5 +115,5 @@ def write_report(
     if docs_dir is not None:
         docs_dir.mkdir(parents=True, exist_ok=True)
         md_path = docs_dir / f"verification-{run_id}.md"
-        md_path.write_text(_markdown(run_id, checks, when))
+        md_path.write_text(_markdown(run_id, checks, when, matrix))
     return json_path, md_path

@@ -135,6 +135,46 @@ def test_skips_without_comparable_pixels() -> None:
     assert nan.detail["reason"] == "pipeline ndvi_median is not finite"
 
 
+def _ndvi_check_with_pixels(n: int, **kwargs: Any) -> Any:
+    """A median check where `n` pixels are compared and the medians disagree."""
+    red = np.full((4, 5), 1000, np.int16)
+    nir = np.full((4, 5), 3000, np.int16)
+    clear = np.zeros((4, 5), bool)
+    clear.flat[:n] = True
+    return ndvi_median_check(0.9, red, nir, clear, **kwargs)
+
+
+def test_one_compared_pixel_fails_under_the_default_floor() -> None:
+    check = _ndvi_check_with_pixels(1)
+    assert check.detail["n_compared"] == 1
+    assert check.passed is False
+
+
+def test_below_min_pixels_is_a_reason_skip() -> None:
+    check = _ndvi_check_with_pixels(1, min_pixels=2)
+    assert check.passed is None and check.measured is None
+    assert check.threshold == 0.05
+    assert check.detail["reason"] == "fewer than 2 compared pixels"
+    assert check.detail["min_pixels"] == 2
+    assert check.detail["n_compared"] == 1
+    assert check.detail["ndvi_median"] == 0.9
+    assert check.detail["dea_ndvi_median"] == pytest.approx(0.5)
+    assert check.errored is False
+
+
+def test_compared_pixels_equal_to_the_floor_are_scored() -> None:
+    check = _ndvi_check_with_pixels(2, min_pixels=2)
+    assert check.passed is False
+    assert check.measured == pytest.approx(0.4)
+    assert "reason" not in check.detail
+
+
+def test_zero_compared_pixels_keep_their_reason_with_a_floor() -> None:
+    check = _ndvi_check_with_pixels(0, min_pixels=100)
+    assert check.passed is None and check.measured is None
+    assert check.detail["reason"] == "no clear pixels with DEA data"
+
+
 def test_nbart_reflectance() -> None:
     out = nbart_reflectance(np.array([1000, -999], np.int16))
     assert out.dtype == np.float32

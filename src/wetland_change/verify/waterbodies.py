@@ -38,6 +38,13 @@ different tiles with different datetimes on one date are not merged.
 Pearson correlation of average ranks, computed on hectares (ranks equal those
 of the fraction because the area is constant).
 
+Scope: the per-pass checks cover the rows passed as `observations` (one run).
+The Spearman check scores the optional `history` frame instead, the stored
+observations of all passes up to the newest scene of the verified run, because
+one daily run holds too few rows to reach `spearman_min_pairs`. The same tile and
+date rules de-duplicate the history rows of each polygon. With `history` None
+the Spearman check scores the same rows as the per-pass checks.
+
 Nothing here knows about runs or ledgers, so the backfill can call it over
 any date range.
 """
@@ -187,7 +194,7 @@ def _day_numbers(stamps: pd.Series) -> np.ndarray:
     return out
 
 
-def _lake_checks(
+def _paired_passes(
     uid: str,
     polygon: AoiPolygon,
     rows: pd.DataFrame,
@@ -195,7 +202,8 @@ def _lake_checks(
     *,
     cfg: WaterbodiesVerifyConfig,
     min_valid_fraction: float,
-) -> list[Check]:
+) -> tuple[list[Check], list[float], list[float], int]:
+    """Per-pass checks, pipeline hectare pairs, DEA pairs and `n_unpaired`."""
     lake = LAKES[uid]
     area_ha = polygon.geometry.area / 1e4
     reference = (
@@ -298,9 +306,37 @@ def _lake_checks(
         )
         pipe_pairs.append(water_ha)
         dea_pairs.append(dea_wet)
-    checks.append(
-        spearman_check(uid, pipe_pairs, dea_pairs, cfg=cfg, n_unpaired=n_unpaired)
+    return checks, pipe_pairs, dea_pairs, n_unpaired
+
+
+def _lake_checks(
+    uid: str,
+    polygon: AoiPolygon,
+    rows: pd.DataFrame,
+    dea: pd.DataFrame,
+    *,
+    cfg: WaterbodiesVerifyConfig,
+    min_valid_fraction: float,
+    history: pd.DataFrame | None = None,
+) -> list[Check]:
+    """Per-pass checks over `rows`, then the Spearman check.
+
+    The Spearman check scores the stored `history` rows of this polygon, or the
+    pairs of `rows` themselves when `history` is None.
+    """
+    checks, pipe_pairs, dea_pairs, n_unpaired = _paired_passes(
+        uid, polygon, rows, dea, cfg=cfg, min_valid_fraction=min_valid_fraction
     )
+    if history is None:
+        rho = spearman_check(uid, pipe_pairs, dea_pairs, cfg=cfg, n_unpaired=n_unpaired)
+    else:
+        mine = history[history["polygon_id"] == polygon.polygon_id]
+        _, h_pipe, h_dea, h_unpaired = _paired_passes(
+            uid, polygon, mine, dea, cfg=cfg, min_valid_fraction=min_valid_fraction
+        )
+        rho = spearman_check(uid, h_pipe, h_dea, cfg=cfg, n_unpaired=h_unpaired)
+        rho.detail["n_run_pairs"] = len(pipe_pairs)
+    checks.append(rho)
     return checks
 
 
@@ -340,8 +376,13 @@ def waterbody_checks(
     min_valid_fraction: float,
     start: date | None = None,
     end: date | None = None,
+    history: pd.DataFrame | None = None,
 ) -> list[Check]:
-    """Per-pass checks then one Spearman check, for each DEA lake polygon."""
+    """Per-pass checks then one Spearman check, for each DEA lake polygon.
+
+    Per-pass checks cover `observations` (narrowed by `start` and `end`). The
+    Spearman check scores `history` when given, else `observations`.
+    """
     lakes = sorted(
         ((p.polygon_id, uid, p) for p in polygons if (uid := _uid(p)) is not None),
         key=lambda t: t[0],
@@ -372,6 +413,7 @@ def waterbody_checks(
                 dea,
                 cfg=cfg,
                 min_valid_fraction=min_valid_fraction,
+                history=history,
             )
         )
     return checks

@@ -214,7 +214,7 @@ def test_spearman_monotonic_passes() -> None:
     assert check.name == SPEARMAN_CHECK_NAME
     assert check.passed is True
     assert check.measured == pytest.approx(1.0)
-    assert check.threshold == 0.9
+    assert check.threshold == CFG.spearman_min
 
 
 def test_spearman_weak_fails() -> None:
@@ -230,7 +230,7 @@ def test_spearman_too_few_pairs_skipped() -> None:
     check = spearman_check(UID, ref, ref, cfg=CFG)
     assert check.passed is None
     assert check.measured is None
-    assert check.threshold == 0.9
+    assert check.threshold == CFG.spearman_min
     assert check.detail["reason"]
     assert check.detail["n_pairs"] == 9
 
@@ -396,3 +396,85 @@ def test_read_observations_keeps_only_waterbodies(tmp_path: Path) -> None:
         "water_ha_index",
     ]
     assert read_observations(OutputStore(str(tmp_path / "empty"))).empty
+
+
+def _history(n: int = 12, *, scramble: bool = False):  # type: ignore[no-untyped-def]
+    """`n` monotonic passes 10 days apart, the matching DEA series, and its obs."""
+    dates = pd.date_range("2025-08-16T02:00:00Z", periods=n, freq="10D")
+    wet = np.linspace(0.3, 0.8, n)
+    series = pd.DataFrame({"date": dates, "wet_fraction": wet})
+    pipe = wet + 0.01
+    if scramble:
+        order = [5, 1, 9, 3, 11, 0, 7, 2, 10, 4, 8, 6][:n]
+        pipe = np.array([wet[i] for i in order])
+    obs = _obs(
+        *[(d.isoformat(), 0.95, float(w)) for d, w in zip(dates, pipe, strict=True)]
+    )
+    return series, obs
+
+
+def _history_run(series, run, history):  # type: ignore[no-untyped-def]
+    return waterbody_checks(
+        run,
+        {UID: series},
+        [_polygon()],
+        cfg=CFG,
+        min_valid_fraction=0.8,
+        history=history,
+    )
+
+
+def test_history_scores_spearman_while_per_pass_stays_on_run_rows() -> None:
+    series, hist = _history()
+    run = hist.iloc[[11]]
+    checks = _history_run(series, run, hist)
+    passes = _passes(checks)
+    assert [c.detail["item"] for c in passes] == ["item-11"]
+    rho = _rho(checks)
+    assert rho.passed is True
+    assert rho.detail["n_pairs"] == 12
+    assert rho.detail["n_run_pairs"] == 1
+    assert "history_days" not in rho.detail
+    assert checks[-1] is rho
+
+
+def test_history_none_matches_the_run_only_result() -> None:
+    series, hist = _history()
+    run = hist.iloc[[11]]
+    checks = _history_run(series, run, None)
+    rho = _rho(checks)
+    assert rho.passed is None
+    assert rho.detail["reason"] == "fewer than 10 paired passes"
+    assert rho.detail["n_pairs"] == 1
+    assert "history_days" not in rho.detail
+    assert [c.name for c in checks] == [CHECK_NAME, SPEARMAN_CHECK_NAME]
+
+
+def test_history_weak_correlation_fails() -> None:
+    series, hist = _history(scramble=True)
+    checks = _history_run(series, hist.iloc[[0]], hist)
+    rho = _rho(checks)
+    assert rho.passed is False
+    assert rho.measured is not None and rho.measured < 0.9
+    assert rho.detail["n_pairs"] == 12
+
+
+def test_history_rows_are_deduplicated_by_tile_and_date() -> None:
+    series, hist = _history()
+    extra = hist.iloc[[3, 4]].copy()
+    extra["datetime"] = extra["datetime"] + pd.Timedelta(hours=1)
+    extra["item_id"] = ["dup-a", "dup-b"]
+    extra["scene_coverage"] = 0.5
+    both = pd.concat([hist, extra], ignore_index=True)
+    rho = _rho(_history_run(series, hist.iloc[[0]], both))
+    assert rho.detail["n_pairs"] == 12
+
+
+def test_history_only_counts_the_polygon_of_the_lake() -> None:
+    series, hist = _history()
+    other = hist.copy()
+    other["polygon_id"] = "dea-someone-else"
+    both = pd.concat([hist.iloc[:5], other], ignore_index=True)
+    rho = _rho(_history_run(series, hist.iloc[[0]], both))
+    assert rho.detail["n_pairs"] == 5
+    assert rho.passed is None

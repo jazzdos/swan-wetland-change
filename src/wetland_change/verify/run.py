@@ -11,13 +11,14 @@ from pathlib import Path
 
 import numpy as np
 import pandas as pd
+import pyarrow as pa
 from rasterio.windows import Window
 
 from wetland_change.aoi import AoiPolygon, union_bbox_4326
 from wetland_change.catalogue.item import SceneItem, parse_item, parse_timestamp
 from wetland_change.catalogue.search import StacClient, open_client
 from wetland_change.config import PipelineConfig
-from wetland_change.ledger import RUN_KIND_RUN, read_ledger
+from wetland_change.ledger import RUN_KIND_RUN, latest_entries, read_ledger
 from wetland_change.manifest import manifest_path
 from wetland_change.outputs.geoparquet import observation_path
 from wetland_change.raster.read import (
@@ -65,10 +66,31 @@ from wetland_change.windows import PlannedWindow, plan_window
 logger = logging.getLogger(__name__)
 
 
+def _history_paths(ledger: pa.Table, *, newest: datetime) -> set[str]:
+    """Observation files of every succeeded item up to and including `newest`,
+    so re-verifying an older run is repeatable after later passes are stored."""
+    latest = latest_entries(ledger)
+    if latest.empty:
+        return set()
+    stamp = pd.Timestamp(newest)
+    stamp = stamp.tz_localize("UTC") if stamp.tzinfo is None else stamp
+    stored = latest[
+        (latest["status"] == "succeeded")
+        & latest["observation_path"].notna()
+        & (latest["datetime"] <= stamp)
+    ]
+    return {str(p) for p in stored["observation_path"]}
+
+
 def scenes_for_run(
-    cfg: PipelineConfig, store: OutputStore, run_id: str
+    cfg: PipelineConfig,
+    store: OutputStore,
+    run_id: str,
+    *,
+    ledger: pa.Table | None = None,
 ) -> list[SceneItem]:
-    frame = read_ledger(store).to_pandas()
+    """Succeeded scenes of `run_id`; reads the ledger only when none is given."""
+    frame = (read_ledger(store) if ledger is None else ledger).to_pandas()
     rows = frame[(frame["run_id"] == run_id) & (frame["status"] == "succeeded")]
     return [
         parse_item(
@@ -281,6 +303,7 @@ def _verify_scene(
                     reader=dea,
                     scene_grid=grid,
                     polygon_id=polygon.polygon_id,
+                    min_clear_pixels=cfg.verify.min_clear_pixels,
                 )
                 return [result]
 
@@ -326,6 +349,7 @@ def _verify_scene(
                     reader=dea,
                     scene_grid=grid,
                     expected_epsg=cfg.aoi.operation_epsg,
+                    min_pixels=cfg.verify.min_clear_pixels,
                 )
                 result.detail["polygon_id"] = polygon.polygon_id
                 return [result]
@@ -366,7 +390,8 @@ def verify_run(
 ) -> list[Check]:
     reader = reader or RasterioReader()
     checks: list[Check] = []
-    scenes = scenes_for_run(cfg, store, run_id)
+    ledger = read_ledger(store)
+    scenes = scenes_for_run(cfg, store, run_id, ledger=ledger)
     lookup = nbart_lookup if nbart_lookup is not None else find_nbart_item
     for scene in scenes:
         checks.extend(
@@ -389,6 +414,7 @@ def verify_run(
             c
             for c in checks
             if c.name == NDVI_CHECK
+            and c.passed is not None
             and "ndvi_median" in c.detail
             and "dea_ndvi_median" in c.detail
         ]
@@ -438,20 +464,31 @@ def verify_run(
             if not lakes:
                 logger.info("no DEA waterbody polygons; skipping %s", WATERBODIES_CHECK)
                 return []
-            paths = [
-                observation_path(s.year, s.tile, s.item_id)
-                for s in scenes
-                if store.exists(observation_path(s.year, s.tile, s.item_id))
-            ]
-            frame = read_observations(store, paths)
-            if frame.empty:
+            if not scenes:
+                return []
+            run_paths = {observation_path(s.year, s.tile, s.item_id) for s in scenes}
+            history_paths = _history_paths(
+                ledger,
+                newest=max(s.datetime for s in scenes),
+            )
+            # One listing, not one exists call per path: the history holds every
+            # stored pass.
+            stored = set(store.list_files("observations"))
+            paths = sorted((run_paths | history_paths) & stored)
+            history = read_observations(store, paths)
+            run_ids = {s.item_id for s in scenes}
+            run_rows = history[history["item_id"].isin(run_ids)]
+            # A run without lake rows still scores the stored history, so the
+            # Spearman verdict does not depend on which tiles the run touched.
+            if history.empty:
                 return []
             return waterbody_checks(
-                frame,
+                run_rows,
                 waterbodies_loader,
                 lakes,
                 cfg=cfg.verify.waterbodies,
                 min_valid_fraction=cfg.water.min_valid_fraction,
+                history=history,
             )
 
         checks.extend(_guard(WATERBODIES_CHECK, _waterbodies, run_id=run_id))
