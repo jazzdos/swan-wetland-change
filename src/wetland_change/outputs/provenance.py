@@ -15,7 +15,7 @@ pins that config.
 from __future__ import annotations
 
 import json
-from typing import Literal
+from typing import Final, Literal
 
 import geopandas as gpd
 
@@ -68,6 +68,19 @@ WATER_NOTE = (
     "method and threshold; water_ha_scl counts clear pixels of SCL class 6; in "
     "a change file the water settings are those of the config at scoring time, and "
     "config_sha256 in the run manifest pins the config"
+)
+
+
+FOOTER_KEYS: Final[tuple[str, ...]] = (
+    "source_epsg",
+    "operation_epsg",
+    "geometry_epsg",
+    "units",
+    "scl_classes_dropped",
+    "scl_classes_clear",
+    "clear_pixel_rule",
+    "water_settings",
+    "water_units_note",
 )
 
 

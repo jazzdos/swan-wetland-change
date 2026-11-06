@@ -225,6 +225,7 @@ uv run wetland-change requeue --all
 uv run wetland-change verify
 uv run wetland-change build-catalogue
 uv run wetland-change compact-ledger
+uv run wetland-change add-observation-footers --dry-run
 uv run wetland-change freshness
 ```
 
@@ -278,6 +279,13 @@ uv run wetland-change freshness
   parts). The merged file is read back before any part is deleted. `run` and
   `backfill` already do this automatically at 25 parts; use the command to do
   it by hand, preferably when no workflow is running.
+- `add-observation-footers` rewrites each observation file that lacks any of
+  the nine provenance footer keys, adding them plus
+  `footer_added_after_the_fact`, a JSON value holding the git commit that ran
+  the command and the date. Files that already hold all nine keys are skipped,
+  so a second run rewrites nothing. `--dry-run` lists the files it would
+  rewrite and writes nothing. It prints `scanned N, rewritten M, skipped K,
+  failed F` and exits 1 if any file fails.
 - `freshness` checks that the newest processed item is under 7 days old and
   that ledger counts match Earth Search and Copernicus per tile over 30 days.
   It also fails (`freshness_exhausted_items`) while any item has exhausted its
