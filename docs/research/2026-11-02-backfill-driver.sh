@@ -2,11 +2,12 @@
 # st-b983: detached Collection 1 backfill and score. Safe to rerun after any
 # interruption, because the ledger skips finished items. It ends by writing
 # $STATE/DONE (finished) or $STATE/PARK (stopped, the text says why).
+# WT defaults to the repository root (two levels above this script's directory).
 # WT, DATA, BACKFILL_CMD, LANES, PASSES, BACKOFF and NET_URL are overridable
 # for the stub test only.
 set -u
 
-WT=${WT:-/Users/jarrodbaker/Documents/swan-wetland-change/.worktrees/st-b983}
+WT=${WT:-$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)}
 DATA=${DATA:-/Users/jarrodbaker/Documents/swan-wetland-change-data}
 CMD=${BACKFILL_CMD:-uv run --no-sync wetland-change}
 LANES=${LANES:-3}
