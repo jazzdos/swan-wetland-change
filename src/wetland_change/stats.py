@@ -15,7 +15,7 @@ from wetland_change.aoi import AoiPolygon
 from wetland_change.catalogue.item import SceneItem
 from wetland_change.config import WaterConfig, WaterSetting
 from wetland_change.indices import mndwi, ndvi, ndwi
-from wetland_change.mask import clear_mask, cloud_mask, water_mask_scl
+from wetland_change.mask import CLEAR_BANDS, clear_mask, cloud_mask, water_mask_scl
 from wetland_change.raster.read import BandStack
 from wetland_change.windows import PlannedWindow
 
@@ -104,7 +104,7 @@ def summarise(
     inside = rasterise(polygon.geometry, stack.transform, stack.shape)
     n_pixels = int(inside.sum())
     clear = (
-        clear_mask(stack.scl, stack.green, stack.red, stack.nir, stack.swir16) & inside
+        clear_mask(stack.scl, *(getattr(stack, band) for band in CLEAR_BANDS)) & inside
     )
     n_clear = int(clear.sum())
     cloudy = cloud_mask(stack.scl) & inside

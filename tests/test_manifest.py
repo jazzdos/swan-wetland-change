@@ -1,6 +1,7 @@
 import json
 from datetime import UTC, datetime
 from pathlib import Path
+from typing import Any
 
 from wetland_change.manifest import (
     KIND_REQUEUE,
@@ -99,3 +100,38 @@ def test_recovery_fields_default_to_null_and_empty_in_json() -> None:
     payload = json.loads(manifest.to_json())
     assert payload["recovered_by"] is None
     assert payload["recovered_runs"] == []
+
+
+def _manifest(**extra: Any) -> RunManifest:
+    return RunManifest(
+        run_id="r2",
+        started_at=NOW,
+        finished_at=NOW,
+        package_version="0.1.0",
+        config_sha256="abc",
+        endpoint="https://example",
+        collection="sentinel-2-c1-l2a",
+        watermark_before=None,
+        watermark_after=None,
+        discovered=0,
+        processed=0,
+        failed=0,
+        rejected=0,
+        skipped_seen=0,
+        skipped_filter=0,
+        observation_files=[],
+        ledger_files=[],
+        **extra,
+    )
+
+
+def test_operation_epsg_defaults_to_none() -> None:
+    manifest = _manifest()
+    assert manifest.operation_epsg is None
+    assert json.loads(manifest.to_json())["operation_epsg"] is None
+
+
+def test_operation_epsg_is_written_to_the_manifest(tmp_path: Path) -> None:
+    store = OutputStore(str(tmp_path))
+    relpath = write_manifest(_manifest(operation_epsg=32750), store)
+    assert json.loads(store.read_bytes(relpath))["operation_epsg"] == 32750

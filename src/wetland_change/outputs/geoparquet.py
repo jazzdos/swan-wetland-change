@@ -3,16 +3,26 @@
 One file per source item under `observations/year=YYYY/tile=<MGRS>/`, so a
 rerun overwrites rather than appends. Rows are sorted and written through a
 buffer, which makes a rewrite byte-identical.
+
+The footer carries the `geo` key plus the keys of `outputs.provenance`:
+source_epsg, operation_epsg, geometry_epsg, units, scl_classes_dropped,
+scl_classes_clear, clear_pixel_rule, water_settings and water_units_note.
+source_epsg equals operation_epsg because `process_scene` refuses any scene
+whose EPSG differs from the operation EPSG. Files written before these keys
+existed still read, because readers use only the `geo` key.
 """
 
 from __future__ import annotations
 
-from collections.abc import Collection, Sequence
+from collections.abc import Collection, Mapping, Sequence
 from io import BytesIO
 
 import geopandas as gpd
 import pandas as pd
+import pyarrow.parquet as pq
 
+from wetland_change.config import WaterConfig
+from wetland_change.outputs.provenance import footer_metadata
 from wetland_change.stats import ObservationRow
 from wetland_change.store import OutputStore
 
@@ -55,16 +65,34 @@ def rows_to_frame(rows: Sequence[ObservationRow]) -> gpd.GeoDataFrame:
     )
 
 
-def to_geoparquet_bytes(frame: gpd.GeoDataFrame) -> bytes:
-    buffer = BytesIO()
+def to_geoparquet_bytes(frame: gpd.GeoDataFrame, metadata: Mapping[str, str]) -> bytes:
+    """GeoParquet 1.1 bytes with `metadata` merged into the footer.
+
+    The `geo` key written by geopandas is kept; `metadata` keys are added in
+    sorted order so a rewrite is byte-identical.
+    """
+    plain = BytesIO()
     frame.to_parquet(
-        buffer, index=False, schema_version="1.1.0", write_covering_bbox=True
+        plain, index=False, schema_version="1.1.0", write_covering_bbox=True
     )
-    return buffer.getvalue()
+    table = pq.read_table(BytesIO(plain.getvalue()))
+    merged = {
+        **(table.schema.metadata or {}),
+        **{key.encode(): value.encode() for key, value in sorted(metadata.items())},
+    }
+    out = BytesIO()
+    pq.write_table(table.replace_schema_metadata(merged), out, compression="snappy")
+    return out.getvalue()
 
 
-def write_observations(rows: Sequence[ObservationRow], store: OutputStore) -> str:
-    """Write one item's rows; returns the relative path."""
+def write_observations(
+    rows: Sequence[ObservationRow],
+    store: OutputStore,
+    *,
+    water: WaterConfig,
+    operation_epsg: int,
+) -> str:
+    """Write one item's rows with provenance footer keys; returns the path."""
     if not rows:
         raise ValueError("no rows to write")
     items = {r.item_id for r in rows}
@@ -72,7 +100,11 @@ def write_observations(rows: Sequence[ObservationRow], store: OutputStore) -> st
         raise ValueError(f"one file per item; got {sorted(items)}")
     first = rows[0]
     relpath = observation_path(first.datetime.year, first.tile, first.item_id)
-    store.write_bytes(relpath, to_geoparquet_bytes(rows_to_frame(rows)))
+    frame = rows_to_frame(rows)
+    footer = footer_metadata(
+        frame, kind="observation", water=water, operation_epsg=operation_epsg
+    )
+    store.write_bytes(relpath, to_geoparquet_bytes(frame, footer))
     return relpath
 
 

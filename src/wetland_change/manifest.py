@@ -70,6 +70,10 @@ class RunManifest:
     recovered_by: str | None = None
     # Runs this run finished.
     recovered_runs: list[str] = field(default_factory=list)
+    # CRS operations run in (cfg.aoi.operation_epsg). None on a recovered
+    # manifest because the crashed run's config is not known, the same reason
+    # package_version and config_sha256 are None there.
+    operation_epsg: int | None = None
 
     def to_json(self) -> str:
         def _default(value: Any) -> str:

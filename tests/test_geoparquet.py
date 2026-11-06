@@ -4,6 +4,7 @@ import json
 import shutil
 import subprocess
 from datetime import UTC, datetime
+from io import BytesIO
 from pathlib import Path
 
 import duckdb
@@ -13,19 +14,26 @@ import pyarrow as pa
 import pyarrow.compute as pc
 import pyarrow.parquet as pq
 import pytest
+from pandas.api.types import is_bool_dtype, is_numeric_dtype
 from shapely.geometry import box
 
+from wetland_change.config import WaterConfig, WaterSetting
+from wetland_change.mask import CLEAR_BANDS, CLEAR_CLASSES
 from wetland_change.outputs.geoparquet import (
     OBSERVATION_COLUMNS,
     observation_path,
+    read_observations,
     rows_to_frame,
     to_geoparquet_bytes,
     write_observations,
 )
+from wetland_change.outputs.provenance import footer_metadata
 from wetland_change.stats import ObservationRow
 from wetland_change.store import OutputStore
 
 WHEN = datetime(2026, 10, 27, 2, 26, 46, tzinfo=UTC)
+WATER = WaterConfig(method="mndwi", threshold=-0.1)
+OPERATION_EPSG = 32750
 
 
 def _row(
@@ -59,6 +67,12 @@ def _row(
 ROWS = [_row("ramsar-56", 115.93), _row("ramsar-52", 115.82)]
 
 
+def _footer(frame: gpd.GeoDataFrame, water: WaterConfig = WATER) -> dict[str, str]:
+    return footer_metadata(
+        frame, kind="observation", water=water, operation_epsg=OPERATION_EPSG
+    )
+
+
 def test_observation_path() -> None:
     assert (
         observation_path(2026, "50HLK", "S2C_T50HLK_20261027T022351_L2A")
@@ -78,7 +92,9 @@ def test_frame_is_sorted_and_typed() -> None:
 
 def test_write_and_read_back(tmp_path: Path) -> None:
     store = OutputStore(str(tmp_path))
-    relpath = write_observations(ROWS, store)
+    relpath = write_observations(
+        ROWS, store, water=WATER, operation_epsg=OPERATION_EPSG
+    )
     assert relpath == observation_path(2026, "50HLK", ROWS[0].item_id)
     back = gpd.read_parquet(tmp_path / relpath)
     assert len(back) == 2
@@ -88,7 +104,9 @@ def test_write_and_read_back(tmp_path: Path) -> None:
 
 def test_geo_metadata_declares_covering_bbox(tmp_path: Path) -> None:
     store = OutputStore(str(tmp_path))
-    relpath = write_observations(ROWS, store)
+    relpath = write_observations(
+        ROWS, store, water=WATER, operation_epsg=OPERATION_EPSG
+    )
     meta = json.loads(pq.read_schema(tmp_path / relpath).metadata[b"geo"])
     assert meta["version"] == "1.1.0"
     assert meta["columns"]["geometry"]["covering"]["bbox"]["xmin"] == ["bbox", "xmin"]
@@ -100,7 +118,9 @@ def test_geoparquet_validator_accepts_file(tmp_path: Path) -> None:
     if exe is None:
         pytest.skip("geoparquet-validator not on PATH; run under uv")
     store = OutputStore(str(tmp_path))
-    relpath = write_observations(ROWS, store)
+    relpath = write_observations(
+        ROWS, store, water=WATER, operation_epsg=OPERATION_EPSG
+    )
     result = subprocess.run(
         [exe, "check", str(tmp_path / relpath), "--json"],
         capture_output=True,
@@ -111,7 +131,9 @@ def test_geoparquet_validator_accepts_file(tmp_path: Path) -> None:
 
 def test_duckdb_reads_bbox_column(tmp_path: Path) -> None:
     store = OutputStore(str(tmp_path))
-    relpath = write_observations(ROWS, store)
+    relpath = write_observations(
+        ROWS, store, water=WATER, operation_epsg=OPERATION_EPSG
+    )
     rows = (
         duckdb.connect()
         .execute(
@@ -126,7 +148,12 @@ def test_duckdb_reads_bbox_column(tmp_path: Path) -> None:
 
 def test_installed_readers_agree_on_rows_and_bounds(tmp_path: Path) -> None:
     store = OutputStore(str(tmp_path))
-    write_observations([_row("ramsar-56", 115.93), _row("ramsar-52", 115.82)], store)
+    write_observations(
+        [_row("ramsar-56", 115.93), _row("ramsar-52", 115.82)],
+        store,
+        water=WATER,
+        operation_epsg=OPERATION_EPSG,
+    )
     second = "S2C_T50HLK_20261030T022351_L2A"
     write_observations(
         [
@@ -134,6 +161,8 @@ def test_installed_readers_agree_on_rows_and_bounds(tmp_path: Path) -> None:
             _row("ramsar-61", 116.10, item_id=second),
         ],
         store,
+        water=WATER,
+        operation_epsg=OPERATION_EPSG,
     )
     files = sorted((tmp_path / "observations").glob("*/*/*.parquet"))
     assert len(files) == 2
@@ -171,13 +200,154 @@ def test_installed_readers_agree_on_rows_and_bounds(tmp_path: Path) -> None:
 
 def test_rewrite_is_byte_identical() -> None:
     frame = rows_to_frame(ROWS)
-    assert to_geoparquet_bytes(frame) == to_geoparquet_bytes(
-        rows_to_frame(list(reversed(ROWS)))
+    reversed_frame = rows_to_frame(list(reversed(ROWS)))
+    assert to_geoparquet_bytes(frame, _footer(frame)) == to_geoparquet_bytes(
+        reversed_frame, _footer(reversed_frame)
     )
 
 
 def test_mixed_items_are_refused(tmp_path: Path) -> None:
     with pytest.raises(ValueError, match="one file per item"):
         write_observations(
-            [ROWS[0], _row("x", 115.0, item_id="other")], OutputStore(str(tmp_path))
+            [ROWS[0], _row("x", 115.0, item_id="other")],
+            OutputStore(str(tmp_path)),
+            water=WATER,
+            operation_epsg=OPERATION_EPSG,
         )
+
+
+# Footer key-value metadata
+
+
+def _written(tmp_path: Path, rows: list[ObservationRow], water: WaterConfig = WATER):
+    store = OutputStore(str(tmp_path))
+    relpath = write_observations(
+        rows, store, water=water, operation_epsg=OPERATION_EPSG
+    )
+    return tmp_path / relpath
+
+
+def _footers(path: Path) -> list[dict[bytes, bytes]]:
+    schema = pq.read_schema(path).metadata
+    file_level = pq.read_metadata(path).metadata
+    return [schema, file_level]
+
+
+def test_footer_records_the_crss(tmp_path: Path) -> None:
+    for footer in _footers(_written(tmp_path, ROWS)):
+        assert footer[b"source_epsg"] == b"32750"
+        assert footer[b"operation_epsg"] == b"32750"
+        assert footer[b"geometry_epsg"] == b"4326"
+
+
+def test_footer_units_name_hectares_indices_and_fractions(tmp_path: Path) -> None:
+    for footer in _footers(_written(tmp_path, ROWS)):
+        units = json.loads(footer[b"units"])
+        assert units["water_ha_index"] == "hectares"
+        assert units["water_ha_scl"] == "hectares"
+        for column in ("ndwi_median", "mndwi_median", "ndvi_median"):
+            assert units[column] == "unitless index"
+        for column in (
+            "scene_coverage",
+            "valid_fraction",
+            "cloud_fraction",
+            "dea_wo_agreement",
+        ):
+            assert units[column] == "fraction (0 to 1)"
+        assert units["n_pixels"] == "count of 10 m pixels"
+        assert units["n_clear"] == "count of 10 m pixels"
+
+
+def test_every_numeric_observation_column_has_a_unit() -> None:
+    frame = rows_to_frame(ROWS)
+    units = json.loads(_footer(frame)["units"])
+    numeric = [
+        column
+        for column in frame.columns
+        if column != "geometry"
+        and is_numeric_dtype(frame[column])
+        and not is_bool_dtype(frame[column])
+    ]
+    assert numeric
+    assert set(numeric) <= set(units)
+    assert set(units) <= set(frame.columns)
+
+
+def test_footer_names_the_scl_classes_the_clear_mask_drops(tmp_path: Path) -> None:
+    for footer in _footers(_written(tmp_path, ROWS)):
+        dropped = json.loads(footer[b"scl_classes_dropped"])
+        assert dropped == [0, 1, 2, 3, 8, 9, 10]
+        assert dropped == sorted(set(range(12)) - set(CLEAR_CLASSES))
+        assert json.loads(footer[b"scl_classes_clear"]) == list(CLEAR_CLASSES)
+        assert b"finite" in footer[b"clear_pixel_rule"]
+        for band in CLEAR_BANDS:
+            assert band.encode() in footer[b"clear_pixel_rule"]
+        assert b"clear pixels of SCL class 6" in footer[b"water_units_note"]
+
+
+WATER_WITH_OVERRIDES = WaterConfig(
+    method="mndwi",
+    threshold=-0.1,
+    overrides={
+        "ramsar-56": WaterSetting(method="mndwi", threshold=0.05, agreement_min=0.9),
+        "ramsar-15": WaterSetting(method="scl6", agreement_min=0.9),
+    },
+)
+
+
+def test_footer_water_settings_cover_only_polygons_in_the_file(tmp_path: Path) -> None:
+    path = _written(tmp_path, ROWS, WATER_WITH_OVERRIDES)
+    for footer in _footers(path):
+        settings = json.loads(footer[b"water_settings"])
+        assert settings == {
+            "ramsar-52": {"method": "mndwi", "threshold": -0.1},
+            "ramsar-56": {"method": "mndwi", "threshold": 0.05},
+        }
+        assert b"unitless" in footer[b"water_units_note"]
+
+
+def test_footer_water_settings_for_an_scl6_polygon_have_a_null_threshold(
+    tmp_path: Path,
+) -> None:
+    path = _written(tmp_path, [_row("ramsar-15", 115.5)], WATER_WITH_OVERRIDES)
+    settings = json.loads(pq.read_schema(path).metadata[b"water_settings"])
+    assert settings == {"ramsar-15": {"method": "scl6", "threshold": None}}
+
+
+def test_footer_leaves_geo_metadata_and_crs_readable(tmp_path: Path) -> None:
+    path = _written(tmp_path, ROWS)
+    meta = json.loads(pq.read_schema(path).metadata[b"geo"])
+    assert meta["columns"]["geometry"]["covering"]["bbox"]["xmin"] == ["bbox", "xmin"]
+    assert gpd.read_parquet(path).crs.to_epsg() == 4326
+
+
+def test_footer_refuses_a_frame_without_an_epsg() -> None:
+    frame = rows_to_frame(ROWS).set_crs(None, allow_override=True)
+    with pytest.raises(ValueError, match="EPSG"):
+        _footer(frame)
+
+
+def test_rewrite_with_reversed_rows_is_byte_identical(tmp_path: Path) -> None:
+    one = _written(tmp_path / "a", ROWS).read_bytes()
+    two = _written(tmp_path / "b", list(reversed(ROWS))).read_bytes()
+    assert one == two
+
+
+def test_read_observations_mixes_files_with_and_without_footer_keys(
+    tmp_path: Path,
+) -> None:
+    store = OutputStore(str(tmp_path))
+    old_item = "S2C_T50HLK_20261020T022351_L2A"
+    old_rows = [_row("ramsar-60", 115.50, item_id=old_item)]
+    old_path = observation_path(2026, "50HLK", old_item)
+    plain = BytesIO()
+    rows_to_frame(old_rows).to_parquet(
+        plain, index=False, schema_version="1.1.0", write_covering_bbox=True
+    )
+    store.write_bytes(old_path, plain.getvalue())
+    assert b"units" not in pq.read_schema(tmp_path / old_path).metadata
+    write_observations(ROWS, store, water=WATER, operation_epsg=OPERATION_EPSG)
+
+    combined = read_observations(store)
+    assert sorted(combined["polygon_id"]) == ["ramsar-52", "ramsar-56", "ramsar-60"]
+    assert combined.crs.to_epsg() == 4326
