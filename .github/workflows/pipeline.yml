@@ -1,6 +1,8 @@
 # Daily pipeline: fetch the AOI, run the incremental change-detection run
 # against the S3 output store, verify the run against the independent
-# references, build the catalogue, and commit the verification report.
+# references, verify by id any earlier crashed run this run finished (its
+# manifest lists them in recovered_runs), build the catalogue, and commit the
+# verification reports.
 # `run` is called with --no-catalogue, so the single catalogue build is the
 # step after verify. It runs on every day that is not cancelled, including a
 # day with no processed scenes and a day when verify failed, so the catalogue
@@ -14,7 +16,7 @@
 # Why it commits the verification report: GitHub disables scheduled
 # workflows after 60 days without repository activity. The daily commit of
 # docs/research/verification-<run_id>.md counts as activity, so the schedule
-# keeps running. The commit step runs even when verify exits non-zero, so a
+# keeps running. The reports of recovered runs are committed in the same step. The commit step runs even when verify exits non-zero, so a
 # failing verification is recorded and does not block it; the job still ends
 # red in that case.
 #
@@ -95,28 +97,69 @@ jobs:
 
       # `!cancelled()` drops the implicit success(), so this step runs after a
       # failed `run` step. If `run` crashed before writing a manifest, the
-      # file is empty or missing and `processed` is 0.
-      - name: Read the processed scene count
+      # file is empty or missing, `processed` is 0 and `recovered` is empty.
+      # `recovered` is the space-separated run ids from the manifest's
+      # recovered_runs list: earlier crashed runs this run finished.
+      - name: Read the processed scene count and recovered runs
         id: manifest
         if: ${{ !cancelled() }}
         run: |
           manifest="$RUNNER_TEMP/run-manifest.json"
           processed=0
+          recovered=""
           if [ -s "$manifest" ]; then
             cat "$manifest"
             processed="$(jq -r '.processed // 0' "$manifest" || echo 0)"
+            recovered="$(jq -r '(.recovered_runs // []) | join(" ")' "$manifest" || echo "")"
           fi
           echo "processed=${processed}" >> "$GITHUB_OUTPUT"
+          echo "recovered=${recovered}" >> "$GITHUB_OUTPUT"
 
-      # Verify and commit hang on the same condition: the run processed
-      # scenes, even if some other scenes failed. Otherwise verify would
-      # re-check an old run (or fail when no processed run exists yet). The
-      # catalogue step below does not, so it also runs on a zero-processed day.
+      # Verify runs only when this run processed scenes, even if some other
+      # scenes failed. Otherwise it would re-check an old run (or fail when no
+      # processed run exists yet). Recovered runs are verified by id in the
+      # next step, and the commit step also hangs on them. The catalogue step
+      # below hangs on neither, so it also runs on a zero-processed day.
       - name: Verify the run
         if: ${{ !cancelled() && steps.manifest.outputs.processed > 0 }}
         run: >-
           uv run --no-sync wetland-change verify
           --output-root s3://${{ vars.OUTPUT_BUCKET }}/
+
+      # A run that finished a crashed earlier run lists it in recovered_runs.
+      # `verify` defaults to the newest run with processed scenes, so the
+      # recovered runs are verified by id here. Every id is attempted, and the
+      # step exits with the highest non-zero verify exit code, so the job ends
+      # red but one failing run does not skip the others. Exit 4 (nothing
+      # scored) is not a failure: a crashed run can be recovered from ledger
+      # rows that are all rejected or failed, so its manifest has processed 0
+      # and verify scores nothing, the same day the step above is skipped.
+      # That case is logged and leaves the status unchanged; exits 2, 3, 5
+      # and 6 still count. The ids come from the manifest through an env var,
+      # not from interpolation into the script.
+      - name: Verify the runs this run recovered
+        if: ${{ !cancelled() && steps.manifest.outputs.recovered != '' }}
+        env:
+          RECOVERED_RUNS: ${{ steps.manifest.outputs.recovered }}
+        run: |
+          : "${RECOVERED_RUNS:?no recovered run ids}"
+          status=0
+          for run_id in $RECOVERED_RUNS; do
+            echo "verifying recovered run ${run_id}"
+            if uv run --no-sync wetland-change verify \
+              --output-root "s3://${{ vars.OUTPUT_BUCKET }}/" \
+              --run-id "$run_id"; then
+              :
+            else
+              code=$?
+              if [ "$code" -eq 4 ]; then
+                echo "nothing to verify for recovered run ${run_id}"
+              elif [ "$code" -gt "$status" ]; then
+                status=$code
+              fi
+            fi
+          done
+          exit "$status"
 
       # The only catalogue build in the workflow: `run` skips it, so the
       # catalogue is built once, after verify has written its report. The
@@ -130,12 +173,14 @@ jobs:
           --output-root s3://${{ vars.OUTPUT_BUCKET }}/
 
       # The condition does not reference verify's outcome, so this step still
-      # runs when verify exits non-zero (the job then ends red). The push
+      # runs when verify exits non-zero (the job then ends red). It commits on
+      # a day that processed scenes or recovered runs, so the reports of the
+      # recovered runs are not lost with the runner. The push
       # rebases onto main first because the job can run for up to 120 minutes
       # on a depth-1 checkout, and main may have moved; one retry covers a
       # push that lands between the rebase and the push.
       - name: Commit the verification report
-        if: ${{ !cancelled() && steps.manifest.outputs.processed > 0 }}
+        if: ${{ !cancelled() && (steps.manifest.outputs.processed > 0 || steps.manifest.outputs.recovered != '') }}
         run: |
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"

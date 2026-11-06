@@ -119,6 +119,11 @@ def test_steps_run_fetch_run_verify_catalogue_commit_in_order() -> None:
 
 PROCESSED_CONDITION: Final = "!cancelled() && steps.manifest.outputs.processed > 0"
 CATALOGUE_CONDITION: Final = "!cancelled()"
+RECOVERED_CONDITION: Final = "!cancelled() && steps.manifest.outputs.recovered != ''"
+COMMIT_CONDITION: Final = (
+    "!cancelled() && (steps.manifest.outputs.processed > 0 "
+    "|| steps.manifest.outputs.recovered != '')"
+)
 
 
 def test_commit_step_still_runs_when_verify_fails() -> None:
@@ -127,7 +132,7 @@ def test_commit_step_still_runs_when_verify_fails() -> None:
     commit = _index(steps, r"git commit")
 
     condition = _normalised_condition(steps[commit])
-    assert condition == PROCESSED_CONDITION
+    assert condition == COMMIT_CONDITION
     for forbidden in ("steps.verify", "success()", "failure()"):
         assert forbidden not in condition
 
@@ -182,10 +187,211 @@ def test_verify_and_commit_run_whenever_scenes_were_processed() -> None:
     manifest = next(
         position for position, step in enumerate(steps) if step.get("id") == "manifest"
     )
-    for pattern in (r"wetland-change verify", r"git commit"):
+    for pattern, expected in (
+        (r"wetland-change verify", PROCESSED_CONDITION),
+        (r"git commit", COMMIT_CONDITION),
+    ):
         position = _index(steps, pattern)
         assert position > manifest
-        assert _normalised_condition(steps[position]) == PROCESSED_CONDITION
+        assert _normalised_condition(steps[position]) == expected
+
+
+RECOVERED_STEP_NAME: Final = "Verify the runs this run recovered"
+RECOVERED_IDS: Final = "20261101T101700Z 20261102T101700Z 20261103T101700Z"
+
+
+def _manifest_step(steps: list[dict[str, Any]]) -> dict[str, Any]:
+    matches = [step for step in steps if step.get("id") == "manifest"]
+    assert len(matches) == 1
+    return matches[0]
+
+
+def _verify_step_positions(steps: list[dict[str, Any]]) -> list[int]:
+    return [
+        position
+        for position, step in enumerate(steps)
+        if "wetland-change verify" in str(step.get("run", ""))
+    ]
+
+
+def _recovered_step(steps: list[dict[str, Any]]) -> dict[str, Any]:
+    positions = _verify_step_positions(steps)
+    assert len(positions) == 2
+    return steps[positions[1]]
+
+
+def test_manifest_step_emits_the_recovered_run_ids() -> None:
+    script = str(_manifest_step(_steps(_workflow()))["run"])
+    assert "recovered_runs" in script
+    assert re.search(r'echo "recovered=.*>> "\$GITHUB_OUTPUT"', script)
+
+
+def test_recovered_runs_step_verifies_each_recovered_run_by_id() -> None:
+    steps = _steps(_workflow())
+    positions = _verify_step_positions(steps)
+    assert len(positions) == 2
+    first, second = positions
+    manifest = next(i for i, step in enumerate(steps) if step.get("id") == "manifest")
+    catalogue = _index(steps, r"wetland-change build-catalogue")
+    assert manifest < first < second < catalogue
+
+    step = steps[second]
+    assert step["name"] == RECOVERED_STEP_NAME
+    condition = _normalised_condition(step)
+    assert condition == RECOVERED_CONDITION
+    for forbidden in ("steps.verify", "success()", "failure()"):
+        assert forbidden not in condition
+    assert "continue-on-error" not in step
+
+    assert step["env"] == {"RECOVERED_RUNS": "${{ steps.manifest.outputs.recovered }}"}
+
+    script = str(step["run"])
+    assert "--run-id" in script
+    assert "--output-root" in script
+    assert BUCKET_URI in script
+    assert re.search(r"\bfor \w+ in \$RECOVERED_RUNS\b", script)
+    assert '"${RECOVERED_RUNS:?' in script
+
+
+def test_verify_step_still_skips_a_day_with_nothing_processed() -> None:
+    steps = _steps(_workflow())
+    first = steps[_verify_step_positions(steps)[0]]
+    condition = _normalised_condition(first)
+    assert condition == PROCESSED_CONDITION
+    assert "recovered" not in condition
+
+
+@pytest.mark.parametrize(
+    ("manifest", "processed", "recovered"),
+    [
+        (None, "0", ""),
+        ('{"processed":0}', "0", ""),
+        (
+            '{"processed":0,"recovered_runs":["20261101T101700Z","20261102T101700Z"]}',
+            "0",
+            "20261101T101700Z 20261102T101700Z",
+        ),
+        ('{"processed":3,"recovered_runs":[]}', "3", ""),
+    ],
+)
+def test_manifest_step_script_reports_recovered_runs(
+    tmp_path: Path, manifest: str | None, processed: str, recovered: str
+) -> None:
+    bash = shutil.which("bash")
+    if bash is None or shutil.which("jq") is None:
+        pytest.skip("bash and jq are required")
+    script = str(_manifest_step(_steps(_workflow()))["run"])
+    if manifest is not None:
+        (tmp_path / "run-manifest.json").write_text(manifest, encoding="utf-8")
+    output = tmp_path / "out"
+    output.write_text("", encoding="utf-8")
+    env = {
+        "PATH": os.environ["PATH"],
+        "RUNNER_TEMP": str(tmp_path),
+        "GITHUB_OUTPUT": str(output),
+    }
+    result = subprocess.run(
+        [bash, "-e", "-c", script],
+        env=env,
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    assert result.returncode == 0, result.stdout + result.stderr
+    values = dict(
+        line.split("=", 1)
+        for line in output.read_text(encoding="utf-8").splitlines()
+        if "=" in line
+    )
+    assert values == {"processed": processed, "recovered": recovered}
+
+
+def _run_recovered_script(
+    tmp_path: Path, exit_codes: dict[str, int]
+) -> tuple[int, list[str]]:
+    """Run the recovered-runs script against a fake `uv`; return code and calls."""
+    bash = shutil.which("bash")
+    if bash is None:
+        pytest.skip("bash is required")
+    script = str(_recovered_step(_steps(_workflow()))["run"]).replace(
+        "${{ vars.OUTPUT_BUCKET }}", "bucket"
+    )
+    assert "${{" not in script
+    bindir = tmp_path / "bin"
+    bindir.mkdir()
+    log = tmp_path / "uv.log"
+    log.write_text("", encoding="utf-8")
+    cases = "".join(
+        f'  *"{run_id}"*) exit {code} ;;\n' for run_id, code in exit_codes.items()
+    )
+    fake = bindir / "uv"
+    fake.write_text(
+        "#!/usr/bin/env bash\n"
+        'line="$*"\n'
+        'printf \'%s\\n\' "$line" >> "$UV_LOG"\n'
+        'case "$line" in\n' + cases + "  *) exit 0 ;;\nesac\n",
+        encoding="utf-8",
+    )
+    fake.chmod(0o755)
+    env = {
+        "PATH": f"{bindir}:{os.environ['PATH']}",
+        "UV_LOG": str(log),
+        "RECOVERED_RUNS": RECOVERED_IDS,
+    }
+    result = subprocess.run(
+        [bash, "-e", "-c", script],
+        env=env,
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    calls = [line for line in log.read_text(encoding="utf-8").splitlines() if line]
+    return result.returncode, calls
+
+
+def _assert_every_id_was_verified(calls: list[str]) -> None:
+    ids = RECOVERED_IDS.split()
+    assert len(calls) == len(ids)
+    for call, run_id in zip(calls, ids, strict=True):
+        assert "verify" in call
+        assert f"--run-id {run_id}" in call
+        assert "--output-root s3://bucket/" in call
+
+
+def test_recovered_step_script_runs_verify_for_every_id_and_keeps_the_worst_exit(
+    tmp_path: Path,
+) -> None:
+    code, calls = _run_recovered_script(tmp_path, {"20261102T101700Z": 3})
+    _assert_every_id_was_verified(calls)
+    assert code == 3
+
+
+def test_recovered_step_script_exits_with_the_highest_failing_code(
+    tmp_path: Path,
+) -> None:
+    code, calls = _run_recovered_script(
+        tmp_path, {"20261101T101700Z": 6, "20261102T101700Z": 3}
+    )
+    _assert_every_id_was_verified(calls)
+    assert code == 6
+
+
+def test_recovered_step_script_treats_nothing_scored_as_not_a_failure(
+    tmp_path: Path,
+) -> None:
+    code, calls = _run_recovered_script(tmp_path, {"20261102T101700Z": 4})
+    _assert_every_id_was_verified(calls)
+    assert code == 0
+
+
+def test_recovered_step_script_still_fails_on_a_real_error_beside_nothing_scored(
+    tmp_path: Path,
+) -> None:
+    code, calls = _run_recovered_script(
+        tmp_path, {"20261101T101700Z": 4, "20261103T101700Z": 5}
+    )
+    _assert_every_id_was_verified(calls)
+    assert code == 5
 
 
 def test_commit_step_rebases_onto_main_before_pushing_with_a_retry() -> None:
