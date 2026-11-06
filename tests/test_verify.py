@@ -10,6 +10,7 @@ import numpy as np
 from tests.conftest import FIXTURE_DIR
 from wetland_change.catalogue.item import SceneItem
 from wetland_change.manifest import manifest_path
+from wetland_change.runtime import Environment, capture_environment
 from wetland_change.store import OutputStore
 from wetland_change.verify.checks import Check, write_report
 from wetland_change.verify.pixels import pc_item_id
@@ -160,6 +161,83 @@ def test_write_report(tmp_path: Path) -> None:
     assert payload["checks"][1]["passed"] is None
     assert md_path is not None and md_path.exists()
     assert "| a |" in md_path.read_text()
+
+
+_RUNTIME_KEYS = {"python", "gdal", "proj", "geopandas", "rasterio", "pyarrow", "numpy"}
+
+
+def _runtime(**overrides: str | None) -> Environment:
+    return Environment(
+        runtime={
+            "python": "3.12.0",
+            "gdal": "3.12.2",
+            "proj": "9.8.1",
+            "geopandas": "1.2",
+            "rasterio": "1.5",
+            "pyarrow": "26",
+            "numpy": "2.0",
+        },
+        uv_lock_sha256=overrides.get("uv_lock_sha256", "a" * 64),
+        git_commit=overrides.get("git_commit", "b" * 40),
+    )
+
+
+def test_write_report_carries_the_injected_runtime(tmp_path: Path) -> None:
+    store = OutputStore(str(tmp_path / "out"))
+    env = _runtime()
+    json_path, md_path = write_report(
+        [Check("a", True, 1.0, 1.0, "r")],
+        store=store,
+        run_id="env",
+        docs_dir=tmp_path / "docs",
+        environment=env,
+    )
+    payload = json.loads(store.read_bytes(json_path))
+    assert payload["runtime"] == env.runtime
+    assert payload["uv_lock_sha256"] == "a" * 64
+    assert payload["git_commit"] == "b" * 40
+    assert md_path is not None
+    text = md_path.read_text()
+    assert "## Runtime" in text
+    assert "| gdal | 3.12.2 |" in text
+    assert "a" * 64 in text
+    assert "b" * 40 in text
+    assert text.endswith("\n") and not text.endswith("\n\n")
+
+
+def test_write_report_defaults_to_the_live_environment(tmp_path: Path) -> None:
+    store = OutputStore(str(tmp_path / "out"))
+    json_path, md_path = write_report(
+        [Check("a", True, 1.0, 1.0, "r")],
+        store=store,
+        run_id="live-env",
+        docs_dir=tmp_path / "docs",
+    )
+    payload = json.loads(store.read_bytes(json_path))
+    assert payload["runtime"] == capture_environment().runtime
+    assert set(payload["runtime"]) == _RUNTIME_KEYS
+    assert md_path is not None
+    assert "## Runtime" in md_path.read_text()
+
+
+def test_write_report_marks_a_missing_commit_and_lock_as_none(
+    tmp_path: Path,
+) -> None:
+    store = OutputStore(str(tmp_path / "out"))
+    json_path, md_path = write_report(
+        [Check("a", True, 1.0, 1.0, "r")],
+        store=store,
+        run_id="no-env",
+        docs_dir=tmp_path / "docs",
+        environment=_runtime(uv_lock_sha256=None, git_commit=None),
+    )
+    payload = json.loads(store.read_bytes(json_path))
+    assert payload["uv_lock_sha256"] is None
+    assert payload["git_commit"] is None
+    assert md_path is not None
+    text = md_path.read_text()
+    assert "| uv.lock sha256 | none |" in text
+    assert "| git commit | none |" in text
 
 
 def test_report_marks_an_errored_skip_as_not_all_passed(tmp_path: Path) -> None:

@@ -9,6 +9,7 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
+from wetland_change.runtime import Environment, capture_environment
 from wetland_change.store import OutputStore
 
 
@@ -91,6 +92,7 @@ def _markdown(
     checks: list[Check],
     generated_at: datetime,
     matrix: list[dict[str, Any]],
+    environment: Environment,
 ) -> str:
     lines = [
         f"# Verification report {run_id}",
@@ -129,6 +131,11 @@ def _markdown(
             f"| {r['row']} | {r['status']} | {r['n_pass']} | {r['n_fail']} "
             f"| {r['n_warn']} | {r['n_skipped']} | {r['n_errored']} | {r['note']} |"
         )
+    lines += ["", "## Runtime", "", "| item | value |", "|---|---|"]
+    for name, version in environment.runtime.items():
+        lines.append(f"| {name} | {version} |")
+    lines.append(f"| uv.lock sha256 | {environment.uv_lock_sha256 or 'none'} |")
+    lines.append(f"| git commit | {environment.git_commit or 'none'} |")
     return "\n".join(lines) + "\n"
 
 
@@ -139,6 +146,7 @@ def write_report(
     run_id: str,
     docs_dir: Path | None,
     generated_at: datetime | None = None,
+    environment: Environment | None = None,
 ) -> tuple[str, Path | None]:
     """JSON beside the outputs; Markdown under docs/research when given.
 
@@ -149,6 +157,7 @@ def write_report(
     from wetland_change.verify.matrix import matrix_status  # matrix imports Check
 
     when = generated_at or datetime.now(UTC)
+    env = environment or capture_environment()
     scored = [c for c in checks if c.passed is not None]
     n_errored = sum(c.errored for c in checks)
     matrix = matrix_status(checks)
@@ -161,6 +170,9 @@ def write_report(
         "n_warned": sum(c.wet_area_only_failure for c in checks),
         "all_passed": bool(scored) and all(c.passed for c in scored) and n_errored == 0,
         "matrix": matrix,
+        "runtime": env.runtime,
+        "uv_lock_sha256": env.uv_lock_sha256,
+        "git_commit": env.git_commit,
         "checks": [_finite(asdict(c)) for c in checks],
     }
     json_path = store.write_bytes(
@@ -171,5 +183,5 @@ def write_report(
     if docs_dir is not None:
         docs_dir.mkdir(parents=True, exist_ok=True)
         md_path = docs_dir / f"verification-{run_id}.md"
-        md_path.write_text(_markdown(run_id, checks, when, matrix))
+        md_path.write_text(_markdown(run_id, checks, when, matrix, env))
     return json_path, md_path
