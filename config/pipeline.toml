@@ -45,10 +45,11 @@ agreement_min = 0.95
 root = "outputs"
 
 [catalogue]
-# Replace with the `bucket_url` output of infra at deploy time (no trailing
-# slash). `run` and `build-catalogue` refuse an s3:// output root while this is
-# a `.invalid` host.
-base_url = "https://example.invalid/swan-wetland-change"
+# The `bucket_url` output of infra (no trailing slash), set at the 2026-11-06
+# apply. `run` and `build-catalogue` refuse an s3:// output root while this is
+# a `.invalid` host. The bucket is private (ADR 0011), so these links need
+# signed access.
+base_url = "https://swan-wetland-change-outputs-263051716913.s3.ap-southeast-2.amazonaws.com"
 
 [verify]
 # WO and NDVI checks skip a polygon with fewer mutually clear pixels than this.
