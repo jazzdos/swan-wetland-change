@@ -2,11 +2,13 @@
 
 from __future__ import annotations
 
+import math
 from dataclasses import dataclass
 from datetime import datetime
 
 import numpy as np
 from affine import Affine
+from pyproj import CRS
 from rasterio.features import geometry_mask
 from shapely.geometry import mapping
 from shapely.geometry.base import BaseGeometry
@@ -19,7 +21,30 @@ from wetland_change.mask import CLEAR_BANDS, clear_mask, cloud_mask, water_mask_
 from wetland_change.raster.read import BandStack
 from wetland_change.windows import PlannedWindow
 
-PIXEL_AREA_HA = 0.01  # 10 m by 10 m
+PIXEL_STEP_M = 10.0
+
+
+def pixel_area_ha(transform: Affine, epsg: int) -> float:
+    """Pixel area in hectares from the window transform, for a 10 m metric grid.
+
+    Raises ValueError when the CRS is not projected, has axes that are not in
+    metres, the transform is rotated, or the pixel step is not 10 m.
+    """
+    crs = CRS.from_epsg(epsg)
+    if not crs.is_projected:
+        raise ValueError(f"EPSG:{epsg} is not a projected CRS")
+    if any(axis.unit_conversion_factor != 1.0 for axis in crs.axis_info):
+        raise ValueError(f"EPSG:{epsg} axes are not in metres")
+    if abs(transform.b) > 1e-9 or abs(transform.d) > 1e-9:
+        raise ValueError(f"transform is rotated: {transform}")
+    if not (
+        math.isclose(abs(transform.a), PIXEL_STEP_M, abs_tol=1e-6)
+        and math.isclose(abs(transform.e), PIXEL_STEP_M, abs_tol=1e-6)
+    ):
+        raise ValueError(
+            f"pixel step must be 10 m, got {abs(transform.a)} by {abs(transform.e)}"
+        )
+    return abs(transform.a) * abs(transform.e) / 10_000
 
 
 @dataclass(frozen=True)
@@ -98,9 +123,12 @@ def summarise(
     water_ha_index uses the polygon's override from water.overrides when it has
     one, else the global setting (decision 0005).
 
+    Raises ValueError for a non-10 m or non-metric stack.
+
     dea_wo_agreement is left None here; `pipeline.process_scene` fills it from
     `verify.wo` when DEA holds a WO item for the scene.
     """
+    pixel_ha = pixel_area_ha(stack.transform, stack.epsg)
     inside = rasterise(polygon.geometry, stack.transform, stack.shape)
     n_pixels = int(inside.sum())
     clear = (
@@ -127,8 +155,8 @@ def summarise(
         n_clear=n_clear,
         valid_fraction=n_clear / n_pixels if n_pixels else 0.0,
         cloud_fraction=int(cloudy.sum()) / n_pixels if n_pixels else 0.0,
-        water_ha_index=float(water_index.sum()) * PIXEL_AREA_HA,
-        water_ha_scl=float(water_scl.sum()) * PIXEL_AREA_HA,
+        water_ha_index=float(water_index.sum()) * pixel_ha,
+        water_ha_scl=float(water_scl.sum()) * pixel_ha,
         ndwi_median=_median(ndwi_arr, clear),
         mndwi_median=_median(mndwi_arr, clear),
         ndvi_median=_median(ndvi_arr, clear),
