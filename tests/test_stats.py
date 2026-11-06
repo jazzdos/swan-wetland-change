@@ -54,7 +54,9 @@ def test_rasterise_uses_pixel_centres() -> None:
     assert rasterise(box(0, 0, 4, 4), T, (4, 4)).sum() == 0
 
 
-def test_summarise_synthetic_ndwi(fixture_scene: SceneItem) -> None:
+def test_summarise_synthetic_ndwi_leaves_wo_agreement_for_process_scene(
+    fixture_scene: SceneItem,
+) -> None:
     row = summarise(
         _polygon(box(0, 0, 40, 40)),
         fixture_scene,

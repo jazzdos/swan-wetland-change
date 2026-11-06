@@ -176,7 +176,7 @@ standards repository are follow-ups for Jarrod.
 | `water_ha_index` | float | Calibrated index method |
 | `water_ha_scl` | float | SCL class 6 |
 | `ndwi_median`, `mndwi_median`, `ndvi_median` | float | Over clear pixels |
-| `dea_wo_agreement` | float or null | Pixel agreement with DEA S2 Water Observations when an item exists |
+| `dea_wo_agreement` | float or null | Pixel agreement with DEA S2 Water Observations at first processing; null when DEA holds no item then or fewer than `verify.min_clear_pixels` pixels are mutually clear (ADR 0009) |
 | `geometry` | polygon | Polygon geometry, EPSG:4326 in the file |
 | `run_id` | string | Run manifest key |
 
@@ -325,11 +325,11 @@ unless noted:
 | 60-day Actions auto-disable | Commit the verification report on runs that processed scenes; freshness test opens an issue |
 | Parquet is immutable | One file per scene, overwrite on rerun |
 | Seasonal drying is not change | Month-of-year baseline |
-| SCL weak over water and shadow | Valid-fraction gate, two water signals, DEA agreement column |
+| SCL weak over water and shadow | Valid-fraction gate, two water signals, DEA agreement column (null when DEA holds no item at first processing, ADR 0009) |
 | Runner time and memory for Peel-Yalgorup | Spike 3 before code |
 | Licence of derived outputs | BY-SA for Ramsar-derived rows, BY for DEA-derived checks, stated in SOURCES.md and the catalogue |
 | IAM and OIDC friction | Spike 5 before pipeline code |
-| DEA S2 Water Observations retains three months | Live oracle only; Landsat products for history |
+| DEA S2 Water Observations retains three months | Live oracle only; Landsat products for history. The per-row agreement is filled at first processing and never afterwards (ADR 0009) |
 
 ## Non-goals for version one
 

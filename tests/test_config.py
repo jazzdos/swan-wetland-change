@@ -281,6 +281,59 @@ def test_adr_0008_shares_match_recomputation() -> None:
     assert result["chosen"] == match.group(1)
 
 
+def test_adr_0009_recorded_sha256_match_committed_research_files() -> None:
+    adrs = list(DECISIONS.glob("0009-*.md"))
+    assert len(adrs) == 1, f"expected one docs/decisions/0009-*.md, found {adrs}"
+    recorded = dict(re.findall(SHA_LINE, adrs[0].read_text()))
+    for name in (
+        "docs/research/2026-11-06-wo-availability.py",
+        "docs/research/2026-11-06-wo-availability.csv",
+    ):
+        assert name in recorded, f"ADR 0009 records no sha256 for {name}"
+    for name, digest in recorded.items():
+        actual = hashlib.sha256(
+            (REPO_CONFIG.parents[1] / name).read_bytes()
+        ).hexdigest()
+        assert digest == actual, f"ADR 0009 sha256 for {name} is stale"
+
+
+def _load_wo_availability_script() -> ModuleType:
+    path = (
+        REPO_CONFIG.parents[1] / "docs" / "research" / "2026-11-06-wo-availability.py"
+    )
+    spec = importlib.util.spec_from_file_location("wo_availability", path)
+    assert spec is not None and spec.loader is not None
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
+def test_adr_0009_availability_matches_recomputation() -> None:
+    adrs = list(DECISIONS.glob("0009-*.md"))
+    assert len(adrs) == 1, f"expected one docs/decisions/0009-*.md, found {adrs}"
+    text = adrs[0].read_text()
+    share = re.search(
+        r"^Share available at first processing: (\d+) of (\d+)$", text, re.MULTILINE
+    )
+    assert share is not None, "no 'Share available at first processing: K of N' line"
+    chosen = re.search(r"^Chosen outcome: (populate|amend)$", text, re.MULTILINE)
+    assert chosen is not None, "no 'Chosen outcome: populate|amend' line in ADR 0009"
+
+    script = _load_wo_availability_script()
+    rows = script.load_rows(
+        REPO_CONFIG.parents[1] / "docs" / "research" / "2026-11-06-wo-availability.csv"
+    )
+    summary = script.summarise_rows(rows)
+    assert summary["n_available"] == int(share.group(1))
+    assert summary["n"] == int(share.group(2))
+    assert script.decide(summary) == chosen.group(1)
+
+    learnings = (REPO_CONFIG.parents[1] / "LEARNINGS.md").read_text()
+    outcome = re.search(r"^Outcome: (populate|amend)$", learnings, re.MULTILINE)
+    assert outcome is not None, "no 'Outcome: populate|amend' line in LEARNINGS.md"
+    assert outcome.group(1) == chosen.group(1)
+
+
 def test_waterbodies_tolerance_matches_learnings() -> None:
     text = LEARNINGS.read_text()
     assert S9_HEADING in text, f"LEARNINGS.md has no {S9_HEADING!r} heading"

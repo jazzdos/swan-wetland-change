@@ -99,6 +99,26 @@ Sample. The 12 ramsar-12 rows of the CSV, re-read from Earth Search and DEA with
 
 Reading rule. The cause recorded is every supported hypothesis, stated with its numbers. If none is supported, LEARNINGS.md records that no cause was found and lists what was checked (G1 to G5 with their numbers).
 
+## Pre-registered hypotheses (st-5f74, 2026-11-06)
+
+Recorded before the availability script is written or run. Context. The observation column `dea_wo_agreement` is null on every row, although AGENTS.md (locked decision), ADR 0002 and design line 179 say it stores the pixel agreement with DEA Sentinel-2 Water Observations (`ga_s2_wo_provisional_3`). ADR 0002 says verify fills it while the provisional product retains the pass, and nothing does. DEA keeps the product about three months, so a later backfill cannot fill it. The daily run (`.github/workflows/pipeline.yml`, cron `17 10 * * *`, 10:17 UTC) already calls DEA in verify. The question is whether DEA already holds the matching WO item when the daily run first processes a scene-tile.
+
+Disclosure. Before this section was written the planner ran an exploratory, unrecorded pass over 2026-08-08 to 2026-11-05 (cloud cover at most 20, six MGRS tiles, the bbox below). It found a WO item before the first cron for 49 of 49 scene-tiles, with a smallest margin of 0.4 hours. DEA WO `created` fell at 07:32 to 09:42 UTC on the acquisition day and Earth Search `created` at 06:34 to 08:43 UTC. That pass had a pagination bug. This section is therefore a policy rule recorded before the recorded script runs, not a blind test.
+
+Sample. The unit is one scene-tile, that is one Earth Search item. Items are `sentinel-2-c1-l2a` from Earth Search (`https://earth-search.aws.element84.com/v1/search`, POST) with bbox [115.3, -33.2, 116.0, -31.6], an approximation of the AOI union bbox (the AOI GeoJSON in `data/external` is untracked and absent here). Items are kept when `properties.datetime` (UTC date) is from 2026-08-15 to 2026-11-03 inclusive, `eo:cloud_cover` is at most 20.0 (`stac.cloud_cover_max` in `config/pipeline.toml`) and `properties.created` is not null. The window starts on 2026-08-15 so DEA's three-month retention has not removed the oldest WO items, and ends on 2026-11-03 so every item had at least one full day for its WO item to appear. The tile is `properties["grid:code"]` with the `MGRS-` prefix removed (for example 50HLK).
+
+Match. A DEA WO item from `https://explorer.dea.ga.gov.au/stac/search` (collection `ga_s2_wo_provisional_3`, same bbox, datetime window 2026-08-15T00:00:00Z/2026-11-04T23:59:59Z) with the same UTC acquisition date and `properties["odc:region_code"]` equal to the tile. This is the same rule as `find_wo_href` in `src/wetland_change/verify/wo.py`.
+
+Times. T_es is Earth Search `properties.created`. T_proc is the first instant at or after T_es that is 10:17:00 UTC, the scheduled run; GitHub scheduler delay and run duration are ignored. A_wo is the DEA WO item's `properties.created`, the STAC index time, chosen because the explorer exposes no other availability timestamp. The date-time stamp in the asset path (for example 20260810T071416) is recorded as a secondary field `wo_path_stamp`. If DEA re-creates an item later, A_wo is later and the share is understated, which errs towards amend.
+
+Metrics. S is the number of scene-tiles with a matched WO item and A_wo at or before T_proc, over all scene-tiles in the sample. Also recorded: the Wilson 95 percent interval for S; the share with a WO item at measurement time whenever it arrived; the scene-tiles with no WO item at all; the lag A_wo minus T_proc in hours (negative means WO was ready before the run) as min, p25, median, p75, p90 and max by nearest rank; S2, the same share with T_proc plus 2 hours, as a sensitivity for run duration; and counts by acquisition month.
+
+- H1 (prediction). S is at least 0.90. Whether it holds is recorded.
+
+Decision rule. If S is at least 0.50, populate `dea_wo_agreement` at processing time in the daily run, which honours the locked decision. If S is below 0.50, amend the locked decision and leave the column null, because filling it later would need rewriting per-scene observation files after the fact (one file per scene, overwritten only by rerun) and the verify step does not own them. In addition, populate is chosen only if a DEA failure provably cannot fail the daily run (DEA errors are logged and write None, proven by a test). If that cannot be achieved, amend.
+
+When WO arrives later than first processing, that row stays null and is never filled afterwards. The column means the agreement at first processing, and the verification report remains the record for later passes.
+
 ## Spike results
 
 ### S1 Forrestdale seam (2026-10-29)
@@ -391,6 +411,26 @@ Reproduction check: passed. All 12 ramsar-12 rows re-read from Earth Search and 
 Cause: the supported hypotheses are G1, G3, G4 and G5. The MNDWI threshold of -0.1 over-calls water against WO on this polygon, and some threshold from -0.05 to +0.15 would bring every sampled row within 5 pp (G1). The extra wet pixels sit disproportionately on the polygon edge (G3) and are mostly vegetation or not-vegetated land in the SCL (G4). The same direction shows in the stored history from 2022 to 2026 (G5).
 
 What remains unknown. The result does not say which source is right. DEA S2 WO is unvalidated, so the gap measures consistency with WO, and G1 shows that a threshold near 0 to +0.05 matches WO, not that it is correct. G1, G3 and G4 are not tested against each other, so the share of the gap each explains is not separated. The sample is 12 rows from 6 dates of one season, and G5 tests only the direction of the index and SCL columns. Changing ramsar-12's water setting is a decision under ADR 0005 and is not made here.
+
+### DEA WO availability at first processing (2026-11-06)
+
+Rows: [docs/research/2026-11-06-wo-availability.csv](docs/research/2026-11-06-wo-availability.csv), written by [docs/research/2026-11-06-wo-availability.py](docs/research/2026-11-06-wo-availability.py), summarised in [docs/research/2026-11-06-wo-availability.txt](docs/research/2026-11-06-wo-availability.txt). The sample, match rule, timestamps and decision rule are the st-5f74 section above. The script ran once live on 2026-11-06 at 02:09 UTC against Earth Search and the DEA explorer (120 Earth Search items and 140 DEA items fetched, 44 of the Earth Search items inside the sample window and cloud limit).
+
+Share available at first processing: 44 of 44
+
+N is 44 scene-tiles over tiles 50HLJ, 50HLK, 50HMJ, 50HMK, 50JLL and 50JML, with no duplicate item ids. S is 1.0000 (K = 44), Wilson 95 percent interval 0.9197 to 1.0000. H1 (S at least 0.90) holds. Every scene-tile has a WO item at measurement time, so none lacks a WO item and none arrived after first processing. With T_proc plus 2 hours (S2) the share is also 44 of 44.
+
+Lag, A_wo minus T_proc in hours, nearest rank over the 44 scene-tiles: min -22.963, p25 -2.824, median -1.942, p75 -1.369, p90 -1.196, max -0.352. The smallest margin is 0.352 hours (21 minutes), so a run delay of more than about 21 minutes on the least favourable scene-tile would make that row null under the pre-registered timing. The -22.963 minimum is a scene-tile whose Earth Search item was created at 11:22 UTC on the acquisition day, after that day's run, so its T_proc is the next day's.
+
+By acquisition month, available of n: 2026-08 9 of 9, 2026-09 12 of 12, 2026-10 23 of 23, and no scene-tile without a WO item in any month.
+
+Outcome: populate
+
+The decision is recorded in [docs/decisions/0009-dea-wo-agreement-populated-at-processing-time.md](docs/decisions/0009-dea-wo-agreement-populated-at-processing-time.md).
+
+The rule is the pre-registered one (S at least 0.50), applied by the script's `decide`. It matches the exploratory pass noted in the disclosure, so this result is not a blind confirmation. The second condition of the rule, that a DEA failure provably cannot fail the daily run, is not tested by the script. Update 2026-11-06: it is met by `test_process_scene_survives_dea_errors` and `test_run_once_with_failing_lookup_still_processes_the_scene` in `tests/test_wo_observation.py`, so the outcome stays populate.
+
+Limits. The bbox approximates the AOI union bbox, so a scene-tile touching only the real AOI edge could differ. The cron instant ignores scheduler delay and run duration; S2 adds 2 hours and does not change the result. A_wo is the DEA STAC index time (`properties.created`), not a documented product-ready time; the asset-path stamp (`wo_path_stamp`) is recorded as a secondary field and was not used for the decision. The sample is 44 scene-tiles over 81 days of one season and covers cloud cover of at most 20 only. The result says nothing about a DEA outage or a processing backlog later in the year.
 
 ## Live run findings
 

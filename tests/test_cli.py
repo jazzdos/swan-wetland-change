@@ -32,7 +32,7 @@ from wetland_change.store import OutputStore
 from wetland_change.verify import freshness as freshness_module
 from wetland_change.verify.checks import Check
 from wetland_change.verify.copernicus import CDSE_STAC
-from wetland_change.verify.wo import POOLED_WET_AREA_CHECK
+from wetland_change.verify.wo import POOLED_WET_AREA_CHECK, dea_reader, find_wo_href
 
 runner = CliRunner()
 
@@ -1035,3 +1035,31 @@ def test_requeue_all_with_nothing_exhausted_exits_two(
     config_file, root = _requeue_setup(monkeypatch, tmp_path, exhausted=False)
     result = runner.invoke(app, _requeue_args(config_file, root, "--all"))
     assert result.exit_code == 2, result.output
+
+
+@pytest.mark.parametrize("command", ["run", "backfill"])
+def test_only_run_passes_the_dea_wo_lookup(
+    command: str, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    box_4326 = shapely_box(*BBOX)
+    polygons = [AoiPolygon("p", "site", "ramsar", box_4326, box_4326)]
+    cfg_file = _patch_cli(monkeypatch, tmp_path, FakeClient([]), polygons)
+    seen: dict[str, Any] = {}
+
+    def fake_once(*args: Any, **kwargs: Any) -> Any:
+        seen.update(kwargs)
+        return SimpleNamespace(to_json=lambda: "{}", failed=False)
+
+    monkeypatch.setattr(cli, "run_once", fake_once)
+    monkeypatch.setattr(cli, "backfill_once", fake_once)
+    args = [command, "--config", str(cfg_file), "--output-root", str(tmp_path / "out")]
+    if command == "backfill":
+        args += ["--start", "2026-10-01", "--end", "2026-10-02"]
+    result = runner.invoke(app, args)
+    assert result.exit_code == 0, (result.output, result.exception)
+    if command == "run":
+        assert seen["wo_lookup"] is find_wo_href
+        assert seen["wo_reader_factory"] is dea_reader
+    else:
+        assert "wo_lookup" not in seen
+        assert "wo_reader_factory" not in seen

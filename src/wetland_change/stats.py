@@ -42,6 +42,7 @@ class ObservationRow:
     ndwi_median: float
     mndwi_median: float
     ndvi_median: float
+    # None from summarise; pipeline.process_scene fills it from verify.wo.
     dea_wo_agreement: float | None
     geometry_4326: BaseGeometry
     run_id: str
@@ -96,6 +97,9 @@ def summarise(
 
     water_ha_index uses the polygon's override from water.overrides when it has
     one, else the global setting (decision 0005).
+
+    dea_wo_agreement is left None here; `pipeline.process_scene` fills it from
+    `verify.wo` when DEA holds a WO item for the scene.
     """
     inside = rasterise(polygon.geometry, stack.transform, stack.shape)
     n_pixels = int(inside.sum())

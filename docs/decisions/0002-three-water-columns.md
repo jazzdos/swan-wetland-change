@@ -19,8 +19,14 @@ verify step while the provisional product retains the pass). The index
 medians (`ndwi_median`, `mndwi_median`, `ndvi_median`) are stored so a
 different threshold can be evaluated without re-reading pixels.
 
+Amended by 0009: filled by the daily run at processing time when DEA holds the
+item, otherwise null.
+
 ## Consequences
 
 Rows are wider but the method is auditable per row. Change detection
 in Milestone 2 reads `water_ha_index` and reports `water_ha_scl` beside
 it; disagreement between the two is itself a quality flag.
+
+Amended by 0009: filled by the daily run at processing time when DEA holds the
+item, otherwise null.

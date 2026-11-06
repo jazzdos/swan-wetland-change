@@ -23,6 +23,8 @@ area for the run as a whole, so a backfill run pools across all its dates
 
 from __future__ import annotations
 
+import logging
+import math
 from collections.abc import Callable, Iterable, Iterator
 from typing import Any
 
@@ -46,6 +48,9 @@ WO_EXCLUDE = 1 | 2 | 4 | 8 | 16 | 32 | 64
 # Largest allowed gap between pipeline and WO wet share, in percentage points.
 WET_AREA_MAX_PP = 5.0
 POOLED_WET_AREA_CHECK = "water_vs_dea_s2_wo_pooled_wet_area"
+logger = logging.getLogger(__name__)
+
+WoLookup = Callable[[SceneItem, tuple[float, float, float, float]], str | None]
 _S3 = "s3://dea-public-data/"
 _HTTPS = "https://dea-public-data.s3.ap-southeast-2.amazonaws.com/"
 
@@ -289,3 +294,90 @@ def wo_check(
             "wet_area_passed": wet_passed if n else None,
         },
     )
+
+
+class SceneWo:
+    """The DEA WO product found for one scene, shared by its polygons.
+
+    `failed` is set by `observation_agreement` on the first DEA error, so an
+    outage costs one failed attempt per scene rather than one per polygon.
+    """
+
+    def __init__(self, href: str, reader: RasterReader, failed: bool = False) -> None:
+        self.href = href
+        self.reader = reader
+        self.failed = failed
+
+
+def resolve_scene_wo(
+    scene: SceneItem,
+    bbox_4326: tuple[float, float, float, float],
+    *,
+    lookup: WoLookup,
+    reader_factory: Callable[[], RasterReader],
+) -> SceneWo | None:
+    """The scene's WO product, or None when DEA holds none or cannot be asked.
+
+    Any exception is logged as a warning and gives None, so a DEA outage never
+    fails the scene.
+    """
+    try:
+        href = lookup(scene, bbox_4326)
+        if href is None:
+            return None
+        return SceneWo(href, reader_factory())
+    except Exception:
+        logger.warning(
+            "DEA WO lookup failed for %s; dea_wo_agreement stays null",
+            scene.item_id,
+            exc_info=True,
+        )
+        return None
+
+
+def observation_agreement(
+    scene: SceneItem,
+    stack: BandStack,
+    planned: PlannedWindow,
+    inside: np.ndarray,
+    *,
+    water: WaterConfig,
+    polygon_id: str,
+    wo: SceneWo,
+    scene_grid: Grid,
+    min_clear_pixels: int = 1,
+) -> float | None:
+    """Agreement stored in `dea_wo_agreement`: `wo_check(...).measured`.
+
+    None when the WO grid differs from the scene grid, when no pixel is
+    mutually clear, or when fewer than `min_clear_pixels` are (the same floor
+    the verification report applies). A DEA error is logged as a warning,
+    marks `wo` failed so the scene's other polygons skip DEA, and gives None.
+    """
+    if wo.failed:
+        return None
+    try:
+        check = wo_check(
+            scene,
+            stack,
+            planned,
+            inside,
+            water=water,
+            wo_href=wo.href,
+            reader=wo.reader,
+            scene_grid=scene_grid,
+            polygon_id=polygon_id,
+            min_clear_pixels=min_clear_pixels,
+        )
+    except Exception:
+        wo.failed = True
+        logger.warning(
+            "DEA WO read failed for %s, polygon %s; dea_wo_agreement stays null",
+            scene.item_id,
+            polygon_id,
+            exc_info=True,
+        )
+        return None
+    if check.measured is None or not math.isfinite(check.measured):
+        return None
+    return float(check.measured)
