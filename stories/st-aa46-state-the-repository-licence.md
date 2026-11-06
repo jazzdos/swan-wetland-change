@@ -27,4 +27,6 @@ The repository has no LICENSE file, no license field in pyproject.toml and no co
 
 ## Implementation Notes
 
+- 2026-11-06T04:27:19.424Z: Decision: Jarrod chose MIT on 2026-11-06. Use the standard MIT text with 'Copyright (c) 2026 Jarrod Baker'. The CC BY-SA 4.0 data outputs and CC BY 4.0 DEA inputs stay as they are.
+
 ## Questions
