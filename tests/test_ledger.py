@@ -32,6 +32,7 @@ from wetland_change.ledger import (
     read_ledger,
     read_ledger_parts,
     rejected_entry,
+    rejected_keys,
     requeue_entries,
     retry_ids,
     scored_dates,
@@ -964,3 +965,61 @@ def test_scored_dates_uses_utc_and_skips_unscored_rows(
 
 def test_scored_dates_of_an_empty_frame_is_empty() -> None:
     assert scored_dates(entries_to_table([]).to_pandas()) == set()
+
+
+UPDATED = datetime(2026, 10, 27, 3, 4, 5, 123456, tzinfo=UTC)
+
+
+def _rejected(
+    item_id: str, run_id: str, hours: int, *, updated: datetime | None = UPDATED
+) -> LedgerEntry:
+    return rejected_entry(
+        item_id,
+        "ItemGuardError: wrong collection",
+        run_id=run_id,
+        processed_at=T0 + timedelta(hours=hours),
+        updated=updated,
+    )
+
+
+def test_rejected_entry_stores_updated_and_defaults_to_none() -> None:
+    assert _rejected("x", "r1", 0).updated == UPDATED
+    legacy = rejected_entry("x", "why", run_id="r1", processed_at=T0)
+    assert legacy.updated is None
+
+
+def test_rejected_keys_empty_ledger() -> None:
+    assert rejected_keys(LEDGER_SCHEMA.empty_table()) == set()
+
+
+def test_rejected_keys_returns_newest_matching_rejection(tmp_path: Path) -> None:
+    store = OutputStore(str(tmp_path))
+    write_ledger([_rejected("x", "r1", 0)], store, run_id="r1")
+    assert rejected_keys(read_ledger(store)) == {
+        ("x", UPDATED, "ItemGuardError: wrong collection")
+    }
+
+
+@pytest.mark.parametrize("status", ["succeeded", "failed"])
+def test_rejected_keys_excludes_item_with_later_non_rejected_row(
+    fixture_scene: SceneItem, tmp_path: Path, status: str
+) -> None:
+    store = OutputStore(str(tmp_path))
+    write_ledger([_rejected(fixture_scene.item_id, "r1", 0)], store, run_id="r1")
+    later = entry_for(
+        fixture_scene,
+        status=status,
+        attempts=1,
+        run_id="r2",
+        processed_at=T0 + timedelta(hours=1),
+        n_rows=1 if status == "succeeded" else 0,
+        error="boom" if status == "failed" else None,
+    )
+    write_ledger([later], store, run_id="r2")
+    assert rejected_keys(read_ledger(store)) == set()
+
+
+def test_rejected_keys_excludes_null_updated_rows(tmp_path: Path) -> None:
+    store = OutputStore(str(tmp_path))
+    write_ledger([_rejected("x", "r1", 0, updated=None)], store, run_id="r1")
+    assert rejected_keys(read_ledger(store)) == set()

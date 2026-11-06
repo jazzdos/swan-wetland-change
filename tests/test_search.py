@@ -226,3 +226,84 @@ def test_discover_rechecks_datetime_range(fixture_item: dict[str, Any]) -> None:
     assert [item_id for item_id, _ in result.rejected] == [baddate["id"]]
     assert client.calls[0]["datetime"] == RANGE_STRING
     assert "created" not in client.calls[0]["query"]
+
+
+def _reject_reason(item: dict[str, Any]) -> str:
+    result = discover(
+        FakeClient([item]),
+        CFG,
+        bbox=BBOX,
+        polygons_4326=[THOMSONS_4326],
+        created_from=None,
+        seen=set(),
+    )
+    assert len(result.rejected) == 1
+    return result.rejected[0][1]
+
+
+def _rejected_discover(
+    item: dict[str, Any], rejected_seen: set[tuple[str, datetime, str]]
+) -> Any:
+    return discover(
+        FakeClient([item]),
+        CFG,
+        bbox=BBOX,
+        polygons_4326=[THOMSONS_4326],
+        created_from=None,
+        seen=set(),
+        rejected_seen=rejected_seen,
+    )
+
+
+def _bad_item(fixture_item: dict[str, Any], **props: Any) -> dict[str, Any]:
+    bad = _variant(fixture_item, "bad", **props)
+    del bad["properties"]["s2:processing_baseline"]
+    return bad
+
+
+def test_discover_skips_an_unchanged_rejection(fixture_item: dict[str, Any]) -> None:
+    bad = _bad_item(fixture_item, updated="2026-10-27T03:04:05.123456Z")
+    reason = _reject_reason(bad)
+    updated = parse_timestamp("2026-10-27T03:04:05.123456Z")
+    result = _rejected_discover(bad, {(bad["id"], updated, reason)})
+    assert result.rejected == []
+    assert result.skipped_seen == 1
+    assert bad["id"] not in result.rejected_updated
+
+
+def test_discover_records_updated_for_a_new_rejection(
+    fixture_item: dict[str, Any],
+) -> None:
+    bad = _bad_item(fixture_item, updated="2026-10-28T03:04:05.5Z")
+    reason = _reject_reason(bad)
+    old = parse_timestamp("2026-10-27T03:04:05.123456Z")
+    result = _rejected_discover(bad, {(bad["id"], old, reason)})
+    assert [i for i, _ in result.rejected] == [bad["id"]]
+    assert result.skipped_seen == 0
+    assert result.rejected_updated[bad["id"]] == parse_timestamp(
+        "2026-10-28T03:04:05.5Z"
+    )
+
+
+def test_discover_rejects_again_when_the_reason_changed(
+    fixture_item: dict[str, Any],
+) -> None:
+    bad = _bad_item(fixture_item, updated="2026-10-27T03:04:05Z")
+    updated = parse_timestamp("2026-10-27T03:04:05Z")
+    result = _rejected_discover(bad, {(bad["id"], updated, "KeyError: other")})
+    assert [i for i, _ in result.rejected] == [bad["id"]]
+    assert result.rejected_updated[bad["id"]] == updated
+
+
+@pytest.mark.parametrize("bad_updated", ["missing", "not-a-date", 12])
+def test_discover_rejects_with_unusable_updated_as_none(
+    fixture_item: dict[str, Any], bad_updated: Any
+) -> None:
+    bad = _bad_item(fixture_item)
+    if bad_updated == "missing":
+        del bad["properties"]["updated"]
+    else:
+        bad["properties"]["updated"] = bad_updated
+    result = _rejected_discover(bad, set())
+    assert [i for i, _ in result.rejected] == [bad["id"]]
+    assert result.rejected_updated == {bad["id"]: None}

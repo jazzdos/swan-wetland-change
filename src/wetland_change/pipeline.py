@@ -31,6 +31,7 @@ from wetland_change.ledger import (
     observation_months,
     read_ledger_parts,
     rejected_entry,
+    rejected_keys,
     requeue_entries,
     retry_ids,
     scored_dates,
@@ -127,6 +128,22 @@ def _new_manifest(
         datetime_end=datetime_end,
         output_root_override=output_root_override,
     )
+
+
+def _rejected_entries(
+    discovery: Discovery, *, run_id: str, now: datetime, run_kind: str
+) -> list[LedgerEntry]:
+    return [
+        rejected_entry(
+            item_id,
+            reason,
+            run_id=run_id,
+            processed_at=now,
+            run_kind=run_kind,
+            updated=discovery.rejected_updated.get(item_id),
+        )
+        for item_id, reason in discovery.rejected
+    ]
 
 
 def _process_one(
@@ -371,6 +388,7 @@ def run_once(
         polygons_4326=[p.geometry_4326 for p in polygons],
         created_from=created_from,
         seen=seen_keys(ledger) | exhausted_keys(ledger),
+        rejected_seen=rejected_keys(ledger),
         retry_ids=retry_ids(ledger),
     )
     manifest = _new_manifest(
@@ -386,16 +404,9 @@ def run_once(
     next_part = 0
     new_entries: list[LedgerEntry] = []
     if discovery.rejected:
-        rejected = [
-            rejected_entry(
-                item_id,
-                reason,
-                run_id=run_id,
-                processed_at=now,
-                run_kind=RUN_KIND_RUN,
-            )
-            for item_id, reason in discovery.rejected
-        ]
+        rejected = _rejected_entries(
+            discovery, run_id=run_id, now=now, run_kind=RUN_KIND_RUN
+        )
         manifest.ledger_files += write_ledger(
             rejected, store, run_id=run_id, part=next_part
         )
@@ -592,6 +603,7 @@ def backfill_once(
         polygons_4326=[p.geometry_4326 for p in polygons],
         created_from=None,
         seen=seen_keys(ledger) | exhausted_keys(ledger),
+        rejected_seen=rejected_keys(ledger),
         retry_ids=(),
         datetime_range=(start, end),
     )
@@ -610,16 +622,9 @@ def backfill_once(
     next_part = 0
     new_entries: list[LedgerEntry] = []
     if discovery.rejected:
-        rejected = [
-            rejected_entry(
-                item_id,
-                reason,
-                run_id=run_id,
-                processed_at=now,
-                run_kind=RUN_KIND_BACKFILL,
-            )
-            for item_id, reason in discovery.rejected
-        ]
+        rejected = _rejected_entries(
+            discovery, run_id=run_id, now=now, run_kind=RUN_KIND_BACKFILL
+        )
         manifest.ledger_files += write_ledger(
             rejected, store, run_id=run_id, part=next_part
         )

@@ -44,7 +44,10 @@ class RunManifest:
     discovered: int = 0
     processed: int = 0
     failed: int = 0
+    # Rejections newly written to the ledger this run.
     rejected: int = 0
+    # Items already processed, plus rejections unchanged since they were
+    # logged (same updated and reason), which are skipped and not rewritten.
     skipped_seen: int = 0
     skipped_filter: int = 0
     observation_files: list[str] = field(default_factory=list)
