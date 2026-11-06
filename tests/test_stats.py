@@ -14,8 +14,8 @@ from wetland_change.mask import clear_mask
 from wetland_change.pipeline import process_scene
 from wetland_change.raster.read import BandStack, RasterioReader, read_stack
 from wetland_change.stats import (
-    PIXEL_AREA_HA,
     ObservationRow,
+    pixel_area_ha,
     rasterise,
     summarise,
     water_pixels,
@@ -23,6 +23,7 @@ from wetland_change.stats import (
 from wetland_change.windows import Grid, PlannedWindow, plan_window
 
 T = Affine(10, 0, 0, 0, -10, 40)
+PIXEL_AREA_HA = pixel_area_ha(T, 32750)
 
 
 def _stack() -> BandStack:
@@ -271,3 +272,54 @@ def test_water_pixels_respects_clear_and_method() -> None:
     none = np.zeros_like(clear)
     for setting in (scl6, ndwi_low, mndwi_low):
         assert water_pixels(setting, stack, none).sum() == 0
+
+
+def test_pixel_area_ha_is_derived_from_transform() -> None:
+    assert pixel_area_ha(T, 32750) == pytest.approx(0.01)
+
+
+def test_pixel_area_ha_rejects_20m_transform() -> None:
+    with pytest.raises(ValueError, match="10 m"):
+        pixel_area_ha(Affine(20, 0, 0, 0, -20, 40), 32750)
+
+
+def test_pixel_area_ha_rejects_non_square_pixel() -> None:
+    with pytest.raises(ValueError, match="10 m"):
+        pixel_area_ha(Affine(10, 0, 0, 0, -20, 40), 32750)
+
+
+def test_pixel_area_ha_rejects_rotated_transform() -> None:
+    with pytest.raises(ValueError, match="rotated"):
+        pixel_area_ha(Affine(10, 1, 0, 0, -10, 40), 32750)
+
+
+def test_pixel_area_ha_rejects_geographic_crs() -> None:
+    with pytest.raises(ValueError, match="projected"):
+        pixel_area_ha(T, 4326)
+
+
+def test_pixel_area_ha_rejects_non_metre_projected_crs() -> None:
+    with pytest.raises(ValueError, match="metre"):
+        pixel_area_ha(T, 2263)
+
+
+def test_summarise_rejects_20m_stack(fixture_scene: SceneItem) -> None:
+    good = _stack()
+    bad_stack = BandStack(
+        green=good.green,
+        red=good.red,
+        nir=good.nir,
+        swir16=good.swir16,
+        scl=good.scl,
+        transform=Affine(20, 0, 0, 0, -20, 40),
+        epsg=32750,
+    )
+    with pytest.raises(ValueError, match="10 m"):
+        summarise(
+            _polygon(box(0, 0, 40, 40)),
+            fixture_scene,
+            bad_stack,
+            _planned(),
+            water=WaterConfig(),
+            run_id="r",
+        )

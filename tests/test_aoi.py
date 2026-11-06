@@ -1,5 +1,7 @@
 from pathlib import Path
+from typing import Any
 
+import geopandas as gpd
 import pytest
 from shapely.geometry import Polygon
 
@@ -62,3 +64,17 @@ def test_aoi_polygon_is_frozen() -> None:
     with pytest.raises(AttributeError):
         polys[0].site = "other"  # type: ignore[misc]
     assert isinstance(polys[0], AoiPolygon)
+
+
+def test_read_uses_pyogrio_engine(monkeypatch: pytest.MonkeyPatch) -> None:
+    real = gpd.read_file
+    calls: list[dict[str, Any]] = []
+
+    def recording(*args: Any, **kwargs: Any) -> Any:
+        calls.append(kwargs)
+        return real(*args, **kwargs)
+
+    monkeypatch.setattr("wetland_change.aoi.gpd.read_file", recording)
+    load_waterbodies(FIX / "waterbodies_mini.geojson", operation_epsg=32750)
+    assert calls
+    assert all(call.get("engine") == "pyogrio" for call in calls)

@@ -39,7 +39,7 @@ def _declares_crs(path: Path) -> bool | None:
 
 
 def _read(path: Path, assume_crs: str | None) -> gpd.GeoDataFrame:
-    gdf = gpd.read_file(path)
+    gdf = gpd.read_file(path, engine="pyogrio")
     declared = _declares_crs(path)
     if declared is None:
         if gdf.crs is None:
