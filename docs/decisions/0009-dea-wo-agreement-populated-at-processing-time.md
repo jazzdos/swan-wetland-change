@@ -1,6 +1,6 @@
 # 0009 Fill dea_wo_agreement at processing time
 
-Status: accepted, 2026-11-06, pending Jarrod's review of the epic.
+Status: accepted, 2026-11-06; approved by Jarrod on 2026-11-06.
 Amends the Decision of 0002.
 
 ## Context
@@ -27,7 +27,7 @@ is at least 0.50, and only if a DEA failure provably cannot fail the daily run,
 proven by a test; otherwise amend. The first is met by the measurement below.
 The second is met by `test_process_scene_survives_dea_errors` and
 `test_run_once_with_failing_lookup_still_processes_the_scene`. It is not
-Jarrod's decision and awaits his review of the epic.
+Jarrod's decision; Jarrod approved it on 2026-11-06.
 
 Disclosure: before the pre-registration was written the planner ran an
 exploratory, unrecorded pass that found a WO item before the first cron for 49

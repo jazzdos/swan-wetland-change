@@ -1,6 +1,6 @@
 # 0008 Exit code for live water check failures
 
-Status: accepted, 2026-11-06, pending Jarrod's review of the epic. Amends the
+Status: accepted, 2026-11-06; approved by Jarrod on 2026-11-06. Amends the
 Consequences of 0006; does not change the 5.0 pp limit or the per-row
 `Check.passed`.
 
@@ -19,7 +19,7 @@ like a pass with the measured value above the threshold, and the gap was not
 shown.
 
 Jarrod directed the orchestrator to proceed without asking and will review the
-epic, so this is a measured-rule decision pending his review.
+epic, so this is a measured-rule decision. Jarrod approved it on 2026-11-06.
 
 Disclosure: the per-date counts were readable in
 `docs/research/2026-11-05-wet-area-gap.csv` when the rule was written, and the
