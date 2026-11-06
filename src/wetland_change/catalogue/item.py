@@ -61,6 +61,15 @@ def parse_timestamp(value: str) -> dt.datetime:
     return dt.datetime.fromisoformat(value.replace("Z", "+00:00"))
 
 
+def _timestamp(props: dict[str, Any], key: str, item_id: str) -> dt.datetime:
+    value = props[key]
+    if not isinstance(value, str):
+        raise ItemGuardError(
+            f"{item_id}: properties.{key} is {value!r}, expected an RFC 3339 string"
+        )
+    return parse_timestamp(value)
+
+
 def _epsg(props: dict[str, Any]) -> int:
     if props.get("proj:epsg") is not None:
         return int(props["proj:epsg"])
@@ -107,9 +116,9 @@ def parse_item(
         item_id=item_id,
         collection=str(item["collection"]),
         product_uri=str(props["s2:product_uri"]),
-        datetime=parse_timestamp(props["datetime"]),
-        created=parse_timestamp(props["created"]),
-        updated=parse_timestamp(props["updated"]),
+        datetime=_timestamp(props, "datetime", item_id),
+        created=_timestamp(props, "created", item_id),
+        updated=_timestamp(props, "updated", item_id),
         tile=str(props["grid:code"]).removeprefix("MGRS-"),
         processing_baseline=str(props["s2:processing_baseline"]),
         epsg=_epsg(props),
