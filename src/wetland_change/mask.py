@@ -16,6 +16,8 @@ SCL_WATER = 6
 CLEAR_CLASSES: tuple[int, ...] = (4, 5, 6, 7, 11)
 CLOUD_CLASSES: tuple[int, ...] = (8, 9, 10)
 EXCLUDED_CLASSES: tuple[int, ...] = (0, 1, 2, 3, 8, 9, 10)
+# Bands that must be finite for a pixel to count as clear in `stats.summarise`.
+CLEAR_BANDS: tuple[str, ...] = ("green", "red", "nir", "swir16")
 
 
 def upsample_2x(array: np.ndarray) -> np.ndarray:

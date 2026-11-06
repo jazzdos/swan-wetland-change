@@ -88,6 +88,10 @@ class FakeClient:
         return FakeSearch(self.items)
 
 
+WATER = WaterConfig()
+OPERATION_EPSG = 32750
+
+
 def _config(tmp_path: Path) -> PipelineConfig:
     return PipelineConfig(
         stac=StacConfig(
@@ -101,7 +105,7 @@ def _config(tmp_path: Path) -> PipelineConfig:
             waterbodies_path=Path("unused"),
             site_prefixes=[],
         ),
-        water=WaterConfig(),
+        water=WATER,
         output=OutputConfig(root=str(tmp_path / "out")),
     )
 
@@ -230,6 +234,22 @@ def test_run_once_end_to_end_offline(
     assert frame.crs.to_epsg() == 4326
 
 
+def test_run_once_observation_footer_records_operation_epsg_and_water(
+    fixture_item: dict[str, Any], fixture_polygon: BaseGeometry, tmp_path: Path
+) -> None:
+    manifest = _run(
+        tmp_path, FakeClient([fixture_item]), _polygons(fixture_polygon), NOW
+    )
+    footer = pq.read_schema(tmp_path / "out" / manifest.observation_files[0]).metadata
+    assert footer[b"operation_epsg"] == b"32750"
+    assert footer[b"source_epsg"] == b"32750"
+    assert footer[b"geometry_epsg"] == b"4326"
+    water = WATER.for_polygon("ramsar-52")
+    assert json.loads(footer[b"water_settings"]) == {
+        "ramsar-52": {"method": water.method, "threshold": water.threshold}
+    }
+
+
 def test_rerun_is_incremental(
     fixture_item: dict[str, Any], fixture_polygon: BaseGeometry, tmp_path: Path
 ) -> None:
@@ -267,6 +287,7 @@ def test_failed_scene_is_recorded_and_retried_three_times(
         assert manifest.exhausted_items == exhausted
         assert manifest.exhausted == len(exhausted)
         written = json.loads(store.read_bytes(f"runs/{manifest.run_id}.json"))
+        assert written["operation_epsg"] == 32750
         assert written["exhausted"] == len(exhausted)
         assert written["exhausted_items"] == exhausted
     assert manifest.observation_files == []
@@ -594,6 +615,8 @@ def _seed_october_baseline(
                 )
             ],
             store,
+            water=WATER,
+            operation_epsg=OPERATION_EPSG,
         )
 
 
@@ -628,6 +651,8 @@ def test_run_once_writes_change_file_for_flagged_item(
         store,
         min_valid_fraction=_config(tmp_path).water.min_valid_fraction,
         dates=[probe["datetime"].date()],
+        water=WATER,
+        operation_epsg=OPERATION_EPSG,
     )
     assert again.files == [expected]
     assert (out / expected).read_bytes() == before
@@ -686,6 +711,8 @@ def test_run_once_scoring_skips_observation_files_from_other_months(
             )
         ],
         store,
+        water=WATER,
+        operation_epsg=OPERATION_EPSG,
     )
     seeded = entry_for(
         dataclasses.replace(fixture_scene, item_id="off-month", datetime=off_month),
@@ -808,7 +835,12 @@ def test_retried_earlier_scene_leaves_change_files_equal_to_full_rescore(
     assert rescored_n != first_n
 
     snapshot = _change_bytes(out / "changes")
-    score_changes(store, min_valid_fraction=_config(tmp_path).water.min_valid_fraction)
+    score_changes(
+        store,
+        min_valid_fraction=_config(tmp_path).water.min_valid_fraction,
+        water=WATER,
+        operation_epsg=OPERATION_EPSG,
+    )
     assert _change_bytes(out / "changes") == snapshot
 
 
@@ -892,6 +924,7 @@ def test_score_once_scores_range_and_writes_manifest(
         (tmp_path / "out" / "runs" / f"{manifest.run_id}.json").read_text()
     )
     assert recorded["kind"] == "score"
+    assert recorded["operation_epsg"] == 32750
     assert recorded["change_rows"] == 2
     assert recorded["change_files_removed"] == []
     assert pq.read_schema(tmp_path / "out" / expected).names[0] == "polygon_id"
@@ -1018,6 +1051,7 @@ def test_requeue_once_brings_an_exhausted_scene_back(
     assert len(manifest.ledger_files) == 1
     written = json.loads(store.read_bytes(f"runs/{manifest.run_id}.json"))
     assert written["kind"] == KIND_REQUEUE
+    assert written["operation_epsg"] == 32750
     assert written["requeued_items"] == [broken["id"]]
     # earlier ledger files are untouched; the requeue only adds one
     assert [p for p in store.list_files("ledger") if p in ledger_before] == (
@@ -1557,6 +1591,7 @@ def test_scoring_failure_is_finished_by_the_next_run(
     assert recovered["watermark_before"] is None
     assert recovered["watermark_after"] is None
     assert recovered["recovered_runs"] == []
+    assert recovered["operation_epsg"] is None
     assert recovered["ledger_files"] == [
         f"ledger/year=2026/ledger_{RUN1}_00000.parquet"
     ]

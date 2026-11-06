@@ -1,7 +1,11 @@
 """GeoParquet 1.1 change files: the flagged scores of one source item.
 
 One file per item under `changes/year=YYYY/tile=<MGRS>/`, written like the
-observation files so a rerun overwrites with byte-identical content.
+observation files so a rerun overwrites with byte-identical content. The
+footer carries the same provenance keys as the observation files
+(`outputs.provenance`); its water settings are those of the config at scoring
+time, and source_epsg equals operation_epsg because `process_scene` refuses
+any scene whose EPSG differs from the operation EPSG.
 """
 
 from __future__ import annotations
@@ -12,7 +16,9 @@ import geopandas as gpd
 import pandas as pd
 from shapely.geometry.base import BaseGeometry
 
+from wetland_change.config import WaterConfig
 from wetland_change.outputs.geoparquet import to_geoparquet_bytes
+from wetland_change.outputs.provenance import footer_metadata
 from wetland_change.store import OutputStore
 
 CHANGE_COLUMNS: tuple[str, ...] = (
@@ -67,9 +73,14 @@ def changes_to_frame(
 
 
 def write_changes(
-    scores: pd.DataFrame, geometries: Mapping[str, BaseGeometry], store: OutputStore
+    scores: pd.DataFrame,
+    geometries: Mapping[str, BaseGeometry],
+    store: OutputStore,
+    *,
+    water: WaterConfig,
+    operation_epsg: int,
 ) -> str:
-    """Write one item's flagged scores; returns the relative path."""
+    """Write one item's flagged scores with footer keys; returns the path."""
     if scores.empty:
         raise ValueError("no scores to write")
     items = sorted(set(scores["item_id"]))
@@ -78,7 +89,9 @@ def write_changes(
     first = scores.iloc[0]
     year = pd.Timestamp(first["datetime"]).year
     relpath = change_path(year, str(first["tile"]), items[0])
-    store.write_bytes(
-        relpath, to_geoparquet_bytes(changes_to_frame(scores, geometries))
+    frame = changes_to_frame(scores, geometries)
+    footer = footer_metadata(
+        frame, kind="change", water=water, operation_epsg=operation_epsg
     )
+    store.write_bytes(relpath, to_geoparquet_bytes(frame, footer))
     return relpath

@@ -174,6 +174,7 @@ def _new_manifest(
         datetime_start=datetime_start,
         datetime_end=datetime_end,
         output_root_override=output_root_override,
+        operation_epsg=cfg.aoi.operation_epsg,
     )
 
 
@@ -222,7 +223,13 @@ def _process_one(
             wo_reader_factory=wo_reader_factory,
             wo_min_clear_pixels=cfg.verify.min_clear_pixels,
         )
-        path = write_observations(rows, store) if rows else None
+        path = (
+            write_observations(
+                rows, store, water=cfg.water, operation_epsg=cfg.aoi.operation_epsg
+            )
+            if rows
+            else None
+        )
     except Exception as exc:
         logger.exception("scene %s failed (attempt %d)", scene.item_id, attempts)
         return (
@@ -295,6 +302,8 @@ def score_changes(
     store: OutputStore,
     *,
     min_valid_fraction: float,
+    water: WaterConfig,
+    operation_epsg: int,
     dates: Collection[date] | None = None,
     date_range: tuple[date, date] | None = None,
     rescore_later: bool = False,
@@ -317,6 +326,9 @@ def score_changes(
     calendar month, so those months are closed under them. A file with no
     ledger row (a test fixture or an interrupted attempt) is always read.
     `dates=None` reads every file, and `date_range` alone excludes nothing.
+
+    `water` and `operation_epsg` go into each change file's footer, so the
+    water settings recorded are those of the config at scoring time.
     """
     exclude: set[str] = set()
     if ledger is not None and dates is not None:
@@ -361,7 +373,15 @@ def score_changes(
         }
         written: set[str] = set()
         for _, group in flagged.groupby("item_id", sort=True):
-            written.add(write_changes(group, geometries, store))
+            written.add(
+                write_changes(
+                    group,
+                    geometries,
+                    store,
+                    water=water,
+                    operation_epsg=operation_epsg,
+                )
+            )
             rows += len(group)
         files.extend(sorted(written))
         candidates = {
@@ -510,6 +530,8 @@ def run_once(
         scored = score_changes(
             store,
             min_valid_fraction=cfg.water.min_valid_fraction,
+            water=cfg.water,
+            operation_epsg=cfg.aoi.operation_epsg,
             dates=score_dates,
             rescore_later=True,
             ledger=final,
@@ -547,10 +569,10 @@ def _recovered_manifest(
     """Manifest of a daily run that raised before writing its own.
 
     Only what the ledger knows is filled in. skipped_seen, skipped_filter and
-    both watermarks, package_version and config_sha256 stay empty, because
-    only the crashed process knew them; `recovered_by` marks the manifest.
-    Scoring fields come from the combined scoring result of the run that
-    recovered it.
+    both watermarks, package_version, config_sha256 and operation_epsg stay
+    empty, because only the crashed process knew them; `recovered_by` marks
+    the manifest. Scoring fields come from the combined scoring result of the
+    run that recovered it.
     """
     status = rows["status"]
     processed = int((status == "succeeded").sum())
@@ -750,6 +772,8 @@ def score_once(
     scored = score_changes(
         store,
         min_valid_fraction=cfg.water.min_valid_fraction,
+        water=cfg.water,
+        operation_epsg=cfg.aoi.operation_epsg,
         date_range=(start.astimezone(UTC).date(), end.astimezone(UTC).date()),
     )
     manifest = RunManifest(
@@ -769,6 +793,7 @@ def score_once(
         change_rows=scored.rows,
         change_files=scored.files,
         change_files_removed=scored.removed,
+        operation_epsg=cfg.aoi.operation_epsg,
     )
     write_manifest(manifest, store)
     return manifest
@@ -816,6 +841,7 @@ def requeue_once(
         exhausted=len(remaining),
         exhausted_items=remaining,
         requeued_items=[entry.item_id for entry in entries],
+        operation_epsg=cfg.aoi.operation_epsg,
     )
     write_manifest(manifest, store)
     return manifest
