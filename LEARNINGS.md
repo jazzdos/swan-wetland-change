@@ -434,6 +434,10 @@ Limits. The bbox approximates the AOI union bbox, so a scene-tile touching only 
 
 ## Live run findings
 
+### pyarrow S3 delete PUTs a directory marker (2026-11-06)
+
+pyarrow 26.0.0 `S3FileSystem.delete_file` sends HEAD key, DELETE key, then `PUT <parent>/` with Content-Type application/x-directory, which re-creates the parent marker that writes avoid. pyarrow has no `delete_files` and no option to stop it. A botocore `delete_object` sends a single `DELETE /prefix/key`, so `OutputStore.delete` uses botocore on S3 roots (st-c667).
+
 ### SCL overview resampling (2026-10-29)
 
 The first `wetland-change verify` (run 20261029T131944Z) failed
