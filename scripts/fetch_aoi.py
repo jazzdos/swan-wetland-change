@@ -9,6 +9,11 @@ checksum is the sha256 of canonical JSON with the top-level WFS timeStamp
 removed, because that field changes on every request. The file is written only
 after the checksum succeeds, so an error body never replaces a good download.
 
+A second Waterbodies checksum, ``geometry_checksum``, covers only the uid and
+geometry of every feature, sorted by uid. A DEA refresh of ``dt_wetobs``,
+``dt_satpass``, ``dt_updated`` or ``wet_sa_m2`` changes the first checksum but
+not this one, so it confirms the same polygons across fetches.
+
 Validation. Both responses must be non-empty GeoJSON FeatureCollections, so an
 HTTP 200 error body (ArcGIS ``{"error": ...}`` or HTML) fails the run. Polygon
 ids come from live data (``ramsar-<objectid>``, ``dea-<uid>``), so every id
@@ -111,6 +116,54 @@ def stable_geojson_checksum(content: bytes) -> str:
     payload.pop("timeStamp", None)
     canonical = json.dumps(
         payload, sort_keys=True, separators=(",", ":"), ensure_ascii=False
+    )
+    return hashlib.sha256(canonical.encode("utf-8")).hexdigest()
+
+
+def geometry_checksum(content: bytes) -> str:
+    """Return the sha256 over the uid and geometry of every feature.
+
+    Only ``properties.uid`` and ``geometry`` are hashed, so a DEA refresh of
+    ``dt_wetobs``, ``dt_satpass``, ``dt_updated`` or ``wet_sa_m2`` leaves the
+    result unchanged. Features are sorted by uid then canonical geometry, so
+    feature order and JSON formatting do not matter. Coordinates are hashed as
+    delivered, with no rounding.
+
+    Raises:
+        ValueError: If the bytes are not valid JSON or not a JSON object, if
+            ``features`` is not a list, or if a feature lacks a uid or a
+            geometry.
+    """
+    try:
+        payload = json.loads(content)
+    except ValueError as err:
+        raise ValueError("payload is not valid JSON") from err
+    if not isinstance(payload, dict):
+        raise ValueError("payload is not a JSON object")
+    features = payload.get("features")
+    if not isinstance(features, list):
+        raise ValueError("payload features is not a list")
+    records: list[tuple[str, str, Any]] = []
+    for index, feature in enumerate(features):
+        if not isinstance(feature, dict):
+            raise ValueError(f"feature {index} is not a JSON object")
+        properties = feature.get("properties")
+        if not isinstance(properties, dict) or properties.get("uid") is None:
+            raise ValueError(f"feature {index} has no properties.uid")
+        geometry = feature.get("geometry")
+        if geometry is None:
+            raise ValueError(f"feature {index} has no geometry")
+        uid = str(properties["uid"])
+        key = json.dumps(
+            geometry, sort_keys=True, separators=(",", ":"), ensure_ascii=False
+        )
+        records.append((uid, key, geometry))
+    records.sort(key=lambda record: (record[0], record[1]))
+    canonical = json.dumps(
+        [[uid, geometry] for uid, _key, geometry in records],
+        sort_keys=True,
+        separators=(",", ":"),
+        ensure_ascii=False,
     )
     return hashlib.sha256(canonical.encode("utf-8")).hexdigest()
 
@@ -263,6 +316,7 @@ def main() -> int:
         )
         ramsar_sha = raw_sha256(ramsar_bytes)
         wb_sha = stable_geojson_checksum(wb_bytes)
+        geo_sha = geometry_checksum(wb_bytes)
     except ValueError as err:
         print(f"error: {err}", file=sys.stderr)
         return 1
@@ -276,8 +330,10 @@ def main() -> int:
     )
     print(
         f"| DEA Waterbodies v3 (Swan subset) | {WATERBODIES_URL} | CC BY 4.0 | "
-        f"{today} | {wb_sha} (sha256 of canonical JSON without timeStamp) | "
-        "EPSG:4326 | true |"
+        f"{today} | {wb_sha} (sha256 of canonical JSON without timeStamp; covers "
+        "all properties, so a DEA refresh changes it); "
+        f"geometry {geo_sha} (sha256 of the uid-sorted uid and geometry of every "
+        "feature; unchanged by property refreshes) | EPSG:4326 | true |"
     )
     return 0
 
