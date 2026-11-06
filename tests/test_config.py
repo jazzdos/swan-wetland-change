@@ -3,6 +3,7 @@ import importlib.util
 import re
 from pathlib import Path
 from types import ModuleType
+from typing import Any
 
 import pytest
 from pydantic import ValidationError
@@ -84,8 +85,12 @@ def test_missing_catalogue_section_uses_default(tmp_path: Path) -> None:
 
 def test_repo_config_water_overrides_match_learnings() -> None:
     cfg = load_config(REPO_CONFIG)
+    adr = _adr_0010_decision()
+    expected_ids = {"ramsar-15", "ramsar-28", "ramsar-56"}
+    if adr["outcome"] == "override":
+        expected_ids.add("ramsar-12")
     assert cfg.water.agreement_min == 0.91
-    assert set(cfg.water.overrides) == {"ramsar-15", "ramsar-28", "ramsar-56"}
+    assert set(cfg.water.overrides) == expected_ids
     scl6 = cfg.water.overrides["ramsar-15"]
     assert scl6 == WaterSetting(method="scl6", agreement_min=0.94)
     assert scl6.threshold is None
@@ -95,6 +100,12 @@ def test_repo_config_water_overrides_match_learnings() -> None:
     assert cfg.water.overrides["ramsar-56"] == WaterSetting(
         method="mndwi", threshold=0.05, agreement_min=0.95
     )
+    if adr["outcome"] == "override":
+        assert cfg.water.overrides["ramsar-12"] == WaterSetting(
+            method="mndwi",
+            threshold=adr["threshold"],
+            agreement_min=adr["agreement_min"],
+        )
 
 
 def test_for_polygon_falls_back_to_global() -> None:
@@ -387,3 +398,102 @@ def test_waterbodies_has_no_history_days_field() -> None:
     assert "history_days" not in WaterbodiesVerifyConfig.model_fields
     cfg = load_config(REPO_CONFIG)
     assert not hasattr(cfg.verify.waterbodies, "history_days")
+
+
+RESEARCH = REPO_CONFIG.parents[1] / "docs" / "research"
+RAMSAR_12_CONFIRM_PREFIX = "2026-11-06-ramsar-12-confirm"
+
+
+def _adr_0010_text() -> str:
+    adrs = list(DECISIONS.glob("0010-*.md"))
+    assert len(adrs) == 1, f"expected one docs/decisions/0010-*.md, found {adrs}"
+    return adrs[0].read_text()
+
+
+def _adr_0010_decision() -> dict[str, Any]:
+    """The outcome, threshold and agreement_min lines of ADR 0010."""
+    text = _adr_0010_text()
+    chosen = re.search(r"^Chosen outcome: (override|keep-global)$", text, re.MULTILINE)
+    assert chosen is not None, "no 'Chosen outcome: override|keep-global' line"
+    decision: dict[str, Any] = {
+        "outcome": chosen.group(1),
+        "threshold": None,
+        "agreement_min": None,
+    }
+    if decision["outcome"] == "override":
+        threshold = re.search(r"^threshold = (-?\d+(?:\.\d+)?)$", text, re.MULTILINE)
+        floor = re.search(r"^agreement_min = (\d+(?:\.\d+)?)$", text, re.MULTILINE)
+        assert threshold is not None, "no 'threshold = <value>' line in ADR 0010"
+        assert floor is not None, "no 'agreement_min = <value>' line in ADR 0010"
+        decision["threshold"] = float(threshold.group(1))
+        decision["agreement_min"] = float(floor.group(1))
+    return decision
+
+
+def test_adr_0010_recorded_sha256_match_committed_research_files() -> None:
+    recorded = dict(re.findall(SHA_LINE, _adr_0010_text()))
+    for name in (
+        f"docs/research/{RAMSAR_12_CONFIRM_PREFIX}.py",
+        f"docs/research/{RAMSAR_12_CONFIRM_PREFIX}.csv",
+    ):
+        assert name in recorded, f"ADR 0010 records no sha256 for {name}"
+    for name, digest in recorded.items():
+        actual = hashlib.sha256(
+            (REPO_CONFIG.parents[1] / name).read_bytes()
+        ).hexdigest()
+        assert digest == actual, f"ADR 0010 sha256 for {name} is stale"
+
+
+def _load_ramsar_12_confirm_script() -> ModuleType:
+    path = RESEARCH / f"{RAMSAR_12_CONFIRM_PREFIX}.py"
+    spec = importlib.util.spec_from_file_location("ramsar_12_confirm_adr_0010", path)
+    assert spec is not None and spec.loader is not None
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
+def test_adr_0010_outcome_matches_recomputation() -> None:
+    adr = _adr_0010_decision()
+    script = _load_ramsar_12_confirm_script()
+    confirm_rows = script.load_rows(RESEARCH / f"{RAMSAR_12_CONFIRM_PREFIX}.csv")
+    seen_rows = script.load_rows(RESEARCH / "2026-11-06-ramsar-12-gap.csv")
+    decision = script.decide(confirm_rows, seen_rows)
+    assert decision.outcome == adr["outcome"]
+    assert decision.threshold == adr["threshold"]
+    assert decision.agreement_min == adr["agreement_min"]
+
+    learnings = (REPO_CONFIG.parents[1] / "LEARNINGS.md").read_text()
+    outcome = re.search(r"^Outcome: (override|keep-global)$", learnings, re.MULTILINE)
+    assert outcome is not None, (
+        "no 'Outcome: override|keep-global' line in LEARNINGS.md"
+    )
+    assert outcome.group(1) == decision.outcome
+
+
+def test_repo_config_ramsar_12_matches_adr_0010() -> None:
+    adr = _adr_0010_decision()
+    water = load_config(REPO_CONFIG).water
+    if adr["outcome"] == "override":
+        expected = WaterSetting(
+            method="mndwi",
+            threshold=adr["threshold"],
+            agreement_min=adr["agreement_min"],
+        )
+        assert water.overrides["ramsar-12"] == expected
+        assert water.for_polygon("ramsar-12") == expected
+    else:
+        assert "ramsar-12" not in water.overrides
+        assert water.for_polygon("ramsar-12") == WaterSetting(
+            method="mndwi", threshold=-0.1, agreement_min=0.91
+        )
+
+
+def test_adr_0010_states_delegation_and_review_status() -> None:
+    text = _adr_0010_text()
+    assert "decided under delegation" in text
+    status = next(line for line in text.splitlines() if line.startswith("Status:"))
+    assert re.search(
+        r"pending Jarrod's review|approved by Jarrod on \d{4}-\d{2}-\d{2}",
+        status,
+    )
