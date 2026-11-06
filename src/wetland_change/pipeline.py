@@ -72,6 +72,10 @@ class SceneGridError(ValueError):
     """The scene is not on the operation grid."""
 
 
+class RunIdReusedError(ValueError):
+    """A run id that already has a manifest or ledger parts in the output root."""
+
+
 def process_scene(
     scene: SceneItem,
     polygons: list[AoiPolygon],
@@ -615,7 +619,7 @@ def _refuse_reused_run_id(
         or run_id in set(ledger["run_id"].to_pylist())
     )
     if reused:
-        raise ValueError(
+        raise RunIdReusedError(
             f"run id {run_id} already has a manifest or ledger parts in the output "
             "root; rerun with a later --now so the earlier rows are not overwritten"
         )

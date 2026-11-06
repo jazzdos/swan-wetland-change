@@ -33,6 +33,7 @@ from wetland_change.ledger import (
 )
 from wetland_change.manifest import new_run_id
 from wetland_change.pipeline import (
+    RunIdReusedError,
     backfill_once,
     discovery_created_from,
     requeue_once,
@@ -156,7 +157,7 @@ def run(
             wo_lookup=find_wo_href,
             wo_reader_factory=dea_reader,
         )
-    except PlaceholderBaseUrlError as exc:
+    except (PlaceholderBaseUrlError, RunIdReusedError) as exc:
         raise typer.BadParameter(str(exc)) from exc
     typer.echo(manifest.to_json())
     if manifest.failed:
