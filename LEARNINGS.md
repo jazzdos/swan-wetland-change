@@ -119,6 +119,39 @@ Decision rule. If S is at least 0.50, populate `dea_wo_agreement` at processing 
 
 When WO arrives later than first processing, that row stays null and is never filled afterwards. The column means the agreement at first processing, and the verification report remains the record for later passes.
 
+## Pre-registered hypotheses (st-2a78, 2026-11-06)
+
+Recorded before any measurement for this story and before the confirmatory script is written or run. Context. Story st-2a78 decides whether ramsar-12 (Peel-Yalgorup System, global water setting MNDWI above -0.1, agreement_min 0.91) gets a per-polygon override in `config/pipeline.toml`, using the ADR 0005 mechanism. The evidence is in the st-7047 section 'ramsar-12 wet area gap (2026-11-06)' and in `docs/research/2026-11-06-ramsar-12-gap.py`, `.csv` and `.txt`. On 12 scene-tile rows (6 dates: 2026-09-12, 2026-09-17, 2026-10-02, 2026-10-12, 2026-10-27, 2026-10-29; tiles 50HLJ and 50HLK) the global setting is wetter than DEA Water Observations (WO) by 3.12 to 6.82 pp. Any MNDWI threshold from -0.05 to +0.15 keeps the absolute gap at 5 pp or less on all 12 rows. The mean absolute gap by threshold is 0.512 pp at +0.05 (the lowest), 1.221 at 0.00, 1.821 at +0.10, 2.977 at -0.05 and 3.065 at +0.15. Those 12 rows have already been seen, so they only nominate candidates. The decision is made on a confirmatory sample of dates that are not among the 12.
+
+Disclosure.
+
+- (a) The 12 ramsar-12 rows of `docs/research/2026-11-06-ramsar-12-gap.csv` have been seen. They are not used to decide. They only nominate the candidates and supply the seen-row counts for the agreement_min pooling in R6.
+- (b) The planner read the Earth Search item list in `docs/research/2026-11-06-wo-availability.csv`. It shows ramsar-12-tile scenes with cloud cover at most 20 on 2026-08-23 (50HLK only), 2026-08-28, 2026-08-30 and 2026-09-07 (both tiles), each with a WO item, so about 7 scene-tiles on 4 dates are expected. No gap value for any of them has been seen.
+- (c) These dates fall in August and September, the wetter season, so the dry end of the season is covered only by the seen rows.
+- (d) DEA S2 WO is unvalidated. The rule measures consistency with WO, as in ADR 0005, not accuracy.
+- (e) Choosing among 3 candidates on about 7 rows is a small-sample choice.
+
+Candidates C. MNDWI above t for t in {0.00, +0.05, +0.10}, the three grid values around the seen-data optimum. The values -0.05 and +0.15 are excluded because their seen mean absolute gaps (2.977 and 3.065 pp) are about six times the optimum. Baseline: the global -0.10. scl6 is reported for context only (G2 was not supported).
+
+Confirmatory sample. Earth Search `sentinel-2-c1-l2a` items returned by the pipeline's own `discover` (`src/wetland_change/catalogue/search.py`) with acquisition date 2026-08-15 to 2026-11-05 inclusive, cloud cover at most the config `cloud_cover_max` (20.0), and a planned window for ramsar-12. The start date keeps the window inside DEA's roughly three-month WO retention. The window is fixed and is not widened after seeing results. Items acquired on any of the 6 seen dates are excluded. An item is kept only with a DEA WO item per `find_wo_href` in `src/wetland_change/verify/wo.py` a WO grid transform equal to the scene's (otherwise the scene-tile is dropped as 'grid differs', as in `wo_check`) and at least 100 mutually clear pixels (verify's min_clear_pixels). Before any read, each scene passes the pipeline's guards: grid and item EPSG equal to the operation EPSG, and every band's scale and offset checked against the ESA product XML; a guard failure raises and is not dropped. The window, clear mask, inside mask and WO clear rule are the same as in `wo_check` and in `docs/research/2026-11-06-ramsar-12-gap.py`. Per row: a is the count of mutually clear pixels the pipeline calls wet and WO calls dry, b is the reverse, n is the mutually clear count, gap_pp = 100 * (a - b) / n and agreement = 1 - (a + b) / n. Scene-tiles dropped (no WO item, grid differs, fewer than 100 clear pixels) are listed, not substituted. The script runs once.
+
+Selection. T is the candidate in C with the lowest mean absolute gap_pp over the confirmatory rows. Ties go to the candidate closest to +0.05, then the lower one.
+
+Decision rule. Adopt a per-polygon override for ramsar-12 at T only if all of R1 to R6 hold. Otherwise keep the global setting and record the failed ids.
+
+- R1, sample. At least 6 confirmatory rows on at least 3 distinct acquisition dates. Failing R1 is recorded as 'inconclusive' and keeps the global setting.
+- R2, clause. The absolute gap_pp is 5.0 or less on every confirmatory row at T.
+- R3, gain. Pooled agreement at T minus pooled agreement at -0.10, over the confirmatory rows, is at least 0.005. Pooled agreement is 1 - sum(a + b) / sum(n).
+- R4, consistency. Agreement at T is strictly greater than agreement at -0.10 on at least two thirds of the confirmatory rows.
+- R5, no over-correction. The absolute value of the mean signed gap_pp at T over the confirmatory rows is 2.0 or less.
+- R6, floor. agreement_min is the floor to 0.01 of (pooled agreement at T over all rows, the 12 seen plus the confirmatory rows, minus 0.02), the ADR 0005 convention, computed exactly with rational arithmetic. The override is adopted only if agreement_min is at least 0.91.
+
+The override form is `[water.overrides.ramsar-12]` with method = "mndwi", threshold = T and agreement_min as computed.
+
+Reported but not decision inputs: gap and agreement at -0.10, 0.00, +0.05, +0.10 and scl6 per row; the number of all rows below the computed agreement_min; and whether T equals +0.05.
+
+Status. The outcome is recorded in ADR 0010 as decided under Jarrod's delegation and pending his review. Changing ramsar-12's setting is an ADR 0005 calibration decision.
+
 ## Spike results
 
 ### S1 Forrestdale seam (2026-10-29)
@@ -431,6 +464,37 @@ The decision is recorded in [docs/decisions/0009-dea-wo-agreement-populated-at-p
 The rule is the pre-registered one (S at least 0.50), applied by the script's `decide`. It matches the exploratory pass noted in the disclosure, so this result is not a blind confirmation. The second condition of the rule, that a DEA failure provably cannot fail the daily run, is not tested by the script. Update 2026-11-06: it is met by `test_process_scene_survives_dea_errors` and `test_run_once_with_failing_lookup_still_processes_the_scene` in `tests/test_wo_observation.py`, so the outcome stays populate.
 
 Limits. The bbox approximates the AOI union bbox, so a scene-tile touching only the real AOI edge could differ. The cron instant ignores scheduler delay and run duration; S2 adds 2 hours and does not change the result. A_wo is the DEA STAC index time (`properties.created`), not a documented product-ready time; the asset-path stamp (`wo_path_stamp`) is recorded as a secondary field and was not used for the decision. The sample is 44 scene-tiles over 81 days of one season and covers cloud cover of at most 20 only. The result says nothing about a DEA outage or a processing backlog later in the year.
+
+### ramsar-12 setting confirmation (2026-11-06)
+
+Rows: [docs/research/2026-11-06-ramsar-12-confirm.csv](docs/research/2026-11-06-ramsar-12-confirm.csv), written by [docs/research/2026-11-06-ramsar-12-confirm.py](docs/research/2026-11-06-ramsar-12-confirm.py), summarised in [docs/research/2026-11-06-ramsar-12-confirm.txt](docs/research/2026-11-06-ramsar-12-confirm.txt). The candidates, sample, selection and R1 to R6 are the st-2a78 pre-registration above, committed as 959d15a ("st-2a78: Pre-register the ramsar-12 water setting rule"). The script and its decision tests were committed as ca8742e ("st-2a78: Add the ramsar-12 confirmatory script and its decision tests"), before the measurement. The script ran once live on 2026-11-06, starting 05:08 UTC and finishing 05:09 UTC (about 60 seconds), against Earth Search and DEA. It exited 0 on the first attempt, so there was no rerun, and no script or rule change after the commits.
+
+Sample: 7 scene-tiles on 4 dates (2026-08-23, 2026-08-28, 2026-08-30, 2026-09-07; tiles 50HLJ and 50HLK; 50HLK only on 2026-08-23). Discovery returned 19 scene-tiles in the window. 12 were dropped, all with the reason 'acquired on seen date' (2026-09-12, 2026-09-17, 2026-10-02, 2026-10-12, 2026-10-27 and 2026-10-29, both tiles each). None was dropped for a missing WO item, a differing grid or fewer than 100 mutually clear pixels. Mutually clear pixels per row ranged from 8707 to 9859. This matches the 7 scene-tiles on 4 dates expected in disclosure (b).
+
+Over the 7 confirmatory rows, by threshold (pooled agreement, mean absolute gap, mean signed gap):
+
+- -0.10 (baseline): 0.9495, 1.942 pp, -0.544 pp
+- +0.00: 0.9474, 2.998 pp, -2.926 pp
+- +0.05: 0.9440, 4.073 pp, -4.073 pp
+- +0.10: 0.9365, 5.227 pp, -5.227 pp
+- scl6 (context only): 0.8636, 8.850 pp, -8.850 pp
+
+Selected T: +0.00, the candidate with the lowest mean absolute gap. +0.05 is not the selected value.
+
+- R1, sample: pass. 7 rows on 4 dates, need at least 6 rows on at least 3 dates.
+- R2, clause: fail. Maximum absolute gap 6.465 pp (2026-08-23, 50HLK), need 5.0 or less. Three of the 7 rows exceed 5.0 pp at +0.05 and 1 row exceeds it at +0.00.
+- R3, gain: fail. Pooled agreement 0.9474 minus 0.9495 is -0.0020, need at least 0.005.
+- R4, consistency: fail. Agreement at +0.00 exceeds agreement at -0.10 on 2 of 7 rows (0.2857), need at least 0.6667.
+- R5, no over-correction: fail. Mean signed gap -2.926 pp, need an absolute value of 2.0 or less.
+- R6, floor: pass. agreement_min computes to 0.93 over 19 rows (12 seen plus 7 confirmatory) at +0.00, need at least 0.91. 1 of the 19 rows is below 0.93.
+
+Failed: R2, R3, R4, R5. Not inconclusive.
+
+Outcome: keep-global
+
+The global setting (MNDWI above -0.1, agreement_min 0.91) stays for ramsar-12. No per-polygon override is added. At the global setting the confirmatory rows show the opposite sign to the seen rows: the pipeline is drier than WO on 5 of 7 rows (gap -4.107 to -0.261 pp) and wetter on the 2 rows of 2026-09-07 (+2.466 and +2.426 pp), with a mean signed gap of -0.544 pp. The seen rows were wetter than WO on all 12 (+3.12 to +6.82 pp). The sign of the gap therefore differs between the seen and confirmatory dates, and every raised threshold makes the confirmatory rows drier than WO.
+
+Limits. The confirmatory dates are 2026-08-23 to 2026-09-07, the wetter season, so the dry end of the season rests on the seen rows and is not confirmed. The sample is 7 rows on 4 dates, and the 2 tiles of one date are not independent. DEA S2 WO is unvalidated, so this measures consistency with WO and not accuracy. The 12 seen rows were not used to decide, except as seen-row counts in R6. The result does not say why the gap changes sign between August to early September and September to October; the two samples differ in date, and no test here separates a seasonal effect from a scene effect.
 
 ## Live run findings
 

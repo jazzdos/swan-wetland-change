@@ -1,0 +1,91 @@
+ramsar-12 confirmatory sample (LEARNINGS.md st-2a78 pre-registration)
+
+n is mutually clear pixels, a is pipeline wet and WO dry, b is WO wet and pipeline dry, gap_pp = 100 * (a - b) / n, agreement = 1 - (a + b) / n.
+
+== Parameters ==
+collection=sentinel-2-c1-l2a polygon=ramsar-12
+window=2026-08-15 to 2026-11-05 inclusive, seen dates excluded: 2026-09-12, 2026-09-17, 2026-10-02, 2026-10-12, 2026-10-27, 2026-10-29
+global threshold=-0.10 agreement_min=0.91
+candidates=+0.00, +0.05, +0.10 nominee=+0.05
+min_clear_pixels=100 min_rows=6 min_dates=3 limit_pp=5.0 min_pooled_gain=0.005 min_win_share=0.6667 max_mean_signed_pp=2.0 agreement_margin=0.02 agreement_min_floor=0.91
+
+== Dropped scene-tiles (12) ==
+S2A_T50HLJ_20261029T021516_L2A: acquired on seen date 2026-10-29
+S2A_T50HLK_20261029T021516_L2A: acquired on seen date 2026-10-29
+S2B_T50HLJ_20260912T022111_L2A: acquired on seen date 2026-09-12
+S2B_T50HLJ_20261002T021907_L2A: acquired on seen date 2026-10-02
+S2B_T50HLJ_20261012T021555_L2A: acquired on seen date 2026-10-12
+S2B_T50HLK_20260912T022111_L2A: acquired on seen date 2026-09-12
+S2B_T50HLK_20261002T021907_L2A: acquired on seen date 2026-10-02
+S2B_T50HLK_20261012T021555_L2A: acquired on seen date 2026-10-12
+S2C_T50HLJ_20260917T022244_L2A: acquired on seen date 2026-09-17
+S2C_T50HLJ_20261027T022351_L2A: acquired on seen date 2026-10-27
+S2C_T50HLK_20260917T022244_L2A: acquired on seen date 2026-09-17
+S2C_T50HLK_20261027T022351_L2A: acquired on seen date 2026-10-27
+
+== Confirmatory rows (7) ==
+S2B_T50HLK_20260823T022146_L2A (2026-08-23, 50HLK)
+  -0.10: a=104 b=508 n=9838 gap_pp=-4.107 agreement=0.9378
+  +0.00: a=48 b=684 n=9838 gap_pp=-6.465 agreement=0.9256
+  +0.05: a=28 b=770 n=9838 gap_pp=-7.542 agreement=0.9189
+  +0.10: a=20 b=869 n=9838 gap_pp=-8.630 agreement=0.9096
+  scl6: a=217 b=1177 n=9838 gap_pp=-9.758 agreement=0.8583
+S2C_T50HLJ_20260828T022249_L2A (2026-08-28, 50HLJ)
+  -0.10: a=152 b=318 n=8707 gap_pp=-1.907 agreement=0.9460
+  +0.00: a=77 b=434 n=8707 gap_pp=-4.100 agreement=0.9413
+  +0.05: a=52 b=510 n=8707 gap_pp=-5.260 agreement=0.9355
+  +0.10: a=42 b=607 n=8707 gap_pp=-6.489 agreement=0.9255
+  scl6: a=209 b=1098 n=8707 gap_pp=-10.210 agreement=0.8499
+S2C_T50HLK_20260828T022249_L2A (2026-08-28, 50HLK)
+  -0.10: a=169 b=378 n=9759 gap_pp=-2.142 agreement=0.9439
+  +0.00: a=91 b=514 n=9759 gap_pp=-4.334 agreement=0.9380
+  +0.05: a=62 b=595 n=9759 gap_pp=-5.462 agreement=0.9327
+  +0.10: a=49 b=689 n=9759 gap_pp=-6.558 agreement=0.9244
+  scl6: a=211 b=1162 n=9759 gap_pp=-9.745 agreement=0.8593
+S2A_T50HLJ_20260830T022549_L2A (2026-08-30, 50HLJ)
+  -0.10: a=211 b=234 n=8827 gap_pp=-0.261 agreement=0.9496
+  +0.00: a=103 b=362 n=8827 gap_pp=-2.934 agreement=0.9473
+  +0.05: a=71 b=421 n=8827 gap_pp=-3.965 agreement=0.9443
+  +0.10: a=55 b=514 n=8827 gap_pp=-5.200 agreement=0.9355
+  scl6: a=179 b=1042 n=8827 gap_pp=-9.777 agreement=0.8617
+S2A_T50HLK_20260830T022549_L2A (2026-08-30, 50HLK)
+  -0.10: a=253 b=281 n=9859 gap_pp=-0.284 agreement=0.9458
+  +0.00: a=134 b=420 n=9859 gap_pp=-2.901 agreement=0.9438
+  +0.05: a=84 b=488 n=9859 gap_pp=-4.098 agreement=0.9420
+  +0.10: a=64 b=584 n=9859 gap_pp=-5.274 agreement=0.9343
+  scl6: a=213 b=1158 n=9859 gap_pp=-9.585 agreement=0.8609
+S2C_T50HLJ_20260907T022155_L2A (2026-09-07, 50HLJ)
+  -0.10: a=264 b=49 n=8719 gap_pp=+2.466 agreement=0.9641
+  +0.00: a=134 b=115 n=8719 gap_pp=+0.218 agreement=0.9714
+  +0.05: a=83 b=169 n=8719 gap_pp=-0.986 agreement=0.9711
+  +0.10: a=54 b=241 n=8719 gap_pp=-2.145 agreement=0.9662
+  scl6: a=246 b=828 n=8719 gap_pp=-6.675 agreement=0.8768
+S2C_T50HLK_20260907T022155_L2A (2026-09-07, 50HLK)
+  -0.10: a=293 b=68 n=9276 gap_pp=+2.426 agreement=0.9611
+  +0.00: a=151 b=148 n=9276 gap_pp=+0.032 agreement=0.9678
+  +0.05: a=98 b=209 n=9276 gap_pp=-1.197 agreement=0.9669
+  +0.10: a=64 b=277 n=9276 gap_pp=-2.296 agreement=0.9632
+  scl6: a=273 b=848 n=9276 gap_pp=-6.199 agreement=0.8792
+
+== Per threshold over the confirmatory rows ==
+threshold: rows, pooled agreement, mean abs gap_pp, mean signed gap_pp
+-0.10: rows=7 pooled_agreement=0.9495 mean_abs_gap=1.942 mean_gap=-0.544
++0.00: rows=7 pooled_agreement=0.9474 mean_abs_gap=2.998 mean_gap=-2.926
++0.05: rows=7 pooled_agreement=0.9440 mean_abs_gap=4.073 mean_gap=-4.073
++0.10: rows=7 pooled_agreement=0.9365 mean_abs_gap=5.227 mean_gap=-5.227
+scl6 (context only): rows=7 pooled_agreement=0.8636 mean_abs_gap=8.850 mean_gap=-8.850
+
+== Decision ==
+Selected T: +0.00
+R1 sample: rows=7 dates=4, need rows >= 6 and dates >= 3: pass
+R2 clause: max abs gap_pp=6.465, need <= 5.0: fail
+R3 gain: pooled agreement 0.9474 minus 0.9495 = -0.0020, need >= 0.005: fail
+R4 consistency: rows with higher agreement 2 of 7 (share 0.2857), need >= 0.6667: fail
+R5 no over-correction: mean signed gap_pp=-2.926, need abs <= 2.0: fail
+R6 floor: agreement_min=0.93 over 19 rows (seen plus confirmatory), need >= 0.91: pass
+rows below agreement_min=0.93: 1 of 19 (seen plus confirmatory rows at T)
+T equals +0.05: no
+
+Chosen outcome: keep-global
+Failed: R2, R3, R4, R5
+Inconclusive: no

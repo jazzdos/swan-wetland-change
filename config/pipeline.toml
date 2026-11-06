@@ -25,7 +25,8 @@ min_valid_fraction = 0.8
 
 # Per-polygon overrides: LEARNINGS.md "Per-polygon water calibration" and
 # docs/decisions/0005-per-polygon-water-settings.md. scl6 means SCL class 6
-# and takes no threshold.
+# and takes no threshold. ramsar-12 has no override and stays on the global
+# setting: docs/decisions/0010-ramsar-12-water-setting.md.
 [water.overrides.ramsar-15]
 method = "scl6"
 agreement_min = 0.94
