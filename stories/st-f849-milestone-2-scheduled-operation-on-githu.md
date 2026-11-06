@@ -7,7 +7,7 @@ depends_on: []
 touches: []
 exclusive: false
 created: 2026-10-29
-updated: 2026-10-29
+updated: 2026-11-06
 ---
 ## Description
 
@@ -20,5 +20,7 @@ Conventions come from `.github/workflows/test.yml`: actions pinned to full commi
 ## Implementation Plan
 
 ## Implementation Notes
+
+- 2026-11-06T07:57:23.769Z: Epic closed under the loop with no code of its own: all 24 child stories are done and merged to local main. Human follow-ups, none run by the agent: (1) apply infra/ with tofu or terraform plan and apply against the real AWS account; (2) set the GitHub repository variables the pipeline and verify workflows read; (3) run spikes 5, 6 and 7; (4) run the four-week unattended trial for success criterion 1 and the 60-day scheduled-workflow rule. The description's statement that no GitHub repository exists is out of date: the public repo jazzdos/swan-wetland-change exists with origin/main at 0e551f1. Local main is ahead of origin and has not been pushed. Open question carried from st-58e9: whether public s3:ListBucket on observations/ is wanted. ADR 0010 (ramsar-12 keeps the global threshold) was decided under delegation and awaits Jarrod's review.
 
 ## Questions
