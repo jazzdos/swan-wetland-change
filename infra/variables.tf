@@ -1,5 +1,5 @@
 variable "bucket_name" {
-  description = "Globally unique name of the public-read S3 bucket that holds pipeline outputs and the STAC catalogue."
+  description = "Globally unique name of the private S3 bucket that holds pipeline outputs and the STAC catalogue."
   type        = string
 }
 

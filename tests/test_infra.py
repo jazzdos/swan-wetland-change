@@ -71,50 +71,65 @@ def test_trust_policy_pins_audience_and_main_branch_subject() -> None:
     }
 
 
-def test_public_read_policy_is_getobject_plus_observations_list() -> None:
-    policy = _policy("public_read")
-    statements = _blocks(policy, r"^\s*statement\s*\{")
-    assert len(statements) == 2
-    get_stmts = [s for s in statements if "s3:GetObject" in s]
-    list_stmts = [s for s in statements if "s3:ListBucket" in s]
-    assert len(get_stmts) == 1
-    assert len(list_stmts) == 1
-    get_stmt, list_stmt = get_stmts[0], list_stmts[0]
-
-    assert re.search(r'actions\s*=\s*\["s3:GetObject"\]', get_stmt)
-    assert re.search(
-        r'resources\s*=\s*\["\$\{aws_s3_bucket\.outputs\.arn\}/\*"\]', get_stmt
-    )
-    assert not re.search(r"^\s*condition\s*\{", get_stmt, re.MULTILINE)
-
-    assert re.search(r'actions\s*=\s*\["s3:ListBucket"\]', list_stmt)
-    assert re.search(r"resources\s*=\s*\[aws_s3_bucket\.outputs\.arn\]", list_stmt)
-    conditions = _blocks(list_stmt, r"^\s*condition\s*\{")
-    assert len(conditions) == 1
-    assert re.search(r'test\s*=\s*"StringLike"', conditions[0])
-    assert re.search(r'variable\s*=\s*"s3:prefix"', conditions[0])
-    assert re.search(r'values\s*=\s*\["observations/\*"\]', conditions[0])
-
-    for stmt in statements:
-        principals = _block(stmt, "principals")
-        assert re.search(r'identifiers\s*=\s*\["\*"\]', principals)
-
-    for forbidden in ("s3:PutObject", "s3:DeleteObject", "s3:*"):
-        assert forbidden not in policy
-    # An unconditioned public list would expose ledger/ and runs/.
-    assert policy.count("s3:ListBucket") == 1
+def test_public_access_block_sets_all_four_settings_to_true() -> None:
+    main = _read("main.tf")
+    assert main.count('resource "aws_s3_bucket_public_access_block"') == 1
+    block = _block(main, 'resource "aws_s3_bucket_public_access_block"')
+    for name in (
+        "block_public_acls",
+        "ignore_public_acls",
+        "block_public_policy",
+        "restrict_public_buckets",
+    ):
+        assert re.search(rf"^\s*{name}\s*=\s*true\s*$", block, re.MULTILINE), name
+    assert not re.search(r"=\s*false", block)
 
 
-def test_cors_allows_only_get_and_head_from_any_origin() -> None:
-    cors = _block(_read("main.tf"), 'resource "aws_s3_bucket_cors_configuration"')
-    rules = _blocks(cors, r"^\s*cors_rule\s*\{")
-    assert len(rules) == 1
-    methods = re.search(r"allowed_methods\s*=\s*\[(.*?)\]", rules[0], re.DOTALL)
-    assert methods
-    assert re.findall(r'"([^"]+)"', methods.group(1)) == ["GET", "HEAD"]
-    origins = re.search(r"allowed_origins\s*=\s*\[(.*?)\]", rules[0], re.DOTALL)
-    assert origins
-    assert re.findall(r'"([^"]+)"', origins.group(1)) == ["*"]
+def test_no_public_policy_document_or_bucket_policy() -> None:
+    main = _read("main.tf")
+    names = re.findall(r'data "aws_iam_policy_document" "([^"]+)"', main)
+    assert set(names) == {"pipeline_trust", "pipeline_access"}
+    assert "aws_s3_bucket_policy" not in main
+    assert "public_read" not in main
+    assert "aws_s3_bucket_acl" not in main
+    assert not re.search(r"^\s*acl\s*=", main, re.MULTILINE)
+    principals = _blocks(main, r"^\s*principals\s*\{")
+    assert principals
+    for block in principals:
+        assert re.search(r'type\s*=\s*"Federated"', block), block
+        assert '"*"' not in block
+    assert not re.search(r'identifiers\s*=\s*\["\*"\]', main)
+    assert "PublicRead" not in main
+    assert "PublicList" not in main
+    # The only S3 read actions in the module belong to the pipeline role.
+    access = _policy("pipeline_access")
+    assert "s3:ListBucket" in access
+    assert "s3:GetObject" in access
+    assert main.count("s3:ListBucket") == 1
+    assert main.count("s3:GetObject") == 1
+
+
+def test_no_cors_configuration() -> None:
+    main = _read("main.tf")
+    assert "aws_s3_bucket_cors_configuration" not in main
+    assert "cors_rule" not in main
+    assert "allowed_origins" not in main
+
+
+def test_infra_text_describes_a_private_bucket() -> None:
+    for name in ("variables.tf", "outputs.tf"):
+        assert "public" not in _read(name).lower(), name
+    readme = _read("README.md").lower()
+    for forbidden in (
+        "public-read",
+        "public bucket",
+        "cors",
+        "stac-browser",
+        "anonymous caller",
+        "intentionally public",
+    ):
+        assert forbidden not in readme, forbidden
+    assert "private" in readme
 
 
 def test_oidc_provider_url_and_client_id() -> None:
