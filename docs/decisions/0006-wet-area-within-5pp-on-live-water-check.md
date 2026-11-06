@@ -3,6 +3,11 @@
 Status: accepted, 2026-11-05. Amends the Water extent, live row of the
 design; does not change the agreement floors of 0005.
 
+The exit-code consequences below are amended by 0008: a check that fails
+on wet area alone is a warning and does not change the exit code; the run
+fails on wet area when the gap pooled over every scored live water check
+in the run exceeds 5.0 pp.
+
 ## Context
 
 The design (`docs/plans/2026-10-29-swan-wetland-change-design.md`, line 226)

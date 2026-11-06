@@ -305,9 +305,13 @@ def verify(
 
     Exits 3 when a check failed, 4 when nothing was scored, 5 when the run
     manifest cannot be read, and 6 when a reference check could not run
-    because its source raised an error.
+    because its source raised an error. A live water check that passes
+    agreement and fails only the wet area clause is reported as warn and does
+    not change the exit code; the pooled wet area check still can
+    (docs/decisions/0008-exit-code-for-live-water-check-failures.md).
     """
     from wetland_change.manifest import manifest_path
+    from wetland_change.verify.checks import check_note
     from wetland_change.verify.run import (
         ManifestReadError,
         latest_run_id,
@@ -335,12 +339,28 @@ def verify(
         typer.echo(str(exc), err=True)
         raise typer.Exit(code=5) from exc
     checks = verify_run(cfg, store, target, polygons=polygons)
+    n_warned = 0
     for check in checks:
-        status = (
-            "skip" if check.passed is None else ("pass" if check.passed else "FAIL")
+        if check.passed is None:
+            status = "skip"
+        elif check.wet_area_only_failure:
+            status = "warn"
+            n_warned += 1
+        else:
+            status = "pass" if check.passed else "FAIL"
+        fields = [status, check.name, str(check.measured), check.reference]
+        note = check_note(check)
+        if note:
+            fields.append(note)
+        typer.echo("\t".join(fields))
+    if n_warned:
+        typer.echo(
+            f"{n_warned} live water checks failed on wet area alone for run "
+            f"{target}; exit code unchanged "
+            "(docs/decisions/0008-exit-code-for-live-water-check-failures.md)",
+            err=True,
         )
-        typer.echo(f"{status}\t{check.name}\t{check.measured}\t{check.reference}")
-    if any(check.passed is False for check in checks):
+    if any(check.blocking for check in checks):
         raise typer.Exit(code=3)
     n_errored = sum(check.errored for check in checks)
     if n_errored:

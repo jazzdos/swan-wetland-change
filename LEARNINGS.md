@@ -64,6 +64,41 @@ Definitions. Sample: every polygon in the Ramsar AOI at its configured setting, 
 
 Decision rule. Both hold: implement the 5 pp clause as part of `Check.passed`. Either fails: do not add it as a hard gate at 5 pp, and park the story with the measured rates, because a clause that fails often would turn verify red the way st-b602's Spearman check does. The result also records, per scene, the share with at least one failing polygon, with and without the clause.
 
+## Pre-registered hypotheses (st-7047, 2026-11-06)
+
+Recorded before any measurement for this story. Part A fixes an exit rule for wet-area failures and Part B fixes the hypotheses for the ramsar-12 wet-area gap. Disclosure: the per-date counts were readable in the committed `docs/research/2026-11-05-wet-area-gap.csv` when the Part A rule was written, and the st-9aff section 'Wet area clause (2026-11-05)' already gives 2 failing dates for agreement alone and 6 for agreement or clause, which are the counts for K2 and K1 below. The Part A rule is a policy choice recorded before the script runs, not a blind test. It is implemented in a research script and recorded in ADR 0008. No raster is read for Part A.
+
+### Part A, exit rule
+
+Context. ADR 0006 put the clause (absolute wet-area gap of 5.0 pp or less) into `Check.passed` for `water_vs_dea_s2_wo` and left the exit logic of `verify` unchanged, so `verify` exits 3 if any check fails. On the 6 dates with every polygon measured in `docs/research/2026-11-05-wet-area-gap.csv`, dates with a failing row go from 2 (agreement alone) to 6 (agreement or clause), per the st-9aff section 'Wet area clause (2026-11-05)'.
+
+Definitions. Sample: the rows of `docs/research/2026-11-05-wet-area-gap.csv` with n_mutually_clear at or above 100 (253 rows, the same filter as verify's min_clear_pixels of 100). No new raster reads. Measured dates: the 6 newest pass_date values in that file (2026-09-12 to 2026-10-29), the dates with every polygon measured. The other 6 dates hold ramsar-28 only and are listed but not counted. A row fails agreement when passes_agreement is False. A row fails the clause when abs(gap_pp) is above 5.0. A date fails under a candidate rule when `verify` would exit 3 for a run holding every scene of that date.
+
+Candidates.
+
+- K1. Any single failing check fails the run (ADR 0006 as it stands). A date fails if any row fails agreement or the clause.
+- K2. Agreement alone fails the run. A row that passes agreement and fails only the clause is advisory: shown as a warning with its gap, exit code unchanged. A date fails if any row fails agreement.
+- K3. As K2 for agreement. A wet-area failure fails the run only when some polygon fails the clause on every one of its scored scene rows in that date (persistent for the polygon). A date fails if any row fails agreement or some polygon meets that condition.
+- K4. As K2 for agreement. A wet-area failure fails the run only when the wet-share gap pooled over every row of the date exceeds 5.0 pp in absolute value. The pooled gap is 100 * (sum of pipeline wet counts - sum of WO wet counts) / sum of n_mutually_clear, with each count recovered as round(share * n). A date fails if any row fails agreement or the pooled gap breaks the limit.
+
+Decision rule. Let B be the number of measured dates that fail under K2 (agreement alone). A candidate is admissible if the number of measured dates it fails exceeds B by at most 1. Choose the admissible candidate that fails the most measured dates. Ties go to the candidate whose failing condition includes the other's for every possible run: K3 and K4 each include K2 (they fail every run K2 fails, and possibly more), and K1 includes K2, K3 and K4. If neither of two tied candidates includes the other, the one listed first (K1, K2, K3, K4) wins. On this data K2 and K4 are expected to tie, so the expected choice is K4, but the script decides. Reason: when two rules fail the same measured dates, keep the one under which the wet area clause can still fail a run, so a run-wide wet bias against WO is not reduced to warnings.
+
+The result records, for the chosen rule and for each candidate, the share of the 6 measured dates that fail, plus the share of rows that fail the clause alone. Whichever candidate wins, the markdown report and the CLI line must show the wet-area gap for a check that fails on wet area alone. That is an acceptance criterion, not a hypothesis.
+
+### Part B, ramsar-12 gap
+
+Context. ramsar-12 (Peel-Yalgorup System, about 100.7 ha, global setting MNDWI above -0.1, agreement_min 0.91) is 5 of the 9 rows that fail only the clause. The pipeline is wetter than WO on all 12 of its rows (6 dates, tiles 50HLJ and 50HLK), by 3.12 to 6.82 pp. The gap rises from 3.1-3.3 pp (2026-09-17) to 5.9-6.8 pp (2026-10-27, 2026-10-29) while pipeline wet share is 0.127 to 0.168 and WO wet share is 0.060 to 0.132.
+
+Sample. The 12 ramsar-12 rows of the CSV, re-read from Earth Search and DEA with the same window, clear mask, inside mask and WO clear rule as `wo_check`. Reproduction check first: the re-read n_mutually_clear must equal the CSV and gap_pp must be within 0.01 pp on all 12 rows. If not, record that and stop. Per row, a is the count of mutually clear pixels the pipeline calls wet and WO calls clear dry, b is the reverse, n is the mutually clear count, and gap = 100 * (a - b) / n.
+
+- G1, threshold. Supported if some MNDWI threshold on the grid -0.10, -0.05, 0.00, 0.05, 0.10, 0.15, 0.20 gives an absolute gap of 5 pp or less on all 12 rows. Not supported otherwise. The result also reports the threshold with the lowest mean absolute gap and the pooled agreement at each grid value.
+- G2, SCL. Supported if scl6 (clear and SCL class 6) gives an absolute gap of 5 pp or less on all 12 rows.
+- G3, edge. The edge ring is the pixels inside the polygon mask within 2 pixels (20 m) of a pixel outside the mask (two 4-neighbour erosions of the inside mask, numpy only). Supported if the ring's share of the a-pixels summed over the 12 rows is at least twice the ring's share of the mutually clear pixels summed over the 12 rows.
+- G4, class. Supported if at least 50 percent of the a-pixels summed over the 12 rows are SCL class 4 or 5 (vegetation or not vegetated). The shares of every SCL class among the a-pixels are reported.
+- G5, history. Over the stored observation rows for ramsar-12 in the read-only backfill (`/Users/jarrodbaker/Documents/swan-wetland-change-data/outputs/observations`), supported if `water_ha_index` exceeds `water_ha_scl` on at least 75 percent of the rows where either is above 0. This tests whether the over-call is specific to the 6 sampled dates.
+
+Reading rule. The cause recorded is every supported hypothesis, stated with its numbers. If none is supported, LEARNINGS.md records that no cause was found and lists what was checked (G1 to G5 with their numbers).
+
 ## Spike results
 
 ### S1 Forrestdale seam (2026-10-29)
@@ -317,6 +352,45 @@ Not pre-registered, found after the rule was applied:
 - ramsar-12 is 5 of the 9 rows that fail only the clause. The pipeline is wetter than WO on both tiles on all 6 dates, by 3.12 to 4.83 pp through 2026-10-02, 4.86 and 5.38 pp on 2026-10-12, and 5.90 to 6.82 pp on 2026-10-27 and 2026-10-29. The cause was not investigated.
 - 124 of the 253 rows are dry in both sources and pass the clause trivially. Of the 104 rows that pass agreement with at least 1 percent wet in either source, 95 are within 5 pp, rate 0.9135.
 - The clause can bind on 30 of the 251 rows that pass agreement, those with 1 minus agreement above 5 pp. 9 of the 30 fail it.
+
+### Exit rule for the live water check (2026-11-06)
+
+Rows: [docs/research/2026-11-06-exit-rule-shares.csv](docs/research/2026-11-06-exit-rule-shares.csv), written by [docs/research/2026-11-06-exit-rule-shares.py](docs/research/2026-11-06-exit-rule-shares.py), summarised in [docs/research/2026-11-06-exit-rule-shares.txt](docs/research/2026-11-06-exit-rule-shares.txt). Decision: [docs/decisions/0008-exit-code-for-live-water-check-failures.md](docs/decisions/0008-exit-code-for-live-water-check-failures.md). Input is `docs/research/2026-11-05-wet-area-gap.csv` (sha256 8eda9a0d4d304ad96fcda3f82a66ca52d5a0022d5b73a7ae7e3c4f9006b6506c), 253 rows with at least 100 mutually clear pixels; 2 rows under 100 are left out. No raster was read. The pre-registered rule is the st-7047 Part A section above, which discloses that the per-date counts for K2 and K1 were already readable when it was written. This is a policy choice recorded before the script ran, not a blind test.
+
+Measured dates, newest first. FAIL means `verify` would exit 3 for a run holding every scene of that date. Pooled gap is in percentage points, positive when the pipeline is wetter than WO.
+
+| pass date | rows | rows failing agreement | rows failing the clause alone | pooled gap (pp) | K1 | K2 | K3 | K4 |
+|---|---|---|---|---|---|---|---|---|
+| 2026-10-29 | 34 | 0 | 2 | 1.142 | FAIL | ok | FAIL | ok |
+| 2026-10-27 | 45 | 0 | 2 | 1.560 | FAIL | ok | FAIL | ok |
+| 2026-10-12 | 45 | 0 | 1 | 1.138 | FAIL | ok | ok | ok |
+| 2026-10-02 | 45 | 0 | 1 | 0.778 | FAIL | ok | ok | ok |
+| 2026-09-17 | 45 | 1 | 1 | 0.434 | FAIL | FAIL | FAIL | FAIL |
+| 2026-09-12 | 29 | 1 | 1 | 1.992 | FAIL | FAIL | FAIL | FAIL |
+
+Share of the 6 measured dates that fail: K1 6 of 6 (1.0000), K2 2 of 6 (0.3333), K3 4 of 6 (0.6667), K4 2 of 6 (0.3333). B, the number of dates failing under K2 (agreement alone), is 2. Admissible set: K2 and K4 (K1 fails 4 more dates than B and K3 fails 2 more, both above the allowed 1). K2 and K4 tie on 2 of 6, and K4's failing condition includes K2's, so the tie goes to K4. Chosen rule: K4. Reason: when two rules fail the same measured dates, keep the one under which the wet area clause can still fail a run, so a run-wide wet bias against WO is not reduced to warnings. Under K4 the 2 failing dates, 2026-09-17 and 2026-09-12, both fail on agreement, and the pooled gap stays below 2.0 pp on every measured date, so the pooled condition fails no measured date.
+
+Rows failing the clause alone, which pass agreement and have an absolute gap above 5.0 pp: 9 of 253 (0.0356). Under the chosen rule these are `warn` rows.
+
+K4's script recovers each wet count as round(share * n) from the CSV, and the code recovers the counts the same way and sums them as integers, so the pooled gap is exact at the 5.0 pp limit.
+
+The sample is 6 dates from one season. The unmeasured dates hold ramsar-28 only (6 dates, 1 to 2 rows each) and are not counted.
+
+### ramsar-12 wet area gap (2026-11-06)
+
+Rows: [docs/research/2026-11-06-ramsar-12-gap.csv](docs/research/2026-11-06-ramsar-12-gap.csv), written by [docs/research/2026-11-06-ramsar-12-gap.py](docs/research/2026-11-06-ramsar-12-gap.py), summarised in [docs/research/2026-11-06-ramsar-12-gap.txt](docs/research/2026-11-06-ramsar-12-gap.txt). The hypotheses G1 to G5 are the st-7047 Part B section above.
+
+Reproduction check: passed. All 12 ramsar-12 rows re-read from Earth Search and DEA match the CSV on n_mutually_clear and on gap_pp (within 0.01 pp). At the global setting (MNDWI above -0.1) the pipeline is wetter than WO on all 12 rows, from +3.12 pp to +6.82 pp, with a pooled a of 5563 and b of 386.
+
+- G1, threshold: supported. Every grid value from -0.05 to +0.15 gives an absolute gap of 5 pp or less on all 12 rows. -0.10 gives 7 of 12 rows within 5 pp (mean absolute gap 4.875 pp) and +0.20 gives 10 of 12 (4.155 pp). The lowest mean absolute gap is at +0.05 (0.512 pp, mean signed gap -0.374 pp). Pooled agreement by threshold: -0.10 0.9437, -0.05 0.9563, +0.00 0.9637, +0.05 0.9632, +0.10 0.9586, +0.15 0.9526, +0.20 0.9471.
+- G2, SCL class 6: not supported. scl6 gives 7 of 12 rows within 5 pp, mean absolute gap 3.964 pp, pooled agreement 0.8998, and the gap is negative (SCL drier than WO) with a minimum of -7.74 pp.
+- G3, edge: supported. The edge ring holds 1555 of the 5563 a-pixels (0.2795) and 10096 of the 105736 mutually clear pixels (0.0955). The ratio is 2.927 against a rule of at least 2.0.
+- G4, SCL class of the a-pixels: supported. Of the 5563 a-pixels, class 4 (vegetation) holds 373 (0.0671) and class 5 (not vegetated) 3356 (0.6033), together 0.6703 against a rule of at least 0.50. Class 6 (water) holds 943 (0.1695) and class 7 (unclassified) 891 (0.1602).
+- G5, stored history: supported. Of 299 stored ramsar-12 rows with water_ha_index or water_ha_scl above 0 (316 rows read, 1147 files), 296 have water_ha_index above water_ha_scl, share 0.9900 against a rule of at least 0.75. The median difference is 8.55 ha. Every calendar year from 2022 to 2026 has a share of at least 0.9524, so the over-call is not specific to the 6 sampled dates.
+
+Cause: the supported hypotheses are G1, G3, G4 and G5. The MNDWI threshold of -0.1 over-calls water against WO on this polygon, and some threshold from -0.05 to +0.15 would bring every sampled row within 5 pp (G1). The extra wet pixels sit disproportionately on the polygon edge (G3) and are mostly vegetation or not-vegetated land in the SCL (G4). The same direction shows in the stored history from 2022 to 2026 (G5).
+
+What remains unknown. The result does not say which source is right. DEA S2 WO is unvalidated, so the gap measures consistency with WO, and G1 shows that a threshold near 0 to +0.05 matches WO, not that it is correct. G1, G3 and G4 are not tested against each other, so the share of the gap each explains is not separated. The sample is 12 rows from 6 dates of one season, and G5 tests only the direction of the index and SCL columns. Changing ramsar-12's water setting is a decision under ADR 0005 and is not made here.
 
 ## Live run findings
 

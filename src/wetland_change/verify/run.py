@@ -60,7 +60,12 @@ from wetland_change.verify.waterbodies import (
     read_observations,
     waterbody_checks,
 )
-from wetland_change.verify.wo import dea_reader, find_wo_href, wo_check
+from wetland_change.verify.wo import (
+    dea_reader,
+    find_wo_href,
+    pooled_wet_area_check,
+    wo_check,
+)
 from wetland_change.windows import PlannedWindow, plan_window
 
 logger = logging.getLogger(__name__)
@@ -408,6 +413,11 @@ def verify_run(
                 store,
             )
         )
+    # One run-level wet area gate over every scored live water check
+    # (docs/decisions/0008-exit-code-for-live-water-check-failures.md).
+    pooled = pooled_wet_area_check(checks)
+    if pooled is not None:
+        checks.append(pooled)
     listed_at = clock()
     if scenes:
         scored = [

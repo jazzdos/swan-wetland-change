@@ -13,6 +13,12 @@ within `WET_AREA_MAX_PP` percentage points of WO's (design line 226). Wet area
 is the wet share of mutually clear pixels for each product. The two shares
 differ by at most 1 - agreement, so the clause is implied by a 0.95 floor but
 binds at the lower per-polygon floors. `Check.measured` stays the agreement.
+
+A result that passes agreement and fails only the wet area clause is advisory
+for `verify`'s exit code: it is reported as `warn` and does not exit 3. A
+pooled run-level check, `water_vs_dea_s2_wo_pooled_wet_area`, gates the wet
+area for the run as a whole, so a backfill run pools across all its dates
+(docs/decisions/0008-exit-code-for-live-water-check-failures.md).
 """
 
 from __future__ import annotations
@@ -39,6 +45,7 @@ WO_WET = 128
 WO_EXCLUDE = 1 | 2 | 4 | 8 | 16 | 32 | 64
 # Largest allowed gap between pipeline and WO wet share, in percentage points.
 WET_AREA_MAX_PP = 5.0
+POOLED_WET_AREA_CHECK = "water_vs_dea_s2_wo_pooled_wet_area"
 _S3 = "s3://dea-public-data/"
 _HTTPS = "https://dea-public-data.s3.ap-southeast-2.amazonaws.com/"
 
@@ -143,6 +150,56 @@ def pooled_agreement(checks: Iterable[Check]) -> tuple[float, int] | None:
     if total == 0:
         return None
     return agreed / total, total
+
+
+def pooled_wet_area_check(checks: Iterable[Check]) -> Check | None:
+    """Pixel-weighted wet area gap over the scored live water checks of a run.
+
+    Contributors are `water_vs_dea_s2_wo` checks that were scored, have mutually
+    clear pixels and carry both wet area shares; errored and skipped checks do
+    not contribute. The gap is the signed percentage-point difference between
+    the pooled pipeline and WO wet shares, positive when the pipeline is wetter.
+    It passes at or within `WET_AREA_MAX_PP`, as the per-row clause does. Wet
+    counts are `round(share * n)` summed as integers, so the limit is exact.
+    Returns None when nothing contributes.
+    """
+    pipeline_sum = 0
+    wo_sum = 0
+    total = 0
+    count = 0
+    reference = ""
+    for check in checks:
+        if check.name != "water_vs_dea_s2_wo" or check.passed is None:
+            continue
+        n = int(check.detail.get("n_mutually_clear", 0))
+        pipeline = check.detail.get("wet_area_pipeline")
+        wo = check.detail.get("wet_area_wo")
+        if n <= 0 or pipeline is None or wo is None:
+            continue
+        # Wet counts are recovered as integers, so the gap is exact at the limit.
+        pipeline_sum += round(pipeline * n)
+        wo_sum += round(wo * n)
+        total += n
+        count += 1
+        reference = reference or check.reference
+    if total == 0:
+        return None
+    gap = 100 * (pipeline_sum - wo_sum) / total
+    return Check(
+        POOLED_WET_AREA_CHECK,
+        passed=bool(abs(gap) <= WET_AREA_MAX_PP),
+        measured=gap,
+        threshold=WET_AREA_MAX_PP,
+        reference=reference,
+        detail={
+            "n_checks": count,
+            "n_mutually_clear": total,
+            "wet_area_pipeline": pipeline_sum / total,
+            "wet_area_wo": wo_sum / total,
+            "wet_area_max_pp": WET_AREA_MAX_PP,
+            "rule": "pooled over every scored live water check in the run, ADR 0008",
+        },
+    )
 
 
 def dea_reader() -> RasterioReader:
