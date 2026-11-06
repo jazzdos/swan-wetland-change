@@ -1,0 +1,36 @@
+DEA WO availability at first processing (st-5f74)
+
+Parameters
+  Earth Search: https://earth-search.aws.element84.com/v1/search, collection sentinel-2-c1-l2a
+  DEA: https://explorer.dea.ga.gov.au/stac/search, collection ga_s2_wo_provisional_3
+  bbox: [115.3, -33.2, 116.0, -31.6]
+  acquired (UTC date): 2026-08-15 to 2026-11-03 inclusive
+  DEA datetime window: 2026-08-15T00:00:00Z/2026-11-04T23:59:59Z
+  eo:cloud_cover <= 20.0, properties.created not null
+  scheduled run: 10:17:00 UTC daily
+  fetched: 120 Earth Search items, 140 DEA items
+  measured at: 2026-11-06T02:09:55.397768Z
+
+Result
+  N (scene-tiles): 44
+  tiles: 50HLJ, 50HLK, 50HMJ, 50HMK, 50JLL, 50JML
+Share available at first processing: 44 of 44
+  S: 1.0000
+  Wilson 95 percent interval: 0.9197 to 1.0000
+  with a WO item at measurement time: 44 of 44 (1.0000)
+  no WO item at all: 0
+  WO item arrived after first processing: 0
+  S2 (T_proc plus 2 hours): 44 of 44 (1.0000)
+  H1 (S >= 0.9): holds
+
+Lag, A_wo minus T_proc in hours (negative means WO was ready before the run)
+  nearest rank over scene-tiles with a WO item
+  min -22.963, p25 -2.824, median -1.942, p75 -1.369, p90 -1.196, max -0.352
+
+By acquisition month
+  month       n  available  no_wo
+  2026-08     9          9      0
+  2026-09    12         12      0
+  2026-10    23         23      0
+
+Chosen outcome: populate

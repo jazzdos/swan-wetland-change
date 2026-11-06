@@ -17,8 +17,9 @@ outputs against independent references. The full design is in
   and nodata with the Scene Classification Layer (SCL), and computes NDWI,
   MNDWI and NDVI.
 - Writes one row per polygon per scene with two water areas (calibrated
-  index and SCL class 6), a column for agreement with DEA Water Observations,
-  index medians,
+  index and SCL class 6), a column for agreement with DEA Water Observations
+  (filled at first processing when DEA holds the item, otherwise null), index
+  medians,
   valid and cloud fractions, and the share of the polygon inside the scene.
 - Flags rows whose water area or NDVI departs from the same polygon's
   same-month baseline by a robust z above 3.
@@ -38,7 +39,7 @@ fractions and z scores are unitless.
 | Reflectance is DN times scale plus offset from the item's `raster:bands` | No hard-coded constant. Scale and offset are checked against `BOA_QUANTIFICATION_VALUE` and `BOA_ADD_OFFSET` in the ESA product XML for every scene before any pixel is read; a mismatch fails the scene, not the run. | `docs/decisions/0001-sentinel-2-collection-1-only.md` |
 | Vector-first zonal statistics | One row per polygon per scene is kilobytes per scene and keeps runs short and incremental. | Design, "Purpose and scope decisions" |
 | Ramsar sites (DBCA-010) as the reporting unit, DEA Waterbodies polygons as the verification unit | DBCA-010 downloads without login under CC BY-SA 4.0. DEA Waterbodies publishes per-lake wet-fraction history to compare against. | `AGENTS.md`, design |
-| Three water columns per row | McFeeters NDWI above 0 found 5,845 water pixels on Thomsons Lake where SCL class 6 found 16,676 and DEA found 16,444. The textbook threshold fails on shallow, vegetated lakes, so the calibrated index, SCL class 6 and the DEA agreement are stored side by side. | `docs/decisions/0002-three-water-columns.md` |
+| Three water columns per row | McFeeters NDWI above 0 found 5,845 water pixels on Thomsons Lake where SCL class 6 found 16,676 and DEA found 16,444. The textbook threshold fails on shallow, vegetated lakes, so the calibrated index, SCL class 6 and the DEA agreement are stored side by side. The agreement is filled at first processing and is null when DEA holds no item then. | `docs/decisions/0002-three-water-columns.md`, `docs/decisions/0009-dea-wo-agreement-populated-at-processing-time.md` |
 | Per-polygon water settings | One global setting (MNDWI above -0.1) failed DEA agreement on three polygons. ramsar-15 uses SCL class 6, ramsar-28 NDWI above -0.15, ramsar-56 MNDWI above 0.05, and every other polygon MNDWI above -0.1, each calibrated against DEA Sentinel-2 Water Observations. | `docs/decisions/0005-per-polygon-water-settings.md` |
 | Ledger is fixed-schema Parquet | stac-geoparquet infers a schema per batch, so ledger files from different days do not union, and failed items have no STAC item. The ledger keeps the full source item as JSON. | `docs/decisions/0003-fixed-schema-ledger.md` |
 | Baseline uses only earlier observations | The score for date D uses only same-polygon, same-month rows from dates before D, so a row never dilutes its own baseline and rescoring is reproducible. | `docs/decisions/0004-baseline-uses-earlier-observations.md` |
@@ -66,7 +67,9 @@ output store, so reruns are safe.
 4. Mask and compute (`mask.py`, `indices.py`). Drop SCL classes 0, 1, 2, 3,
    8, 9 and 10; compute NDWI, MNDWI and NDVI.
 5. Summarise (`stats.py`). Rasterise each polygon and write one observation
-   row.
+   row. The daily run also looks up the scene's DEA Water Observations item
+   (`verify/wo.py`) and stores the agreement per polygon, or null when DEA
+   holds no item, cannot be reached or has no mutually clear pixel.
 6. Publish (`outputs/geoparquet.py`, `ledger.py`, `manifest.py`). GeoParquet
    1.1 under `observations/year=YYYY/tile=<MGRS>/obs_<item_id>.parquet`,
    ledger parts under `ledger/year=YYYY/` (merged into `ledger/compacted/`
@@ -341,11 +344,16 @@ As of this commit:
 - Each `verify` reads every stored observation file (1147 files and about
   236 MB today, growing with each pass) for the Spearman check. S3 read time
   is unmeasured (ADR 0007).
-- The `dea_wo_agreement` observation column is written as null on every row
-  (`src/wetland_change/stats.py`). The DEA agreement per polygon and scene is
-  in the verification report (`water_vs_dea_s2_wo`), not in the observation
-  files. DEA Sentinel-2 Water Observations keeps three months, so that check
-  is only possible for recent passes.
+- The `dea_wo_agreement` observation column is the agreement at first
+  processing (`docs/decisions/0009-dea-wo-agreement-populated-at-processing-time.md`).
+  It is null for rows written before that change, for backfill rows, when
+  DEA holds no Water Observations item at first processing, and when fewer than
+  `verify.min_clear_pixels` pixels are mutually clear (the report's floor). A row whose item
+  arrives later stays null. In the measured sample every one of 44 scene-tiles
+  had the item before the first run, with a smallest margin of 21 minutes, so
+  a late run or a DEA backlog would raise the null share. DEA Sentinel-2 Water
+  Observations keeps three months, so the verification report
+  (`water_vs_dea_s2_wo`) can still score only recent passes.
 - Peel Inlet and Harvey Estuary have no DEA Waterbodies polygon and no water
   history check.
 - Earth Search Collection 1 has no items before 2022-12 for five of six

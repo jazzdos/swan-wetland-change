@@ -42,6 +42,7 @@ from wetland_change.pipeline import (
 from wetland_change.raster.read import RasterioReader
 from wetland_change.stac import PlaceholderBaseUrlError, build_and_write
 from wetland_change.store import OutputStore
+from wetland_change.verify.wo import dea_reader, find_wo_href
 
 app = typer.Typer(add_completion=False, no_args_is_help=True)
 
@@ -152,6 +153,8 @@ def run(
             config_path=config,
             output_root_override=output_root,
             build_catalogue=catalogue,
+            wo_lookup=find_wo_href,
+            wo_reader_factory=dea_reader,
         )
     except PlaceholderBaseUrlError as exc:
         raise typer.BadParameter(str(exc)) from exc

@@ -2,8 +2,9 @@
 
 from __future__ import annotations
 
+import dataclasses
 import logging
-from collections.abc import Collection, Sequence
+from collections.abc import Callable, Collection, Sequence
 from dataclasses import dataclass
 from datetime import UTC, date, datetime, timedelta
 from pathlib import Path
@@ -54,8 +55,14 @@ from wetland_change.outputs.geoparquet import read_observations, write_observati
 from wetland_change.raster.read import RasterReader, read_stack
 from wetland_change.raster.scaling import check_band_scaling, parse_product_metadata
 from wetland_change.stac import build_and_write, ensure_publishable_base_url
-from wetland_change.stats import ObservationRow, summarise
+from wetland_change.stats import ObservationRow, rasterise, summarise
 from wetland_change.store import OutputStore
+from wetland_change.verify.wo import (
+    WoLookup,
+    dea_reader,
+    observation_agreement,
+    resolve_scene_wo,
+)
 from wetland_change.windows import plan_window
 
 logger = logging.getLogger(__name__)
@@ -73,8 +80,19 @@ def process_scene(
     water: WaterConfig,
     operation_epsg: int,
     run_id: str,
+    wo_lookup: WoLookup | None = None,
+    wo_reader_factory: Callable[[], RasterReader] = dea_reader,
+    wo_min_clear_pixels: int = 1,
 ) -> list[ObservationRow]:
-    """Rows for every polygon the scene covers. Raises on any guard failure."""
+    """Rows for every polygon the scene covers. Raises on any guard failure.
+
+    With `wo_lookup`, each row's `dea_wo_agreement` is the agreement with DEA
+    Water Observations when DEA holds a WO item for the scene, computed by
+    `verify.wo` so it equals the verification report's number. A DEA error of
+    any kind is logged and leaves the column null; it never fails the scene.
+    The column is also null when fewer than `wo_min_clear_pixels` pixels are
+    mutually clear, the floor the report applies (`verify.min_clear_pixels`).
+    """
     grid = reader.open_grid(scene.bands["green"].href)
     if grid.epsg != operation_epsg or scene.epsg != operation_epsg:
         raise SceneGridError(
@@ -84,15 +102,40 @@ def process_scene(
     esa = parse_product_metadata(reader.read_text(scene.product_metadata_href))
     for band in scene.bands.values():
         check_band_scaling(band, esa)
+    scene_wo = (
+        resolve_scene_wo(
+            scene,
+            union_bbox_4326(polygons),
+            lookup=wo_lookup,
+            reader_factory=wo_reader_factory,
+        )
+        if wo_lookup is not None
+        else None
+    )
     rows: list[ObservationRow] = []
     for polygon in polygons:
         planned = plan_window(polygon.geometry, grid)
         if planned is None:
             continue
         stack = read_stack(scene, planned, reader)
-        rows.append(
-            summarise(polygon, scene, stack, planned, water=water, run_id=run_id)
-        )
+        row = summarise(polygon, scene, stack, planned, water=water, run_id=run_id)
+        if scene_wo is not None:
+            inside = rasterise(polygon.geometry, stack.transform, stack.shape)
+            row = dataclasses.replace(
+                row,
+                dea_wo_agreement=observation_agreement(
+                    scene,
+                    stack,
+                    planned,
+                    inside,
+                    water=water,
+                    polygon_id=polygon.polygon_id,
+                    wo=scene_wo,
+                    scene_grid=grid,
+                    min_clear_pixels=wo_min_clear_pixels,
+                ),
+            )
+        rows.append(row)
     return rows
 
 
@@ -157,6 +200,8 @@ def _process_one(
     run_id: str,
     now: datetime,
     run_kind: str,
+    wo_lookup: WoLookup | None = None,
+    wo_reader_factory: Callable[[], RasterReader] = dea_reader,
 ) -> tuple[LedgerEntry, str | None]:
     """Process one scene to a ledger entry and the observation file it wrote.
     Any Exception becomes a failed entry."""
@@ -169,6 +214,9 @@ def _process_one(
             water=cfg.water,
             operation_epsg=cfg.aoi.operation_epsg,
             run_id=run_id,
+            wo_lookup=wo_lookup,
+            wo_reader_factory=wo_reader_factory,
+            wo_min_clear_pixels=cfg.verify.min_clear_pixels,
         )
         path = write_observations(rows, store) if rows else None
     except Exception as exc:
@@ -343,6 +391,8 @@ def run_once(
     config_path: Path,
     output_root_override: str | None = None,
     build_catalogue: bool = True,
+    wo_lookup: WoLookup | None = None,
+    wo_reader_factory: Callable[[], RasterReader] = dea_reader,
 ) -> RunManifest:
     """Process everything new since the ledger watermark, or since the initial
     lookback when the ledger has no daily rows. Never aborts on a single scene;
@@ -361,6 +411,9 @@ def run_once(
     Backfill rows are never recovered. Scoring runs after the loop so new
     scenes are still processed and checkpointed when an old date cannot be
     scored.
+    With `wo_lookup`, each observation's `dea_wo_agreement` is filled at
+    processing time from DEA Water Observations (`process_scene`); DEA errors
+    leave it null and never fail a scene.
     `build_catalogue=False` skips the catalogue build. Compaction runs last and
     a failure there is logged, not raised.
     """
@@ -424,6 +477,8 @@ def run_once(
             run_id=run_id,
             now=now,
             run_kind=RUN_KIND_RUN,
+            wo_lookup=wo_lookup,
+            wo_reader_factory=wo_reader_factory,
         )
         manifest.ledger_files += write_ledger(
             [entry], store, run_id=run_id, part=next_part
@@ -586,6 +641,10 @@ def backfill_once(
     interrupted backfill resumes where it stopped. Rows are tagged backfill,
     so the daily watermark ignores them. Failed items under the attempt cap
     are retried on rerun.
+
+    Backfill rows leave `dea_wo_agreement` null: backfill dates are mostly past
+    DEA's three month retention of the provisional WO product, so no lookup is
+    made.
     """
     if start.tzinfo is None or end.tzinfo is None:
         raise ValueError("backfill start and end must be timezone-aware")

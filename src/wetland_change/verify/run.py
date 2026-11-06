@@ -61,6 +61,7 @@ from wetland_change.verify.waterbodies import (
     waterbody_checks,
 )
 from wetland_change.verify.wo import (
+    WoLookup,
     dea_reader,
     find_wo_href,
     pooled_wet_area_check,
@@ -169,7 +170,6 @@ def _guard(name: str, func: Callable[[], list[Check]], **detail: object) -> list
         return [_error_check(name, exc, **detail)]
 
 
-WoLookup = Callable[[SceneItem, tuple[float, float, float, float]], str | None]
 PixelChecker = Callable[[SceneItem, RasterReader, Window], Check]
 NbartLookup = Callable[[SceneItem, tuple[float, float, float, float]], NbartItem | None]
 
