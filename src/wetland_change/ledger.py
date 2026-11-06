@@ -13,10 +13,10 @@ read it as null; a null `run_kind` counts as a daily row.
 Compaction merges many small parts into one file under `ledger/compacted/`
 so a read costs a bounded number of requests. It keeps every row and edits
 none. The compacted file is written and read back (row count checked) before
-any part is deleted, because the bucket is public and unversioned and a
-delete is permanent. A crash between the write and the deletes therefore
-leaves duplicates, never losses, and `read_ledger` drops whole-row
-duplicates whenever a compacted file is listed beside other parts.
+any part is deleted, because the bucket is unversioned and a delete is
+permanent. A crash between the write and the deletes therefore leaves
+duplicates, never losses, and `read_ledger` drops whole-row duplicates
+whenever a compacted file is listed beside other parts.
 """
 
 from __future__ import annotations

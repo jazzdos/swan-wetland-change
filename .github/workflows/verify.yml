@@ -19,7 +19,7 @@
 #
 # Access to the bucket is not read-only. The role can write, and `verify`
 # writes `verification/<run_id>.json` for the run it checks, overwriting the
-# pipeline's copy in the public, unversioned bucket. The design accepts that
+# pipeline's copy in the private, unversioned bucket. The design accepts that
 # write; the catalogue links the file as the run's record. This workflow
 # shares the `pipeline` concurrency group so the write never overlaps a
 # pipeline run.
