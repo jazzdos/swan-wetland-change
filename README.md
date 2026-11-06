@@ -51,7 +51,22 @@ fractions and z scores are unitless.
 
 One Python package (`src/wetland_change`), one CLI (`wetland-change`) and two
 scheduled GitHub Actions workflows. Every run is a function of the ledger and
-output store, so reruns are safe.
+output store. The guarantee is narrower than "reruns are safe" and has four
+parts, each covered by tests on local stores and none yet exercised against
+S3:
+
+- The daily `run` writes a ledger part after each scene, so an interrupted run
+  keeps its finished scenes and the next run resumes after them.
+- A daily run that stops after its ledger rows are written, before scoring or
+  its manifest, is finished by the next daily run, which scores the earlier
+  run's dates and writes its manifest with `recovered_by` set
+  (`tests/test_pipeline.py`, `tests/test_ledger.py`). Backfill rows are never
+  recovered this way; `score` covers them.
+- `run` and `backfill` refuse a run id that already has a manifest or ledger
+  parts in the output root, so a repeated `--now` cannot overwrite an earlier
+  run (`tests/test_cli.py`, `tests/test_backfill.py`).
+- Rerunning the same inputs into an empty output root gives byte-identical
+  files (`tests/test_golden_run.py`).
 
 ### Run stages
 
@@ -76,8 +91,8 @@ output store, so reruns are safe.
    once 25 or more accumulate), and a run manifest under `runs/`.
    A later run finishes any daily run that has ledger rows and no manifest,
    scoring its dates and writing its manifest with `recovered_by` set and its
-   skipped tallies, watermarks, `package_version` and `config_sha256` empty. The daily job does not verify a
-   recovered run; use `verify --run-id`.
+   skipped tallies, watermarks, `package_version` and `config_sha256` empty.
+   The daily job verifies each recovered run by id after it verifies its own.
 7. Change (`change.py`, `outputs/changes.py`). Score the daily aggregate per
    polygon against its month-of-year baseline; rows with absolute robust z
    above 3, valid fraction above 0.8 and at least 5 baseline samples go to
@@ -98,10 +113,12 @@ on later runs; it does not abort the run.
 
 - `.github/workflows/pipeline.yml`: daily at 10:17 UTC and on manual
   dispatch. Fetches the AOI, runs `wetland-change run --no-catalogue`, then
-  `verify` when the run processed scenes, then `build-catalogue` on every day
+  `verify` when the run processed scenes, then `verify --run-id` for each run
+  it recovered, then `build-catalogue` on every day
   that is not cancelled (so the catalogue links the run's report, and reports
   from `verify.yml` or a CLI backfill, even on a day with no processed
-  scenes), and commits the verification report. The commit keeps the
+  scenes), and commits the verification reports of a day that processed scenes
+  or recovered a run. The commit keeps the
   repository active so GitHub does not disable the schedule after 60 days.
 - `.github/workflows/verify.yml`: Sundays at 22:43 UTC and on manual
   dispatch. Runs the live contract tests, `verify` on the latest daily run and
@@ -145,7 +162,7 @@ recorded in `LEARNINGS.md`, and the Collection 1 backfill
 | Reflectance scaling | ESA `product_metadata` XML on each item | `src/wetland_change/raster/scaling.py`, `src/wetland_change/verify/scaling.py` (`reflectance_scaling`); `tests/test_scaling.py`, `tests/test_verify.py` | Implemented and asserted for every scene at run time. Passed 8 of 8 on the first live run. |
 | SCL read and alignment | ESA SCL class percentages in item properties | `src/wetland_change/verify/scl.py` (`scl_share_*`); `tests/test_verify.py` | Implemented at full resolution, tolerance 1 pp. Passed 32 of 32 checks on the first live run. |
 | Index arithmetic | spyndex 0.12; dea-tools 0.4.10 `calculate_indices` | `tests/test_indices.py` (spyndex, standing); `scripts/compare_dea_tools_indices.py` (dea-tools, one-off) | Implemented. The dea-tools comparison passed 6 of 6 at 1e-6 (`LEARNINGS.md`, "dea-tools index comparison"). |
-| Water extent, live | DEA `ga_s2_wo_provisional_3`, same pass and grid | `src/wetland_change/verify/wo.py` (`water_vs_dea_s2_wo`); `tests/test_verify.py` | Implemented for pixel agreement on mutually clear pixels, with per-polygon thresholds (0.91 default, 0.94, 0.92 and 0.95 for the three overrides) instead of the design's 0.95, because the best calibrated agreement was 0.9303 (handoff, ADR 0005). The design's "wet area within 5 pp" clause is implemented as the signed gap between the pipeline and WO wet shares of mutually clear pixels, within 5 pp per pass and per polygon (ADR 0006); it was implied by the design's 0.95 floor and binds at the lowered per-polygon floors. 242 of the 251 rows that pass agreement are within 5 pp, and on the 6 fully measured dates, dates with a failing row go from 2 to 6 (LEARNINGS.md, ADR 0006). The check skips a polygon below `[verify] min_clear_pixels` (default 100) mutually clear pixels, and the skip is a reason skip, not an error. |
+| Water extent, live | DEA `ga_s2_wo_provisional_3`, same pass and grid | `src/wetland_change/verify/wo.py` (`water_vs_dea_s2_wo`); `tests/test_verify.py` | Implemented for pixel agreement on mutually clear pixels, with per-polygon thresholds (0.91 default, 0.94, 0.92 and 0.95 for the three overrides) instead of the design's 0.95, because the best calibrated agreement was 0.9303 (handoff, ADR 0005). The design's "wet area within 5 pp" clause is implemented as the signed gap between the pipeline and WO wet shares of mutually clear pixels, within 5 pp per pass and per polygon (ADR 0006); it was implied by the design's 0.95 floor and binds at the lowered per-polygon floors. 242 of the 251 rows that pass agreement are within 5 pp, and on the 6 fully measured dates, dates with a failing row go from 2 to 6 (LEARNINGS.md, ADR 0006). The exit code follows ADR 0008, not that count: a row that fails only the clause is a warning, and `verify` exits 3 on an agreement failure or when the gap pooled over the run exceeds 5 pp, which is 2 of the 6 measured dates. The check skips a polygon below `[verify] min_clear_pixels` (default 100) mutually clear pixels, and the skip is a reason skip, not an error. |
 | Water extent, history | DEA Waterbodies v3 CSV per lake; DEA `ga_ls_wo_3` per scene | `src/wetland_change/verify/waterbodies.py` (`water_vs_dea_waterbodies`, `water_spearman_vs_dea_waterbodies`); `tests/test_verify_waterbodies.py` | Implemented against the Waterbodies CSV with a 10 pp per-pass tolerance (spike S9). The `ga_ls_wo_3` per-scene comparison is not implemented as a standing check: S9 found Waterbodies v3 within 0.2 pp of `ga_ls_wo_3` on all 129 passes, consistent with Waterbodies being derived from it, and used it once to set the tolerance (`LEARNINGS.md`, "S9 historical tolerance"). The per-lake Spearman is scored over every stored observation up to the newest scene of the verified run, so it reaches its 10 pair minimum on a daily run; per-pass checks cover the verified run only. `spearman_min` is 0.83, calibrated on the whole backfill (ADR 0007, `docs/decisions/0007-spearman-threshold-from-whole-history.md`). The backfill rho is 0.855 to 0.893 on four lakes, below the design's 0.9, so H4 is not supported. |
 | NDVI | DEA NBART, same acquisition | `src/wetland_change/verify/ndvi.py` (`ndvi_vs_dea_nbart`, `ndvi_correlation_vs_dea_nbart`); `tests/test_verify_ndvi.py` | Implemented. One live check on 2026-10-30 passed with an absolute difference of about 0.003 against a 0.05 tolerance (`LEARNINGS.md`, "DEA NBART scale"). The check skips a polygon below `[verify] min_clear_pixels` (default 100) compared pixels, and the skip is a reason skip, not an error. |
 | GeoParquet output | geoparquet-validator; DuckDB and GDAL as readers | `src/wetland_change/outputs/geoparquet.py`; `tests/test_geoparquet.py`, `tests/test_pipeline.py`, `tests/test_readme.py` | Implemented. The validator, DuckDB, pyarrow and geopandas readers run in the default suite and agree on row counts and bounds (`tests/test_geoparquet.py`). GDAL is not exercised because the pinned pyogrio wheel has no Parquet driver. |
@@ -314,6 +331,13 @@ variables, Actions, Variables). `.github/workflows/pipeline.yml` and
 
 The role trusts only runs on `main`, so both workflows work only from `main`.
 
+Two more steps come before the first scheduled run, both in `infra/README.md`.
+`catalogue.base_url` in `config/pipeline.toml` still holds the `.invalid`
+placeholder and must be set to the `bucket_url` output; `run`, `backfill`,
+`score` and `build-catalogue` refuse an `s3://` output root until it is. The
+output root should then be seeded from the backfill, because an empty root
+leaves the first daily run bounded only by `stac.initial_lookback_days`.
+
 ## Limitations
 
 As of this commit:
@@ -357,4 +381,47 @@ As of this commit:
 - Peel Inlet and Harvey Estuary have no DEA Waterbodies polygon and no water
   history check.
 - Earth Search Collection 1 has no items before 2022-12 for five of six
-  tiles, which limits the baselines.
+  tiles, which limits the baselines. Spike S4 counted Copernicus Data Space
+  items from 2022-01-01 (1194, `LEARNINGS.md`, "S4 backfill count"), but it is
+  not a backfill source, and reading its products to fill the 2022 gap would
+  need a Copernicus account.
+- `catalogue.base_url` is the `.invalid` placeholder and the output root has
+  not been seeded from the backfill (st-30ad, st-5241; `infra/README.md`).
+  Neither step can run before the bucket exists.
+- Nothing has run against S3. The OIDC session length (st-a919), the bucket
+  lifecycle rule and content types (st-4fa1), the anonymous list statement
+  (st-58e9) and ledger compaction, which deletes ledger parts from an
+  unversioned public bucket (st-b101), are tested on local stores and stub
+  servers only. The three runner and bucket spikes of the design (5, runner
+  dry run; 6, catalogue in stac-browser; 7, DuckDB over S3) have not been run,
+  so seconds per scene on a GitHub runner and per-request S3 latency are
+  unmeasured. The local figure is 139 to 152 s per scene
+  (`docs/research/2026-11-03-backfill-hypotheses.md`) against a 120 minute job
+  timeout.
+- Deleting an object from S3 re-creates its parent directory marker, because
+  pyarrow's `delete_file` does (st-c667, open). Ledger compaction and
+  `pipeline.py` call it. Writes no longer create markers (st-2cc2).
+- ramsar-12 (Peel-Yalgorup, 100.7 ha) reads wetter than DEA Water
+  Observations on every sampled row at the global MNDWI -0.1 setting, and it
+  accounts for 5 of the 9 rows that fail only the 5 pp clause. Which source is
+  right is unknown. No per-polygon setting is chosen for it (st-2a78, open;
+  `LEARNINGS.md`, "ramsar-12 wet area gap").
+- Observation and change files carry the geometry CRS only. The operation CRS
+  (EPSG:32750), units and the clear-pixel and water rules are in this README
+  and `config/pipeline.toml`, not in the files (st-2bfd, open). The run
+  manifest records no Python, GDAL, PROJ or package versions and no
+  `uv.lock` hash (st-2bc1, open).
+- The repository has no licence file, so the code is not licensed for reuse
+  (st-aa46, open; the choice of licence is Jarrod's). The STAC collection
+  declares CC-BY-SA-4.0 for the data only.
+- The calibration and tolerance scripts behind the thresholds are untracked,
+  and two committed research scripts no longer reproduce their committed
+  outputs at the branch head (st-e6f1, open). Smaller reproducibility items
+  are st-73ad (pixel area and vector engine), st-5acd (missing
+  `data/SOURCES.md` rows) and st-eb5a (the DEA Waterbodies checksum covers
+  fields that DEA refreshes).
+
+The review that found most of the items above is
+`docs/research/2026-11-04-milestone-2-review.md`. The state after fixing it,
+and the audit of 2026-11-06, are in
+`docs/handoffs/2026-11-06-milestone-2.md`.
