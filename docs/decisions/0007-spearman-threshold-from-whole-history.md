@@ -75,10 +75,14 @@ Files, with sha256:
 - `docs/research/2026-11-06-spearman-calibration.py` sha256 `2fc319de9b325b614ab66768d3cb2073133abe8ccf8daa759db4341d405c185e`
 - `docs/research/2026-11-06-spearman-calibration.csv` sha256 `058314ac22d6309a0d8e9c2a98d5fdd2fb6fbda04280b71eeff726f22d79825e`
 - `docs/research/2026-11-06-spearman-calibration.txt` sha256 `027cec5cfc862eddfd0f3b784ea6154860a593a28260014b1984150399b5e6d2`
-- `docs/research/2026-11-05-spearman-windows.py` sha256 `5e01fb0e1f5d43b2a6c962428912ff1fb4d6938b4770dfe65b92c99e91f2fbe7`
+- `docs/research/2026-11-05-spearman-windows.py` sha256 `c1800c1c4c02fb1e8abe05b5306b2bd89b8b97612ce7a6a66781b4e20a2b287f`
 - `docs/research/2026-11-05-spearman-windows.csv` sha256 `123f00c8a265b0ceeb9f292b4a98127fe045a5316a44f79872dd75cb1f2a13e0`
 
 `tests/test_config.py` checks the values above against the committed files.
+
+The sha256 for `2026-11-05-spearman-windows.py` was updated after this record
+was written: a frozen-at-46e0e20 header comment was added to the script. The
+code and the CSV record are unchanged.
 
 ## Limits
 

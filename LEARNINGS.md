@@ -309,8 +309,9 @@ against 0.9795 at 0.05).
 
 Per-pass rows for every polygon, pass, method and threshold, including the
 seam_overlap subset, are in docs/research/2026-10-29-polygon-calibration.csv.
-The scripts that produced it (scratch/spikes/polygon_calibrate.py and its log)
-are untracked in scratch/spikes/.
+The script that produced it is docs/research/2026-10-29-polygon-calibration.py
+(it takes --start and --end). The original DEA WO provisional window has
+passed, so the CSV is the record.
 
 Correction (2026-10-30). The unconfirmed inference above about ramsar-15 is
 wrong: its missed water is not near-threshold water. On the live re-run of
@@ -371,8 +372,7 @@ different wet definition. The Milestone 2 history check still has to validate
 10 pp for the pipeline against Waterbodies.
 
 Per-pass rows are in docs/research/2026-10-30-waterbodies-tolerance.csv. The
-script that produced it (scratch/spikes/s9_tolerance.py) is untracked in
-scratch/spikes/.
+script that produced it is docs/research/2026-10-30-waterbodies-tolerance.py.
 
 ### Backfill hypotheses (2026-11-03)
 

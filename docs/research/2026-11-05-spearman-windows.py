@@ -1,5 +1,9 @@
 """Read-only: per-lake Spearman at history_days for run ends across the backfill.
 
+Frozen at commit 46e0e20. `_history_paths` (src/wetland_change/verify/run.py) no
+longer takes `history_days`, so this script does not run on the branch head. It is
+not ported. 2026-11-05-spearman-windows.csv is the record.
+
 Calls only read paths of OutputStore. Never calls verify_run, which writes a report.
 """
 import csv
