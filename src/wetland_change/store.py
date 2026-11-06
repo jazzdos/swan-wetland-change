@@ -5,6 +5,10 @@ A plain path becomes a `file://` URI; `s3://bucket/prefix` resolves to
 
 Writes carry a Content-Type: by key suffix (`CONTENT_TYPES`) or the caller's
 `content_type`. S3 stores it as the object's content type; local files ignore it.
+
+Only a local root creates parent directories on write. Object stores have no
+directories, and `create_dir` on S3 PUTs zero-byte `application/x-directory`
+marker keys for the root prefix and every parent.
 """
 
 from __future__ import annotations
@@ -31,6 +35,8 @@ class OutputStore:
         self.uri = root
         self.fs, root_path = pafs.FileSystem.from_uri(root)
         self.root: str = root_path
+        # Decided here, before any caller wraps `fs`.
+        self._creates_parents: bool = isinstance(self.fs, pafs.LocalFileSystem)
 
     def _full(self, relpath: str) -> str:
         if not relpath:
@@ -41,7 +47,10 @@ class OutputStore:
         self, relpath: str, data: bytes, *, content_type: str | None = None
     ) -> str:
         full = self._full(relpath)
-        self.fs.create_dir(full.rsplit("/", 1)[0], recursive=True)
+        if self._creates_parents:
+            # Object stores have no directories; S3 create_dir PUTs x-directory
+            # marker keys.
+            self.fs.create_dir(full.rsplit("/", 1)[0], recursive=True)
         ctype = content_type or _content_type_for(relpath)
         metadata = {"Content-Type": ctype} if ctype else None
         with self.fs.open_output_stream(full, metadata=metadata) as stream:
@@ -61,6 +70,8 @@ class OutputStore:
         """Delete the file if present; returns whether it existed."""
         if not self.exists(relpath):
             return False
+        # pyarrow's S3 delete_file re-creates the parent directory marker after
+        # deleting; not handled here (st-c667).
         self.fs.delete_file(self._full(relpath))
         return True
 
