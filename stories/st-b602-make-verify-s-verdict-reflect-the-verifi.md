@@ -5,10 +5,10 @@ type: bug
 epic: st-f849
 priority: P2
 depends_on: []
-touches: [src/wetland_change/cli.py, src/wetland_change/config.py, src/wetland_change/verify/checks.py, src/wetland_change/verify/run.py, src/wetland_change/verify/wo.py, src/wetland_change/verify/ndvi.py, tests/test_verify.py]
+touches: [LEARNINGS.md, README.md, config/pipeline.toml, docs/decisions/0007-spearman-threshold-from-whole-history.md, docs/research/2026-11-05-spearman-windows.csv, docs/research/2026-11-05-spearman-windows.py, docs/research/2026-11-06-spearman-calibration.csv, docs/research/2026-11-06-spearman-calibration.py, docs/research/2026-11-06-spearman-calibration.txt, src/wetland_change/cli.py, src/wetland_change/config.py, src/wetland_change/verify/checks.py, src/wetland_change/verify/matrix.py, src/wetland_change/verify/ndvi.py, src/wetland_change/verify/run.py, src/wetland_change/verify/waterbodies.py, src/wetland_change/verify/wo.py, tests/test_config.py, tests/test_verify.py, tests/test_verify_matrix.py, tests/test_verify_ndvi.py, tests/test_verify_waterbodies.py]
 exclusive: false
 created: 2026-11-05
-updated: 2026-11-05
+updated: 2026-11-06
 parked_complexity: routine
 ---
 
@@ -25,7 +25,54 @@ verify exits 3 only on a False check and 4 only when nothing scored (src/wetland
 
 ## Implementation Plan
 
-## Verified against the worktree (/Users/jarrodbaker/Documents/swan-wetland-change/.worktrees/st-b602, HEAD a365acb)
+## Plan: Spearman over the whole stored history, calibrated spearman_min (decision C)
+
+Verified in /Users/jarrodbaker/Documents/swan-wetland-change/.worktrees/st-b602 at 61adb34. Plan covers only the delta. Commit nothing; the orchestrator commits.
+
+Facts that shape the plan:
+- `src/wetland_change/verify/run.py::_history_paths(ledger, *, newest, history_days)` already filters the ledger to succeeded entries with an `observation_path`, `datetime` in [newest - history_days, newest]. `_waterbodies` (run.py ~line 458-490) already does one ledger read (passed in), one `store.list_files("observations")`, and one `read_observations`. Only the lower bound and the `history_days` argument go away.
+- `history_days` appears in: `src/wetland_change/config.py:142`, `config/pipeline.toml:65`, `verify/run.py` (def at 69, call at 477), `verify/waterbodies.py` (module doc line 43, detail key line 338), `tests/test_config.py:235-245`, `tests/test_verify_waterbodies.py:437,449`, `tests/test_verify.py:1607,1632,1635`, README.md lines 146 and 225, and the gitignored `scratch/st-b602/measure_rho.py`.
+- Choice on `history_days`: REMOVE it. No caller or test needs a cap beyond the ones listed above, all of which this plan edits. An optional cap defaulting to unbounded would add a config surface with no user. The upper bound (newest scene of the verified run) stays so re-verifying an older run is repeatable. If the config model forbids extra keys, the `history_days` line must also leave pipeline.toml (it does in step 1).
+- Column projection: `read_observations` already reads only the 8 `OBSERVATION_COLUMNS`, but `store.read_bytes` fetches whole objects, so projection cannot cut transferred bytes. Not a small change; record it as a limit in the ADR. No code change.
+- The LEARNINGS H4 figures (0.858/0.870/0.897/0.861) were produced by the backfill report committed 2026-11-03 18:45 (commit fc9f4ba), four minutes before commit 00e8fb0 (18:49) added the "one row per tile and UTC date" dedupe in `verify/waterbodies.py::_paired_passes`. The report itself says the datetime-only dedupe "does not fire", so the old run counted every row, 93 to 99 pairs per lake. The likely cause of 0.855/0.861/0.893/0.857 is that dedupe (fewer pairs), plus the old run's 2022-12-01 start bound and a DEA series fetched at a different time. Task 2 measures this rather than assuming it.
+
+### Step 1 (batch 1): whole-history window
+1. `src/wetland_change/config.py`: delete `history_days` and its comment from `WaterbodiesVerifyConfig`. `config/pipeline.toml`: delete the `history_days` line and its comment (keep a one-line comment saying the Spearman check scores every stored pass up to the newest scene of the verified run).
+2. `verify/run.py`: `_history_paths(ledger, *, newest)` keeps only the `datetime <= newest` bound; update the docstring; drop `timedelta` import if unused. `_waterbodies` stops passing `history_days`. Keep the single ledger read and single `list_files("observations")`.
+3. `verify/waterbodies.py`: update the module docstring (whole stored history up to the newest scene, no window). In `_lake_checks` drop `rho.detail["history_days"]`; keep `n_run_pairs`.
+4. Tests:
+   - `tests/test_config.py`: delete the two history_days tests; add a test that `WaterbodiesVerifyConfig` has no `history_days` field and that the repo config loads (proves removal is consistent).
+   - `tests/test_verify_waterbodies.py`: remove the `history_days` assertions (lines 437, 449).
+   - `tests/test_verify.py::test_verify_run_scores_spearman_over_stored_history`: rewrite so a pass 400 days before the run's newest scene IS included (n_pairs counts it) and a pass 3 days after the newest scene is excluded; assert no `history_days` key. This proves the AC for the unbounded lower bound and the kept upper bound.
+   - Add a unit test of `_history_paths` with a small ledger table: includes an entry 400 days older, excludes one dated after `newest`, excludes failed entries and entries with null `observation_path`.
+5. README.md: replace the two `history_days` sentences (lines 146, 225) with "every stored observation up to the newest scene of the verified run" (Task 3 adds the threshold and ADR reference).
+
+### Step 2 (batch 2): calibration, read only
+`docs/research/2026-11-06-spearman-calibration.py` and `.csv` (promoted from `scratch/st-b602/measure_rho.py`, which is gitignored and may be reused).
+- Opens `OutputStore("/Users/jarrodbaker/Documents/swan-wetland-change-data/outputs")` and the AOI file under `.../aoi`; uses only `read_ledger`, `_history_paths(ledger, newest=<max ledger datetime>)`, `store.list_files`, `read_observations`, `waterbody_checks(..., history=...)` and `fetch_series` (anonymous public DEA read). Never calls `verify_run`, never writes under the data directory; the CSV path is a CLI argument defaulting to `docs/research/2026-11-06-spearman-calibration.csv`.
+- CSV rows: lake, uid, rho (full precision), n_pairs, n_unpaired, window (first/last datetime), plus a second method column set for the reconciliation: `legacy` (datetime-only dedupe, start 2022-12-01, reimplemented in the script from the pre-00e8fb0 `_paired_passes` via `git show 00e8fb0^:src/wetland_change/verify/waterbodies.py`) with its rho and n_pairs. Also records file count and total bytes read.
+- Prints the proposed `spearman_min = floor((min rho - 0.02) * 100) / 100` (ADR 0005 rule: lowest minus 0.02, rounded down to two decimals).
+- Reconciliation: report per lake gate-method vs legacy-method rho and n_pairs, and the number of rows dropped by the tile-and-date dedupe, the 2022-12-01 start bound, and the DEA series difference (compare fetched series date range/length against what the LEARNINGS run could have used, stating it as unknown if not measurable).
+
+### Step 3 (batch 3): threshold, ADR, LEARNINGS, README, tests
+- `config/pipeline.toml` and `config.py` default: `spearman_min` = the calibrated value (0.83 if the lowest recomputed rho is 0.855; otherwise recomputed by the rule).
+- `docs/decisions/0007-spearman-threshold-from-whole-history.md`: Context, Decision, Evidence, Limits, Consequences, in the style of 0005. Evidence: per-lake rho and n pairs, data window, file count and bytes read, sha256 of script and CSV (`shasum -a 256`, computed after the files are final). Limits: calibrated on the backfill it then gates, so not an independent test; H4 is not supported (0.9 not met); per-verify read cost (1147 files, 226 MB today, growing each pass); S3 read time unmeasured because AWS calls are out of scope (epic st-f849), against verify.yml's 20 minute verify step timeout; column projection cannot cut bytes because whole objects are fetched.
+- `LEARNINGS.md`: new section `### Spearman threshold calibration (2026-11-06)` after the existing ones (do not edit existing sections; H4 stays "not supported"), recording the calibration, link to ADR 0007 and the 0.855 vs 0.858 reconciliation with both pair counts.
+- README.md: "Water extent, history" row and `verify` bullet say whole stored history up to the newest scene, `spearman_min` of the calibrated value with ADR 0007 reference, and that the backfill rho was below 0.9 so H4 is unsupported. Add the ADR to any README/ADR index if one exists.
+- Tests: `tests/test_config.py::test_repo_config_waterbodies_verify_values` asserts the new `spearman_min` for both the repo config and the model default; add a test that ADR 0007 states the same value (parse the Decision line) and that its recorded sha256 matches the committed script and CSV; `tests/test_readme.py` must pass.
+
+Final gates (every batch, in order, judged by exit code): `uv run ruff check src tests scripts`, `uv run ruff format --check src tests scripts`, `uv run mypy src scripts`, `uv run pytest -q`, then `GITHUB_ACTIONS=true uv run pytest -q`. No live tests, no AWS, nothing written under /Users/jarrodbaker/Documents/swan-wetland-change-data, never edit stories/** or .agents/shousper-stories/local/**, never clear pytest addopts (use `-o addopts="-m 'not live'"` only for a count).
+
+## Orchestrator amendments (2026-11-06, settled before build)
+
+1. Every task: commit nothing (the orchestrator commits after the review gate); no AWS, no terraform, no live tests; nothing written under the backfill data directory; pytest judged by exit code with addopts kept; GITHUB_ACTIONS=true run as well.
+2. Batch 2 appends a pre-registration to LEARNINGS.md before running the script: the calibration rule and reconciliation hypothesis R1 (the legacy pairing reproduces H4's per-lake rho to three decimals and its pair counts exactly).
+3. Batch 2 commits the 365-day window measurement byte for byte as docs/research/2026-11-05-spearman-windows.{py,csv} with a provenance paragraph (ran against 46e0e20), so the ADR cites tracked files.
+4. Batch 3 adds a README Limitations sentence on the per-verify read cost and unmeasured S3 read time.
+
+## Earlier plan (2026-11-05, implemented at 46e0e20)
+
+### Verified against the worktree (/Users/jarrodbaker/Documents/swan-wetland-change/.worktrees/st-b602, HEAD a365acb)
 
 All story pointers still hold. Findings that shape the plan:
 - `src/wetland_change/cli.py` `verify` (about lines 254-258): exit 3 on any `passed is False`, exit 4 only when nothing scored. Exit codes 2 (bad option/no run), 3, 4, 5 (manifest unreadable) are taken, so the new code is 6.
@@ -37,7 +84,7 @@ All story pointers still hold. Findings that shape the plan:
 - `.github/workflows/verify.yml` runs `verify` then `freshness` as separate steps, and `tests/test_workflows.py` asserts that order. The plan leaves the workflow untouched. The scheduled-job-alive row will read `not_run` in the verify report because `freshness` is a separate command (noted as a limitation).
 - Existing offline tests use the `_built_run` helper in tests/test_verify.py. New config defaults (`min_clear_pixels`) can make fixture-based `verify_run` tests skip, so those tests may need the test config to set `min_clear_pixels=1`.
 
-## Steps
+### Steps
 
 ### Batch 1: verdict and matrix report (AC1, AC4)
 1. `src/wetland_change/verify/checks.py`: add `Check.errored` (property: `passed is None and "error" in detail`). In `write_report` add `n_errored`; set `all_passed = bool(scored) and all(...) and n_errored == 0`; add a `matrix` list to the JSON payload and a "Matrix" table to the Markdown.
@@ -65,10 +112,10 @@ Tests (tests/test_verify_waterbodies.py, tests/test_verify.py): per-pass checks 
 ### Docs (in the batch that changes the behaviour)
 README.md: the `verify` bullet (exit codes 3, 4, 5, 6, matrix section in the report, history window), the Verification matrix status text for water live, water history and end to end, and a Limitations note that the scheduled-job-alive row reads not_run in the verify report. Check tests/test_readme.py still passes.
 
-## Verification (each batch, in order)
+### Verification (each batch, in order)
 uv run ruff check src tests scripts / uv run ruff format --check src tests scripts / uv run mypy src scripts / uv run pytest -q
 
-## Orchestrator amendments (settled before build)
+### Orchestrator amendments (settled before build)
 
 These override the plan text above where they differ.
 
@@ -87,6 +134,7 @@ Checked before build: a late reference is not an error. Planetary Computer retur
 - 2026-11-05T13:45:11.062Z: Deviation from the design, for Jarrod's review. The design's 'Water extent, history' row (docs/plans/2026-10-29-swan-wetland-change-design.md:227) sets Spearman at or above 0.9 'over the backfill', and its backfill sizing counts from 2022-01-01 (line 287). This story scores the last history_days days (default 365) ending at the run's newest scene, so a default verify does not score the whole backfill. Reason: every observation file in the window is read on each verify, and st-b101 bounded per-run S3 requests as history grows; 365 days still covers one full seasonal cycle. Raising [verify.waterbodies] history_days widens the window at one more read per stored file. Step limits: verify.yml's verify step has a 20 minute timeout; pipeline.yml's has none of its own and sits under the 120 minute job timeout.
 - 2026-11-05T14:08:28.292Z: Measured with scratch/st-b602/measure_rho.py (gitignored, in this worktree), read-only against /Users/jarrodbaker/Documents/swan-wetland-change-data/outputs, 1147 files, file count unchanged. The reviewer's 'no local outputs' was wrong. Results are in scratch/st-b602/rho_by_window.csv. 365-day window, 13 monthly run ends 2025-11-03 to 2026-10-29: 0 of 13 have all four lakes at or above 0.9; rho ranges 0.627 to 0.927; at the newest end Forrestdale 0.831 (20 pairs), Clifton 0.833 (26), Preston 0.720 (25), Thomsons 0.835 (24). 730-day window at the newest end: 0.872, 0.779, 0.789, 0.846. Whole backfill with this code: Forrestdale 0.861, Clifton 0.855, Preston 0.857, Thomsons 0.893, which matches the tile-and-date sensitivity in docs/research/2026-11-03-backfill-hypotheses.md. Gates at this commit: ruff, format, mypy, pytest default and GITHUB_ACTIONS=true all exit 0, 671 passed. Build-flow stopped before its own final verification, and review findings 1 and 3 were fixed by its fix agent with reverted-fix checks.
 - 2026-11-05T23:16:34.421Z: Decision 2026-11-06 (Jarrod): option C. Score the Spearman check over the whole stored history, as the design's 'over the backfill' says, and calibrate spearman_min with an ADR like 0005: lowest whole-history rho minus 0.02, rounded down (0.855 gives 0.83). H4 stays recorded as not supported.
+- 2026-11-05T23:59:19.437Z: Option C built at 90c374b. history_days removed; the Spearman check scores every succeeded stored pass up to the newest scene of the verified run. Calibration (docs/research/2026-11-06-spearman-calibration.{py,csv,txt}, read only, 1147 files, 235,595,220 bytes, data dir unchanged): gate rho and pairs Forrestdale 0.8608 (88), Lake Clifton 0.8555 (95), Lake Preston 0.8568 (96), Thomsons 0.8932 (93); spearman_min 0.83 by the ADR 0005 rule, ADR 0007. R1 held: the pre-00e8fb0 pairing reproduces H4 exactly (0.870/93, 0.858/98, 0.861/98, 0.897/99); the tile-and-date dedupe dropped 24/6/6/12 rows, which is the whole difference. 365-day window figures committed byte for byte as docs/research/2026-11-05-spearman-windows.{py,csv} (ran against 46e0e20). Limits in ADR 0007: calibrated on the backfill it gates, S3 read time unmeasured against the 20 minute verify step. Gates at 90c374b: ruff, format, mypy, pytest and GITHUB_ACTIONS=true pytest exit 0; 720 passed, 9 deselected.
 
 ## Questions
 
