@@ -91,6 +91,7 @@ class _StubS3(ThreadingHTTPServer):
     def __init__(self) -> None:
         super().__init__(("127.0.0.1", 0), _StubS3Handler)
         self.requests: list[tuple[str, str, str | None]] = []
+        self.calls: list[tuple[str, str]] = []
 
 
 class _StubS3Handler(BaseHTTPRequestHandler):
@@ -115,6 +116,9 @@ class _StubS3Handler(BaseHTTPRequestHandler):
             (self.command, self.path, self.headers.get("Content-Type"))
         )
         parts = urlsplit(self.path)
+        self.server.calls.append(
+            (self.command, parts.path.removeprefix("/stub-bucket"))
+        )
         key = parts.path.removeprefix("/stub-bucket").strip("/")
         xml = {"Content-Type": "application/xml"}
         if self.command == "HEAD":
@@ -167,17 +171,21 @@ def stub_s3() -> Iterator[_StubS3]:
     thread.join(timeout=5)
 
 
-def test_s3_write_sends_the_content_type_header(
-    stub_s3: _StubS3, monkeypatch: pytest.MonkeyPatch
-) -> None:
+def _s3_store(stub_s3: _StubS3, monkeypatch: pytest.MonkeyPatch) -> OutputStore:
     monkeypatch.setenv("AWS_EC2_METADATA_DISABLED", "true")
     monkeypatch.setenv("AWS_ACCESS_KEY_ID", "stub")
     monkeypatch.setenv("AWS_SECRET_ACCESS_KEY", "stub")
     port = stub_s3.server_address[1]
-    store = OutputStore(
+    return OutputStore(
         f"s3://stub-bucket/prefix?endpoint_override=127.0.0.1:{port}"
         "&scheme=http&region=us-east-1"
     )
+
+
+def test_s3_write_sends_the_content_type_header(
+    stub_s3: _StubS3, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    store = _s3_store(stub_s3, monkeypatch)
     expected = {
         "runs/r.json": "application/json",
         "observations/x.parquet": "application/vnd.apache.parquet",
@@ -193,3 +201,31 @@ def test_s3_write_sends_the_content_type_header(
             and (method == "PUT" or (method == "POST" and "uploads" in path))
         ]
         assert creating == [content_type], stub_s3.requests
+
+
+def test_s3_write_creates_no_directory_marker_keys(
+    stub_s3: _StubS3, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    store = _s3_store(stub_s3, monkeypatch)
+    store.write_bytes("runs/a/r.json", b"{}")
+    store.write_bytes("z.json", b"{}")
+    for relpath in ("runs/a/r.json", "z.json"):
+        assert any(
+            method == "POST" and f"/prefix/{relpath}" in path and "uploads" in path
+            for method, path, _ in stub_s3.requests
+        ), stub_s3.requests
+    markers = [
+        (method, key)
+        for method, key in stub_s3.calls
+        if method in ("PUT", "POST") and key.endswith("/")
+    ]
+    assert markers == [], stub_s3.calls
+
+
+def test_local_write_creates_missing_parent_directories(tmp_path: Path) -> None:
+    store = OutputStore(str(tmp_path / "out"))
+    store.write_bytes("a/b/c/d.txt", b"x")
+    assert (tmp_path / "out" / "a" / "b" / "c" / "d.txt").read_bytes() == b"x"
+    assert (tmp_path / "out" / "a" / "b" / "c").is_dir()
+    store.write_bytes("a/b/c/e.txt", b"y")
+    assert (tmp_path / "out" / "a" / "b" / "c" / "e.txt").read_bytes() == b"y"
