@@ -150,6 +150,33 @@ def test_discover_rejects_malformed_item_without_aborting(
     assert "KeyError" in result.rejected[0][1]
 
 
+@pytest.mark.parametrize("field", ["created", "updated"])
+def test_discover_rejects_a_null_timestamp_without_aborting(
+    fixture_item: dict[str, Any], field: str
+) -> None:
+    good = fixture_item
+    bad = _variant(good, "nulltime", **{field: None})
+    result = discover(
+        FakeClient([bad, good]),
+        CFG,
+        bbox=BBOX,
+        polygons_4326=[THOMSONS_4326],
+        created_from=None,
+        seen=set(),
+    )
+    assert [s.item_id for s in result.scenes] == [good["id"]]
+    assert [item_id for item_id, _ in result.rejected] == [bad["id"]]
+    reason = result.rejected[0][1]
+    assert f"properties.{field}" in reason
+    assert "ItemGuardError" in reason
+    if field == "updated":
+        assert result.rejected_updated == {bad["id"]: None}
+    else:
+        assert result.rejected_updated[bad["id"]] == parse_timestamp(
+            bad["properties"]["updated"]
+        )
+
+
 RANGE_START = datetime(2026, 10, 26, tzinfo=UTC)
 RANGE_END = datetime(2026, 10, 28, 23, 59, 59, 999999, tzinfo=UTC)
 RANGE_STRING = "2026-10-26T00:00:00Z/2026-10-28T23:59:59.999999Z"
