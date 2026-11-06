@@ -142,6 +142,14 @@ on later runs; it does not abort the run.
 
 ## Data sources and licences
 
+The code in this repository is released under the MIT licence (see
+`LICENSE`). That licence covers the source code only. Data and outputs carry
+separate terms. Outputs derived from the DBCA-010 Ramsar polygons (the
+observation, change and catalogue files, declared as CC-BY-SA-4.0 in the STAC
+collection) are CC BY-SA 4.0. The DEA inputs and references (Waterbodies,
+Water Observations, ARD) are CC BY 4.0. Sentinel-2 data follow the Copernicus
+Sentinel data terms.
+
 | Source | Use | Licence |
 |---|---|---|
 | Earth Search `sentinel-2-c1-l2a` (Element 84, AWS) | Input scenes | Copernicus Sentinel data terms (free and open) |
@@ -424,9 +432,6 @@ As of this commit:
   and `config/pipeline.toml`, not in the files (st-2bfd, open). The run
   manifest records no Python, GDAL, PROJ or package versions and no
   `uv.lock` hash (st-2bc1, open).
-- The repository has no licence file, so the code is not licensed for reuse
-  (st-aa46, open; the choice of licence is Jarrod's). The STAC collection
-  declares CC-BY-SA-4.0 for the data only.
 - The calibration and tolerance scripts behind the thresholds are untracked,
   and two committed research scripts no longer reproduce their committed
   outputs at the branch head (st-e6f1, open). Smaller reproducibility items

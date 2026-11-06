@@ -3,6 +3,8 @@ name = "swan-wetland-change"
 version = "0.1.0"
 description = "Scheduled incremental NDWI and NDVI change detection for Swan Coastal Plain Ramsar wetlands from Earth Search Sentinel-2 COGs"
 requires-python = ">=3.12"
+license = "MIT"
+license-files = ["LICENSE"]
 dependencies = [
     "duckdb>=2.0",
     "geopandas>=1.2",
