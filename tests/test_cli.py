@@ -6,11 +6,13 @@ import json
 import shutil
 import time
 from collections.abc import Iterator
+from io import BytesIO
 from pathlib import Path
 from types import SimpleNamespace
 from typing import Any
 
 import click
+import pyarrow.parquet as pq
 import pytest
 from shapely.geometry import box as shapely_box
 from shapely.geometry.base import BaseGeometry
@@ -28,6 +30,9 @@ from wetland_change.ledger import (
     read_ledger,
     write_ledger,
 )
+from wetland_change.outputs.footer_backfill import ADDED_KEY
+from wetland_change.outputs.provenance import FOOTER_KEYS
+from wetland_change.runtime import Environment
 from wetland_change.store import OutputStore
 from wetland_change.verify import freshness as freshness_module
 from wetland_change.verify.checks import Check
@@ -71,6 +76,7 @@ def test_help_lists_commands() -> None:
         "freshness",
         "build-catalogue",
         "compact-ledger",
+        "add-observation-footers",
     ):
         assert command in click.unstyle(result.output)
 
@@ -118,6 +124,7 @@ def test_backfill_help_lists_range_and_output_root() -> None:
         "requeue",
         "build-catalogue",
         "compact-ledger",
+        "add-observation-footers",
     ],
 )
 def test_output_root_listed_on_every_command(command: str) -> None:
@@ -1104,3 +1111,153 @@ def test_only_run_passes_the_dea_wo_lookup(
     else:
         assert "wo_lookup" not in seen
         assert "wo_reader_factory" not in seen
+
+
+def _put_unfooted(root: Path, item_ids: list[str]) -> list[str]:
+    from tests.test_footer_backfill import _old_bytes, _put_old, _rows
+
+    store = OutputStore(str(root))
+    return [_put_old(store, i, _old_bytes(_rows(i))) for i in item_ids]
+
+
+def _footer_setup(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    commit: str | None = "c0ffee",
+) -> Path:
+    monkeypatch.setattr(cli, "load_config", lambda config: _config(tmp_path / "unused"))
+    monkeypatch.setattr(
+        cli,
+        "capture_environment",
+        lambda: Environment(runtime={}, uv_lock_sha256=None, git_commit=commit),
+    )
+    cfgfile = tmp_path / "pipeline.toml"
+    cfgfile.write_text("# test config\n")
+    return cfgfile
+
+
+def _footer_args(cfgfile: Path, root: Path, *extra: str) -> list[str]:
+    return [
+        "add-observation-footers",
+        "--config",
+        str(cfgfile),
+        "--output-root",
+        str(root),
+        "--now",
+        "2026-11-06T12:00:00",
+        *extra,
+    ]
+
+
+def _bytes_by_path(root: Path, paths: list[str]) -> dict[str, bytes]:
+    store = OutputStore(str(root))
+    return {p: store.read_bytes(p) for p in paths}
+
+
+def test_add_observation_footers_help_lists_dry_run_and_output_root() -> None:
+    result = runner.invoke(app, ["add-observation-footers", "--help"])
+    assert result.exit_code == 0
+    text = click.unstyle(result.output)
+    assert "--dry-run" in text
+    assert "--output-root" in text
+
+
+def test_add_observation_footers_rewrites_old_files(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    cfgfile = _footer_setup(monkeypatch, tmp_path)
+    root = tmp_path / "root"
+    paths = _put_unfooted(root, ["S2A_A", "S2A_B"])
+    result = runner.invoke(app, _footer_args(cfgfile, root))
+    assert result.exit_code == 0, (result.output, result.exception)
+    lines = result.stdout.splitlines()
+    assert sorted(lines[:2]) == sorted(paths)
+    assert lines[-1] == "scanned 2, rewritten 2, skipped 0, failed 0"
+    for data in _bytes_by_path(root, paths).values():
+        meta = pq.read_schema(BytesIO(data)).metadata
+        for key in (*FOOTER_KEYS, ADDED_KEY):
+            assert key.encode() in meta
+        assert json.loads(meta[ADDED_KEY.encode()]) == {
+            "commit": "c0ffee",
+            "date": "2026-11-06",
+        }
+
+
+def test_add_observation_footers_second_run_skips_and_keeps_bytes(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    cfgfile = _footer_setup(monkeypatch, tmp_path)
+    root = tmp_path / "root"
+    paths = _put_unfooted(root, ["S2A_A", "S2A_B"])
+    first = runner.invoke(app, _footer_args(cfgfile, root))
+    assert first.exit_code == 0, (first.output, first.exception)
+    before = _bytes_by_path(root, paths)
+    again = runner.invoke(app, _footer_args(cfgfile, root))
+    assert again.exit_code == 0, (again.output, again.exception)
+    assert again.stdout.strip() == "scanned 2, rewritten 0, skipped 2, failed 0"
+    assert _bytes_by_path(root, paths) == before
+
+
+def test_add_observation_footers_dry_run_writes_nothing(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    cfgfile = _footer_setup(monkeypatch, tmp_path)
+    root = tmp_path / "root"
+    paths = _put_unfooted(root, ["S2A_A", "S2A_B"])
+    before = _bytes_by_path(root, paths)
+    result = runner.invoke(app, _footer_args(cfgfile, root, "--dry-run"))
+    assert result.exit_code == 0, (result.output, result.exception)
+    lines = result.stdout.splitlines()
+    assert sorted(lines[:2]) == sorted(paths)
+    assert lines[-1] == "scanned 2, would rewrite 2, skipped 0, failed 0"
+    assert _bytes_by_path(root, paths) == before
+
+
+def test_add_observation_footers_exits_1_when_a_file_fails(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    cfgfile = _footer_setup(monkeypatch, tmp_path)
+    root = tmp_path / "root"
+    [good] = _put_unfooted(root, ["S2A_A"])
+    bad = "observations/year=2026/tile=50HLK/obs_bad.parquet"
+    OutputStore(str(root)).write_bytes(bad, b"junk")
+    result = runner.invoke(app, _footer_args(cfgfile, root))
+    assert result.exit_code == 1, (result.output, result.exception)
+    assert result.stdout.splitlines() == [
+        good,
+        "scanned 2, rewritten 1, skipped 0, failed 1",
+    ]
+    [failure] = result.stderr.splitlines()
+    assert failure.startswith(f"{bad}\t")
+    meta = pq.read_schema(BytesIO(OutputStore(str(root)).read_bytes(good))).metadata
+    assert ADDED_KEY.encode() in meta
+
+
+def test_add_observation_footers_without_a_commit_writes_nothing(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    cfgfile = _footer_setup(monkeypatch, tmp_path, commit=None)
+    root = tmp_path / "root"
+    paths = _put_unfooted(root, ["S2A_A", "S2A_B"])
+    before = _bytes_by_path(root, paths)
+    result = runner.invoke(app, _footer_args(cfgfile, root))
+    assert result.exit_code == 2
+    assert "no git commit found" in click.unstyle(result.output)
+    assert _bytes_by_path(root, paths) == before
+
+
+def test_add_observation_footers_output_root_overrides_config(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    cfgfile = _footer_setup(monkeypatch, tmp_path)
+    configured = tmp_path / "unused"
+    configured_paths = _put_unfooted(configured, ["S2A_C"])
+    configured_before = _bytes_by_path(configured, configured_paths)
+    root = tmp_path / "root"
+    _put_unfooted(root, ["S2A_A", "S2A_B"])
+    result = runner.invoke(app, _footer_args(cfgfile, root))
+    assert result.exit_code == 0, (result.output, result.exception)
+    assert result.stdout.splitlines()[-1] == (
+        "scanned 2, rewritten 2, skipped 0, failed 0"
+    )
+    assert _bytes_by_path(configured, configured_paths) == configured_before

@@ -1,5 +1,5 @@
 """Command line: discover, run, backfill, score, requeue, verify, freshness,
-build-catalogue, compact-ledger.
+build-catalogue, compact-ledger, add-observation-footers.
 """
 
 from __future__ import annotations
@@ -32,6 +32,7 @@ from wetland_change.ledger import (
     watermark,
 )
 from wetland_change.manifest import new_run_id
+from wetland_change.outputs.footer_backfill import add_missing_footers
 from wetland_change.pipeline import (
     RunIdReusedError,
     backfill_once,
@@ -41,6 +42,7 @@ from wetland_change.pipeline import (
     score_once,
 )
 from wetland_change.raster.read import RasterioReader
+from wetland_change.runtime import capture_environment
 from wetland_change.stac import PlaceholderBaseUrlError, build_and_write
 from wetland_change.store import OutputStore
 from wetland_change.verify.wo import dea_reader, find_wo_href
@@ -474,3 +476,45 @@ def compact_ledger_command(
     for path in written:
         typer.echo(path)
     typer.echo(f"{len(paths)} parts merged")
+
+
+@app.command("add-observation-footers")
+def add_observation_footers_command(
+    config: ConfigOption = Path("config/pipeline.toml"),
+    output_root: OutputRootOption = None,
+    dry_run: Annotated[
+        bool,
+        typer.Option(
+            "--dry-run", help="List the files that would be rewritten; write nothing"
+        ),
+    ] = False,
+    now: Annotated[datetime | None, typer.Option(help=NOW_HELP)] = None,
+) -> None:
+    """Add the provenance footer to observation files that lack it.
+
+    Only those files are rewritten; --dry-run lists them without writing.
+    """
+    cfg = load_config(config)
+    when = (now or datetime.now(UTC)).astimezone(UTC)
+    commit = capture_environment().git_commit
+    if commit is None:
+        raise typer.BadParameter("no git commit found; run from a checkout")
+    result = add_missing_footers(
+        _store(cfg, output_root),
+        water=cfg.water,
+        operation_epsg=cfg.aoi.operation_epsg,
+        commit=commit,
+        on=when.date(),
+        dry_run=dry_run,
+    )
+    for path in result.rewritten:
+        typer.echo(path)
+    for path, message in result.failed:
+        typer.echo(f"{path}\t{message}", err=True)
+    verb = "would rewrite" if dry_run else "rewritten"
+    typer.echo(
+        f"scanned {result.scanned}, {verb} {len(result.rewritten)}, "
+        f"skipped {len(result.skipped)}, failed {len(result.failed)}"
+    )
+    if result.failed:
+        raise typer.Exit(code=1)

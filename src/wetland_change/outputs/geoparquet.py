@@ -108,6 +108,18 @@ def write_observations(
     return relpath
 
 
+def observation_paths(store: OutputStore, exclude: Collection[str] = ()) -> list[str]:
+    """Paths of the stored `obs_*.parquet` files, sorted, minus those in `exclude`."""
+    skipped = set(exclude)
+    return [
+        path
+        for path in store.list_files("observations")
+        if path.rsplit("/", 1)[-1].startswith("obs_")
+        and path.endswith(".parquet")
+        and path not in skipped
+    ]
+
+
 def _empty_observations() -> gpd.GeoDataFrame:
     frame = pd.DataFrame({col: [] for col in OBSERVATION_COLUMNS})
     frame["datetime"] = pd.to_datetime(frame["datetime"], utc=True)
@@ -121,14 +133,7 @@ def read_observations(
 
     The store is listed once; files named in `exclude` are not read.
     """
-    skipped = set(exclude)
-    paths = [
-        path
-        for path in store.list_files("observations")
-        if path.rsplit("/", 1)[-1].startswith("obs_")
-        and path.endswith(".parquet")
-        and path not in skipped
-    ]
+    paths = observation_paths(store, exclude)
     if not paths:
         return _empty_observations()
     frames = [gpd.read_parquet(BytesIO(store.read_bytes(path))) for path in paths]
