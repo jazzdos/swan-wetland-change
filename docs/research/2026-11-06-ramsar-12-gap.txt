@@ -1,0 +1,86 @@
+ramsar-12 wet-area gap, hypotheses G1 to G5 (LEARNINGS.md st-7047 Part B)
+
+n is mutually clear pixels, a is pipeline wet and WO dry, b is WO wet and pipeline dry, gap_pp = 100 * (a - b) / n, agreement = 1 - (a + b) / n.
+
+== Reproduction ==
+global setting mndwi > -0.1, one line per scene-tile
+S2B_T50HLJ_20260912T022111_L2A n=5446 csv_n=5446 gap_pp=4.8292 csv_gap_pp=4.8292 a=265 b=2 agreement=0.9510 pipeline_wet_share=0.1372 wo_wet_share=0.0889
+S2B_T50HLK_20260912T022111_L2A n=5584 csv_n=5584 gap_pp=4.6203 csv_gap_pp=4.6203 a=264 b=6 agreement=0.9516 pipeline_wet_share=0.1438 wo_wet_share=0.0976
+S2C_T50HLJ_20260917T022244_L2A n=8695 csv_n=8695 gap_pp=3.1512 csv_gap_pp=3.1512 a=315 b=41 agreement=0.9591 pipeline_wet_share=0.1576 wo_wet_share=0.1260
+S2C_T50HLK_20260917T022244_L2A n=10032 csv_n=10032 gap_pp=3.2795 csv_gap_pp=3.2795 a=387 b=58 agreement=0.9556 pipeline_wet_share=0.1557 wo_wet_share=0.1229
+S2B_T50HLJ_20261002T021907_L2A n=9189 csv_n=9189 gap_pp=3.1233 csv_gap_pp=3.1233 a=365 b=78 agreement=0.9518 pipeline_wet_share=0.1605 wo_wet_share=0.1293
+S2B_T50HLK_20261002T021907_L2A n=9805 csv_n=9805 gap_pp=3.6716 csv_gap_pp=3.6716 a=431 b=71 agreement=0.9488 pipeline_wet_share=0.1682 wo_wet_share=0.1315
+S2B_T50HLJ_20261012T021555_L2A n=8970 csv_n=8970 gap_pp=4.8606 csv_gap_pp=4.8606 a=466 b=30 agreement=0.9447 pipeline_wet_share=0.1540 wo_wet_share=0.1054
+S2B_T50HLK_20261012T021555_L2A n=9848 csv_n=9848 gap_pp=5.3818 csv_gap_pp=5.3818 a=556 b=26 agreement=0.9409 pipeline_wet_share=0.1625 wo_wet_share=0.1087
+S2C_T50HLJ_20261027T022351_L2A n=8941 csv_n=8941 gap_pp=6.7666 csv_gap_pp=6.7666 a=625 b=20 agreement=0.9279 pipeline_wet_share=0.1273 wo_wet_share=0.0596
+S2C_T50HLK_20261027T022351_L2A n=9882 csv_n=9882 gap_pp=6.8205 csv_gap_pp=6.8205 a=694 b=20 agreement=0.9277 pipeline_wet_share=0.1291 wo_wet_share=0.0609
+S2A_T50HLJ_20261029T021516_L2A n=9422 csv_n=9422 gap_pp=5.9011 csv_gap_pp=5.9011 a=573 b=17 agreement=0.9374 pipeline_wet_share=0.1344 wo_wet_share=0.0754
+S2A_T50HLK_20261029T021516_L2A n=9922 csv_n=9922 gap_pp=6.0976 csv_gap_pp=6.0976 a=622 b=17 agreement=0.9356 pipeline_wet_share=0.1342 wo_wet_share=0.0733
+differences from the CSV: none (n equal and gap_pp within 0.01 pp on all 12 rows)
+reproduction: passed
+
+== G1, MNDWI threshold ==
+threshold: rows within 5 pp, mean abs gap, mean signed gap, pooled agreement, pooled a, pooled b
+-0.10: within5=7/12 mean_abs_gap=4.875 mean_gap=+4.875 pooled_agreement=0.9437 a=5563 b=386
+-0.05: within5=12/12 mean_abs_gap=2.977 mean_gap=+2.977 pooled_agreement=0.9563 a=3885 b=735
++0.00: within5=12/12 mean_abs_gap=1.221 mean_gap=+1.221 pooled_agreement=0.9637 a=2547 b=1288
++0.05: within5=12/12 mean_abs_gap=0.512 mean_gap=-0.374 pooled_agreement=0.9632 a=1720 b=2168
++0.10: within5=12/12 mean_abs_gap=1.821 mean_gap=-1.821 pooled_agreement=0.9586 a=1191 b=3190
++0.15: within5=12/12 mean_abs_gap=3.065 mean_gap=-3.065 pooled_agreement=0.9526 a=836 b=4172
++0.20: within5=10/12 mean_abs_gap=4.155 mean_gap=-4.155 pooled_agreement=0.9471 a=553 b=5037
+threshold with the lowest mean abs gap: +0.05 (0.512 pp)
+per-row gap_pp by threshold (rows by pass_date then tile):
+  -0.10: +4.83 +4.62 +3.15 +3.28 +3.12 +3.67 +4.86 +5.38 +6.77 +6.82 +5.90 +6.10
+  -0.05: +3.08 +3.03 +1.46 +1.56 +1.81 +2.24 +3.27 +3.60 +4.06 +4.17 +3.65 +3.80
+  +0.00: +1.69 +1.67 +0.12 +0.12 +0.27 +0.62 +1.67 +1.90 +1.80 +1.83 +1.37 +1.59
+  +0.05: +0.35 +0.32 -1.41 -1.40 -1.23 -0.88 +0.00 -0.02 +0.06 +0.10 -0.35 -0.03
+  +0.10: -0.79 -0.90 -2.70 -2.73 -2.91 -2.50 -1.95 -1.95 -1.23 -1.24 -1.63 -1.32
+  +0.15: -1.73 -1.93 -3.69 -3.84 -4.53 -4.21 -3.36 -3.50 -2.39 -2.42 -2.75 -2.43
+  +0.20: -2.85 -3.17 -4.47 -4.72 -5.64 -5.49 -4.65 -4.84 -3.23 -3.26 -3.91 -3.63
+some threshold with abs gap <= 5 pp on all 12 rows: yes
+G1: supported
+
+== G2, SCL class 6 ==
+within5=7/12 mean_abs_gap=3.964 mean_gap=-3.964 pooled_agreement=0.8998 a=3055 b=7539
+per-row gap_pp: -0.09 -0.57 -5.83 -6.27 -7.55 -7.74 -4.95 -5.72 -0.95 -1.50 -3.29 -3.10
+G2: not supported
+
+== G3, edge ring ==
+ring = inside & ~(two 4-neighbour erosions of inside), summed over 12 rows
+a-pixels in ring=1555 of 5563, share=0.2795
+mutually clear pixels in ring=10096 of 105736, share=0.0955
+ratio of the two shares=2.927, rule: at least 2.0
+G3: supported
+
+== G4, SCL class of the a-pixels ==
+a-pixels summed over 12 rows=5563; b-pixels summed over 12 rows=386
+  class 0 (no data): 0 (0.0000)
+  class 1 (saturated or defective): 0 (0.0000)
+  class 2 (dark area pixels): 0 (0.0000)
+  class 3 (cloud shadows): 0 (0.0000)
+  class 4 (vegetation): 373 (0.0671)
+  class 5 (not vegetated): 3356 (0.6033)
+  class 6 (water): 943 (0.1695)
+  class 7 (unclassified): 891 (0.1602)
+  class 8 (cloud medium probability): 0 (0.0000)
+  class 9 (cloud high probability): 0 (0.0000)
+  class 10 (thin cirrus): 0 (0.0000)
+  class 11 (snow or ice): 0 (0.0000)
+share of classes 4 and 5=0.6703, rule: at least 0.50
+G4: supported
+
+== G5, stored history ==
+files read=1147, ramsar-12 rows=316, duplicate item_id rows dropped=0 (kept the highest run_id), null water_ha_index=0, null water_ha_scl=0
+rows with water_ha_index or water_ha_scl above 0: 299
+rows with water_ha_index > water_ha_scl: 296 of 299, share=0.9900
+median water_ha_index - water_ha_scl over those rows: 8.5500 ha
+by calendar year (rows with either above 0):
+  2022: rows=9, index>scl=9, share=1.0000, median difference=10.2700 ha
+  2023: rows=63, index>scl=60, share=0.9524, median difference=7.7800 ha
+  2024: rows=76, index>scl=76, share=1.0000, median difference=7.9100 ha
+  2025: rows=83, index>scl=83, share=1.0000, median difference=9.4700 ha
+  2026: rows=68, index>scl=68, share=1.0000, median difference=8.5800 ha
+rule: share of rows with index > scl at least 0.75
+G5: supported
+
+cause: supported hypotheses: G1 (some MNDWI threshold gives abs gap <= 5 pp on all 12 rows); G3 (the ring share of the a-pixels is at least twice the ring share of the mutually clear pixels); G4 (at least half of the a-pixels are SCL class 4 or 5); G5 (water_ha_index exceeds water_ha_scl on at least 75 percent of stored rows). The numbers are in the sections above.

@@ -215,12 +215,17 @@ uv run wetland-change freshness
 - `verify` scores the verification matrix for the latest daily run, or the run
   given with `--run-id`, and writes the JSON and Markdown reports. A backfill
   chunk is verified only by naming it with `--run-id`. It exits 3 when a check
-  failed, 4 when nothing was scored, 5 (naming the manifest path) when a run
+  failed (a live water check that passes agreement and fails only the 5 pp wet
+  area clause is reported as a warning with its gap and does not change the exit
+  code; the pooled check `water_vs_dea_s2_wo_pooled_wet_area` covers the whole
+  run, so a backfill run pools across all its dates, and exits 3 when its pooled
+  gap exceeds 5 pp; `docs/decisions/0008-exit-code-for-live-water-check-failures.md`),
+  4 when nothing was scored, 5 (naming the manifest path) when a run
   manifest cannot be read, rather than checking an older run, and 6 when a
   reference check could not run because its source raised an error. A skip
   that carries only a reason, such as a reference that is not published yet,
   does not change the exit code. The report carries a `matrix` section with
-  pass, fail or not-run for all 14 rows of the verification matrix.
+  pass, fail, warn or not-run for all 14 rows of the verification matrix.
   The per-lake Spearman of the water history row is scored over every stored
   observation up to the newest scene of the verified run, against
   `spearman_min` 0.83 (`docs/decisions/0007-spearman-threshold-from-whole-history.md`);

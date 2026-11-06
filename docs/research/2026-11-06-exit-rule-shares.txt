@@ -1,0 +1,31 @@
+input: 2026-11-05-wet-area-gap.csv
+sha256: 8eda9a0d4d304ad96fcda3f82a66ca52d5a0022d5b73a7ae7e3c4f9006b6506c
+rows used: 253 (n_mutually_clear >= 100)
+rows excluded for n < 100: 2
+
+measured dates (6, newest first); FAIL means verify would exit 3
+pass_date   n_rows  fail_agreement  clause_only  pooled_gap_pp  K1    K2    K3    K4
+2026-10-29      34               0            2          1.142  FAIL  ok    FAIL  ok  
+2026-10-27      45               0            2          1.560  FAIL  ok    FAIL  ok  
+2026-10-12      45               0            1          1.138  FAIL  ok    ok    ok  
+2026-10-02      45               0            1          0.778  FAIL  ok    ok    ok  
+2026-09-17      45               1            1          0.434  FAIL  FAIL  FAIL  FAIL
+2026-09-12      29               1            1          1.992  FAIL  FAIL  FAIL  FAIL
+
+K1: dates failing=6 of 6, share=1.0000
+K2: dates failing=2 of 6, share=0.3333
+K3: dates failing=4 of 6, share=0.6667
+K4: dates failing=2 of 6, share=0.3333
+B (agreement alone)=2
+admissible: K2, K4
+chosen: K4
+
+rows failing the clause alone (pass agreement, abs gap > 5.0 pp): 9 of 253, share=0.0356
+
+unmeasured dates (ramsar-28 only, not counted in the shares above):
+  2026-09-07: 2 rows
+  2026-08-30: 2 rows
+  2026-08-28: 2 rows
+  2026-08-23: 1 rows
+  2026-08-13: 1 rows
+  2026-08-03: 2 rows

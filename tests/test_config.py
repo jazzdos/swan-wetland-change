@@ -1,6 +1,8 @@
 import hashlib
+import importlib.util
 import re
 from pathlib import Path
+from types import ModuleType
 
 import pytest
 from pydantic import ValidationError
@@ -219,6 +221,64 @@ def test_adr_0007_recorded_sha256_match_committed_research_files() -> None:
             (REPO_CONFIG.parents[1] / name).read_bytes()
         ).hexdigest()
         assert digest == actual, f"ADR 0007 sha256 for {name} is stale"
+
+
+def test_adr_0008_recorded_sha256_match_committed_research_files() -> None:
+    adrs = list(DECISIONS.glob("0008-*.md"))
+    assert len(adrs) == 1, f"expected one docs/decisions/0008-*.md, found {adrs}"
+    recorded = dict(re.findall(SHA_LINE, adrs[0].read_text()))
+    for name in (
+        "docs/research/2026-11-06-exit-rule-shares.py",
+        "docs/research/2026-11-06-exit-rule-shares.csv",
+        "docs/research/2026-11-06-ramsar-12-gap.py",
+        "docs/research/2026-11-06-ramsar-12-gap.csv",
+        "docs/research/2026-11-05-wet-area-gap.csv",
+    ):
+        assert name in recorded, f"ADR 0008 records no sha256 for {name}"
+    for name, digest in recorded.items():
+        actual = hashlib.sha256(
+            (REPO_CONFIG.parents[1] / name).read_bytes()
+        ).hexdigest()
+        assert digest == actual, f"ADR 0008 sha256 for {name} is stale"
+
+
+def _load_exit_rule_script() -> ModuleType:
+    path = (
+        REPO_CONFIG.parents[1] / "docs" / "research" / "2026-11-06-exit-rule-shares.py"
+    )
+    spec = importlib.util.spec_from_file_location("exit_rule_shares", path)
+    assert spec is not None and spec.loader is not None
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
+def test_adr_0008_shares_match_recomputation() -> None:
+    adrs = list(DECISIONS.glob("0008-*.md"))
+    assert len(adrs) == 1, f"expected one docs/decisions/0008-*.md, found {adrs}"
+    text = adrs[0].read_text()
+    stated = {
+        candidate: (int(failing), int(total))
+        for candidate, failing, total in re.findall(
+            r"^Measured dates failing under (K\d): (\d+) of (\d+)$",
+            text,
+            re.MULTILINE,
+        )
+    }
+    assert sorted(stated) == ["K1", "K2", "K3", "K4"]
+    match = re.search(r"^Chosen rule: (K\d)$", text, re.MULTILINE)
+    assert match is not None, "no 'Chosen rule: K<n>' line in ADR 0008"
+
+    script = _load_exit_rule_script()
+    rows = script.load_rows(
+        REPO_CONFIG.parents[1] / "docs" / "research" / "2026-11-05-wet-area-gap.csv"
+    )
+    result = script.choose(script.date_outcomes(rows))
+    measured_total = sum(1 for o in script.date_outcomes(rows) if o["measured"])
+    for candidate, (failing, total) in stated.items():
+        assert result["counts"][candidate] == failing, candidate
+        assert total == measured_total, candidate
+    assert result["chosen"] == match.group(1)
 
 
 def test_waterbodies_tolerance_matches_learnings() -> None:

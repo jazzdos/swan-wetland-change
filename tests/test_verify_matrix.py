@@ -229,11 +229,16 @@ def test_matrix_is_in_the_json_and_markdown_reports(tmp_path: Path) -> None:
     raw = store.read_bytes(json_path).decode()
     payload = json.loads(raw)
     assert [r["row"] for r in payload["matrix"]] == DESIGN_ROWS
-    assert {r["status"] for r in payload["matrix"]} <= {"pass", "fail", "not-run"}
+    assert {r["status"] for r in payload["matrix"]} <= {
+        "pass",
+        "fail",
+        "warn",
+        "not-run",
+    }
     assert payload["n_errored"] == 1
     assert md_path is not None
     text = md_path.read_text()
     assert "## Matrix" in text
-    assert "| row | status | pass | fail | skipped | errored | note |" in text
+    assert "| row | status | pass | fail | warn | skipped | errored | note |" in text
     for name in DESIGN_ROWS:
         assert f"| {name} |" in text

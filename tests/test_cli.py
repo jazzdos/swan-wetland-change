@@ -30,7 +30,9 @@ from wetland_change.ledger import (
 )
 from wetland_change.store import OutputStore
 from wetland_change.verify import freshness as freshness_module
+from wetland_change.verify.checks import Check
 from wetland_change.verify.copernicus import CDSE_STAC
+from wetland_change.verify.wo import POOLED_WET_AREA_CHECK
 
 runner = CliRunner()
 
@@ -371,6 +373,202 @@ def test_verify_reads_the_override_root(
     )
     assert result.exit_code == 4, (result.output, result.exception)
     assert seen == [(OutputStore(str(override)).uri, "20261029T100000Z")]
+
+
+def _verify_with(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    fixture_item: dict[str, Any],
+    fixture_polygon: BaseGeometry,
+    checks: list[Check],
+) -> Any:
+    cfgfile = _patch_cli(
+        monkeypatch, tmp_path, FakeClient([fixture_item]), _polygons(fixture_polygon)
+    )
+    override = tmp_path / "override"
+    (override / "runs").mkdir(parents=True)
+    (override / "runs" / "20261029T100000Z.json").write_text('{"processed": 1}')
+    monkeypatch.setattr("wetland_change.verify.run.verify_run", lambda *a, **k: checks)
+    return runner.invoke(
+        app, ["verify", "--config", str(cfgfile), "--output-root", str(override)]
+    )
+
+
+def _wo_check(
+    *,
+    passed: bool,
+    measured: float,
+    diff_pp: float,
+    wet_passed: bool,
+    polygon_id: str = "ramsar-12",
+) -> Check:
+    return Check(
+        "water_vs_dea_s2_wo",
+        passed,
+        measured,
+        0.91,
+        "https://example/wo.tif",
+        {
+            "polygon_id": polygon_id,
+            "item": "S2A_T50HLJ_20261029T021516_L2A",
+            "n_mutually_clear": 1000,
+            "wet_area_diff_pp": diff_pp,
+            "wet_area_max_pp": 5.0,
+            "wet_area_passed": wet_passed,
+        },
+    )
+
+
+def _wet_only() -> Check:
+    return _wo_check(passed=False, measured=0.9374, diff_pp=5.90, wet_passed=False)
+
+
+def _pass_check() -> Check:
+    return Check("reflectance_scaling", True, 1.0, 1.0, "r")
+
+
+def test_verify_wet_area_only_failure_warns_and_exits_zero(
+    monkeypatch: pytest.MonkeyPatch,
+    fixture_item: dict[str, Any],
+    fixture_polygon: BaseGeometry,
+    tmp_path: Path,
+) -> None:
+    result = _verify_with(
+        monkeypatch,
+        tmp_path,
+        fixture_item,
+        fixture_polygon,
+        [_pass_check(), _wet_only()],
+    )
+    assert result.exit_code == 0, (result.output, result.exception)
+    line = next(
+        x
+        for x in result.output.splitlines()
+        if x.startswith("warn\twater_vs_dea_s2_wo\t")
+    )
+    assert "+5.90 pp" in line and "ramsar-12" in line
+    assert len(line.split("\t")) == 5
+    assert "FAIL" not in result.output
+    assert "1 live water checks failed on wet area alone" in result.output
+    assert "docs/decisions/0008-exit-code-for-live-water-check-failures.md" in (
+        result.output
+    )
+
+
+def test_verify_agreement_failure_beside_a_warn_exits_three(
+    monkeypatch: pytest.MonkeyPatch,
+    fixture_item: dict[str, Any],
+    fixture_polygon: BaseGeometry,
+    tmp_path: Path,
+) -> None:
+    both = _wo_check(
+        passed=False,
+        measured=0.90,
+        diff_pp=6.0,
+        wet_passed=False,
+        polygon_id="ramsar-9",
+    )
+    result = _verify_with(
+        monkeypatch, tmp_path, fixture_item, fixture_polygon, [_wet_only(), both]
+    )
+    assert result.exit_code == 3, (result.output, result.exception)
+    assert any(
+        x.startswith("FAIL\twater_vs_dea_s2_wo\t") for x in result.output.splitlines()
+    )
+
+
+def test_verify_errored_skip_beside_a_warn_exits_six(
+    monkeypatch: pytest.MonkeyPatch,
+    fixture_item: dict[str, Any],
+    fixture_polygon: BaseGeometry,
+    tmp_path: Path,
+) -> None:
+    errored = Check("scl_shares", None, None, None, "r", {"error": "RuntimeError: x"})
+    result = _verify_with(
+        monkeypatch, tmp_path, fixture_item, fixture_polygon, [_wet_only(), errored]
+    )
+    assert result.exit_code == 6, (result.output, result.exception)
+
+
+def test_verify_a_warn_alone_counts_as_scored(
+    monkeypatch: pytest.MonkeyPatch,
+    fixture_item: dict[str, Any],
+    fixture_polygon: BaseGeometry,
+    tmp_path: Path,
+) -> None:
+    result = _verify_with(
+        monkeypatch, tmp_path, fixture_item, fixture_polygon, [_wet_only()]
+    )
+    assert result.exit_code == 0, (result.output, result.exception)
+
+
+def test_verify_blocking_non_water_failure_exits_three(
+    monkeypatch: pytest.MonkeyPatch,
+    fixture_item: dict[str, Any],
+    fixture_polygon: BaseGeometry,
+    tmp_path: Path,
+) -> None:
+    bad = Check("scene_grid", False, 0.5, 1.0, "r")
+    result = _verify_with(
+        monkeypatch, tmp_path, fixture_item, fixture_polygon, [_wet_only(), bad]
+    )
+    assert result.exit_code == 3, (result.output, result.exception)
+    assert any(x.startswith("FAIL\tscene_grid\t") for x in result.output.splitlines())
+
+
+def _pooled(passed: bool, gap: float) -> Check:
+    return Check(
+        POOLED_WET_AREA_CHECK,
+        passed,
+        gap,
+        5.0,
+        "https://example/wo.tif",
+        {"n_checks": 4, "n_mutually_clear": 4000},
+    )
+
+
+def test_verify_warns_with_a_passing_pooled_check_exit_zero(
+    monkeypatch: pytest.MonkeyPatch,
+    fixture_item: dict[str, Any],
+    fixture_polygon: BaseGeometry,
+    tmp_path: Path,
+) -> None:
+    result = _verify_with(
+        monkeypatch,
+        tmp_path,
+        fixture_item,
+        fixture_polygon,
+        [_wet_only(), _pooled(True, 1.14)],
+    )
+    assert result.exit_code == 0, (result.output, result.exception)
+    line = next(
+        x
+        for x in result.output.splitlines()
+        if x.startswith("pass\t" + POOLED_WET_AREA_CHECK)
+    )
+    assert "pooled wet area gap +1.14 pp over 4 checks, limit 5.0 pp" in line
+
+
+def test_verify_failing_pooled_check_exits_three(
+    monkeypatch: pytest.MonkeyPatch,
+    fixture_item: dict[str, Any],
+    fixture_polygon: BaseGeometry,
+    tmp_path: Path,
+) -> None:
+    result = _verify_with(
+        monkeypatch,
+        tmp_path,
+        fixture_item,
+        fixture_polygon,
+        [_wet_only(), _pooled(False, 7.5)],
+    )
+    assert result.exit_code == 3, (result.output, result.exception)
+    line = next(
+        x
+        for x in result.output.splitlines()
+        if x.startswith("FAIL\t" + POOLED_WET_AREA_CHECK)
+    )
+    assert "+7.50 pp" in line
 
 
 def test_verify_exits_nonzero_when_a_manifest_cannot_be_read(

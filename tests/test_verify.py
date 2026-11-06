@@ -16,9 +16,11 @@ from wetland_change.verify.pixels import pc_item_id
 from wetland_change.verify.scaling import scaling_check
 from wetland_change.verify.scl import scl_shares
 from wetland_change.verify.wo import (
+    POOLED_WET_AREA_CHECK,
     WO_EXCLUDE,
     WO_WET,
     pooled_agreement,
+    pooled_wet_area_check,
     wo_agreement,
     wo_candidates,
     wo_wet_area,
@@ -890,6 +892,51 @@ def test_verify_run_with_injected_dependencies(
     assert report["n_scored"] > 0
     wo = next(c for c in checks if c.name == "water_vs_dea_s2_wo")
     assert wo.passed is not None and wo.detail["polygon_id"] == "ramsar-52"
+
+
+def test_verify_run_appends_the_pooled_wet_area_check(
+    fixture_item: dict[str, Any], fixture_polygon: BaseGeometry, tmp_path: Path
+) -> None:
+    cfg, store, run_id, polygons = _built_run(fixture_item, fixture_polygon, tmp_path)
+    grid = RasterioReader().open_grid(fixture_item["assets"]["green"]["href"])
+    checks = verify_run(
+        cfg,
+        store,
+        run_id,
+        polygons=polygons,
+        wo_lookup=lambda scene, bbox: "wo.tif",
+        wo_reader_factory=lambda: FakeReader(
+            grid=grid, data=np.full((48, 48), WO_WET, np.uint8)
+        ),
+        pixel_checker=lambda scene, reader, window: Check(
+            "pixels_vs_planetary_computer", True, 1.0, 1.0, "fake"
+        ),
+        docs_dir=None,
+    )
+    wo = [c for c in checks if c.name == "water_vs_dea_s2_wo"]
+    pooled = [c for c in checks if c.name == POOLED_WET_AREA_CHECK]
+    assert len(pooled) == 1 and checks.index(pooled[0]) > checks.index(wo[-1])
+    assert pooled[0].detail["n_checks"] == len([c for c in wo if c.passed is not None])
+    expected = pooled_wet_area_check(wo)
+    assert expected is not None and pooled[0].measured == expected.measured
+
+
+def test_verify_run_without_scored_water_checks_adds_no_pooled_check(
+    fixture_item: dict[str, Any], fixture_polygon: BaseGeometry, tmp_path: Path
+) -> None:
+    cfg, store, run_id, polygons = _built_run(fixture_item, fixture_polygon, tmp_path)
+    checks = verify_run(
+        cfg,
+        store,
+        run_id,
+        polygons=polygons,
+        wo_lookup=lambda scene, bbox: None,
+        pixel_checker=lambda scene, reader, window: Check(
+            "pixels_vs_planetary_computer", True, 1.0, 1.0, "fake"
+        ),
+        docs_dir=None,
+    )
+    assert POOLED_WET_AREA_CHECK not in [c.name for c in checks]
 
 
 def test_verify_run_scores_wo_with_the_polygon_override(
