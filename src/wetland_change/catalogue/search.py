@@ -8,7 +8,7 @@ result is re-checked here before it is trusted.
 from __future__ import annotations
 
 import logging
-from collections.abc import Iterable, Iterator
+from collections.abc import Collection, Iterable, Iterator
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from typing import Any, Protocol, Self, cast
@@ -140,8 +140,21 @@ def build_search_kwargs(
 class Discovery:
     scenes: list[SceneItem] = field(default_factory=list)
     rejected: list[tuple[str, str]] = field(default_factory=list)
+    # Parsed `updated` for each id in `rejected`; None when it is missing or
+    # unparseable. Unchanged rejections are skipped and appear in neither.
+    rejected_updated: dict[str, datetime | None] = field(default_factory=dict)
     skipped_seen: int = 0
     skipped_filter: int = 0
+
+
+def _updated_or_none(item: dict[str, Any]) -> datetime | None:
+    """Best-effort parse of `properties.updated`; None if absent or unusable."""
+    try:
+        props = item["properties"]
+        parsed = parse_timestamp(str(props["updated"]))
+    except (KeyError, TypeError, ValueError, AttributeError):
+        return None
+    return parsed if parsed.tzinfo is not None else None
 
 
 def discover(
@@ -152,6 +165,7 @@ def discover(
     polygons_4326: list[BaseGeometry],
     created_from: datetime | None,
     seen: set[tuple[str, datetime]],
+    rejected_seen: Collection[tuple[str, datetime, str]] = frozenset(),
     retry_ids: Iterable[str] = (),
     datetime_range: tuple[datetime, datetime] | None = None,
 ) -> Discovery:
@@ -159,6 +173,12 @@ def discover(
 
     `seen` holds (item id, parsed `updated`) pairs already processed
     successfully; an item republished with a new `updated` is processed again.
+
+    `rejected_seen` holds (item id, parsed `updated`, reason) for items whose
+    newest ledger row is a rejection. A guard rejection that matches one is
+    skipped and counted in `skipped_seen`, so an unchanged rejection is not
+    logged again; a new `updated` or a different reason is rejected and
+    reported as usual.
 
     `datetime_range`, when given, restricts the main search to a closed
     acquisition interval [start, end]. Like cloud cover and footprint
@@ -207,8 +227,14 @@ def discover(
             )
         except (ItemGuardError, KeyError, TypeError, ValueError) as exc:
             reason = f"{type(exc).__name__}: {exc}"
+            updated = _updated_or_none(item)
+            if updated is not None and (item_id, updated, reason) in rejected_seen:
+                logger.debug("unchanged rejection %s: %s", item_id, reason)
+                result.skipped_seen += 1
+                continue
             logger.warning("rejected %s: %s", item_id, reason)
             result.rejected.append((item_id, reason))
+            result.rejected_updated[item_id] = updated
             continue
         result.scenes.append(scene)
     result.scenes.sort(key=lambda s: (s.created, s.item_id))

@@ -126,14 +126,21 @@ def rejected_entry(
     run_id: str,
     processed_at: dt.datetime,
     run_kind: str = RUN_KIND_RUN,
+    updated: dt.datetime | None = None,
 ) -> LedgerEntry:
-    """An item the guard refused; never retried, re-logged while it is in range."""
+    """An item the guard refused; never retried.
+
+    `updated` is the item's STAC `updated` timestamp when it parses. A
+    rejection is logged once per (item, updated, reason): `rejected_keys`
+    lets discovery skip it until the item is republished or the reason
+    changes.
+    """
     return LedgerEntry(
         item_id=item_id,
         collection=None,
         datetime=None,
         created=None,
-        updated=None,
+        updated=updated,
         tile=None,
         cloud_cover=None,
         product_uri=None,
@@ -374,6 +381,26 @@ def seen_keys(ledger: pa.Table) -> set[tuple[str, dt.datetime]]:
     return {
         (str(row.item_id), row.updated.to_pydatetime())
         for row in ok.itertuples(index=False)
+    }
+
+
+def rejected_keys(ledger: pa.Table) -> set[tuple[str, dt.datetime, str]]:
+    """Items whose newest row is a rejection, as (item id, updated, reason).
+
+    Rows with a null `updated` (written before it was recorded) or a null
+    reason never match, so they are logged once more and then deduplicated.
+    """
+    latest = latest_entries(ledger)
+    if latest.empty:
+        return set()
+    rejected = latest[
+        (latest["status"] == "rejected")
+        & latest["updated"].notna()
+        & latest["error"].notna()
+    ]
+    return {
+        (str(row.item_id), row.updated.to_pydatetime(), str(row.error))
+        for row in rejected.itertuples(index=False)
     }
 
 

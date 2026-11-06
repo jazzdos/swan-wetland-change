@@ -42,6 +42,7 @@ from wetland_change.ledger import (
     latest_entries,
     read_ledger,
     read_ledger_parts,
+    rejected_entry,
     retry_ids,
     seen_keys,
     watermark,
@@ -1768,3 +1769,133 @@ def test_a_crashed_run_with_only_failed_rows_is_recovered_without_scoring(
     assert recovered["change_files"] == []
     assert recovered["change_rows"] == 0
     assert recovered["recovered_by"] == RUN2
+
+
+# --- unchanged rejections are logged once ------------------------------------
+
+STAMP = "2026-10-28T08:30:21.681234Z"
+
+
+def _stamped_wrong(fixture_item: dict[str, Any], stamp: str = STAMP) -> dict[str, Any]:
+    wrong = _wrong_collection(fixture_item)
+    wrong["properties"]["updated"] = stamp
+    return wrong
+
+
+def _rejected_rows(store: OutputStore, item_id: str) -> pd.DataFrame:
+    frame = read_ledger(store).to_pandas()
+    return frame[(frame["item_id"] == item_id) & (frame["status"] == "rejected")]
+
+
+def test_an_unchanged_rejection_is_not_written_again(
+    fixture_item: dict[str, Any], fixture_polygon: BaseGeometry, tmp_path: Path
+) -> None:
+    wrong = _stamped_wrong(fixture_item)
+    polygons = _polygons(fixture_polygon)
+    store = _counting_store(tmp_path)
+    client = FakeClient([wrong])
+    first = _run(tmp_path, client, polygons, NOW, store=store)
+    assert first.rejected == 1
+    parts_before = _parts(store)
+    store.reset()
+    second = _run(tmp_path, client, polygons, NOW + timedelta(days=1), store=store)
+    assert (second.rejected, second.skipped_seen) == (0, 1)
+    assert second.ledger_files == []
+    _assert_one_ledger_read(store, len(parts_before))
+    assert _parts(store) == parts_before
+    rows = _rejected_rows(store, wrong["id"])
+    assert len(rows) == 1
+    assert rows["updated"].iloc[0].to_pydatetime() == parse_timestamp(STAMP)
+
+
+def test_an_unchanged_rejection_does_not_add_a_part_beside_a_new_scene(
+    fixture_item: dict[str, Any], fixture_polygon: BaseGeometry, tmp_path: Path
+) -> None:
+    wrong = _stamped_wrong(fixture_item)
+    polygons = _polygons(fixture_polygon)
+    store = OutputStore(str(tmp_path / "out"))
+    _run(tmp_path, FakeClient([wrong]), polygons, NOW, store=store)
+    second = _run(
+        tmp_path,
+        FakeClient([wrong, fixture_item]),
+        polygons,
+        NOW + timedelta(days=1),
+        store=store,
+    )
+    assert (second.rejected, second.processed, second.skipped_seen) == (0, 1, 1)
+    assert second.ledger_files == [
+        f"ledger/year=2026/ledger_{second.run_id}_00000.parquet"
+    ]
+
+
+def test_a_rejected_item_with_a_new_updated_is_logged_again(
+    fixture_item: dict[str, Any], fixture_polygon: BaseGeometry, tmp_path: Path
+) -> None:
+    wrong = _stamped_wrong(fixture_item)
+    polygons = _polygons(fixture_polygon)
+    store = OutputStore(str(tmp_path / "out"))
+    _run(tmp_path, FakeClient([wrong]), polygons, NOW, store=store)
+    newer = _stamped_wrong(fixture_item, "2026-10-29T01:02:03.5Z")
+    second = _run(
+        tmp_path, FakeClient([newer]), polygons, NOW + timedelta(days=1), store=store
+    )
+    assert second.rejected == 1
+    rows = _rejected_rows(store, wrong["id"])
+    stamps = sorted(v.to_pydatetime() for v in rows["updated"])
+    assert stamps == [
+        parse_timestamp(STAMP),
+        parse_timestamp("2026-10-29T01:02:03.5Z"),
+    ]
+
+
+def test_a_legacy_rejected_row_without_updated_is_relogged_once(
+    fixture_item: dict[str, Any], fixture_polygon: BaseGeometry, tmp_path: Path
+) -> None:
+    wrong = _stamped_wrong(fixture_item)
+    polygons = _polygons(fixture_polygon)
+    store = OutputStore(str(tmp_path / "out"))
+    client = FakeClient([wrong])
+    first = _run(tmp_path, client, polygons, NOW, store=store)
+    reason = read_ledger(store).to_pandas()["error"].iloc[0]
+    for path in first.ledger_files:
+        (tmp_path / "out" / path).unlink()
+    legacy = rejected_entry(
+        wrong["id"], reason, run_id="legacy", processed_at=NOW - timedelta(days=1)
+    )
+    write_ledger([legacy], store, run_id="legacy")
+
+    second = _run(tmp_path, client, polygons, NOW + timedelta(days=1), store=store)
+    assert (second.rejected, second.skipped_seen) == (1, 0)
+    third = _run(tmp_path, client, polygons, NOW + timedelta(days=2), store=store)
+    assert (third.rejected, third.skipped_seen) == (0, 1)
+    assert third.ledger_files == []
+    assert len(_rejected_rows(store, wrong["id"])) == 2
+
+
+def test_backfill_once_does_not_write_an_unchanged_rejection_again(
+    fixture_item: dict[str, Any], fixture_polygon: BaseGeometry, tmp_path: Path
+) -> None:
+    wrong = _stamped_wrong(fixture_item)
+    store = OutputStore(str(tmp_path / "out"))
+    config_path = tmp_path / "pipeline.toml"
+    config_path.write_text("# test\n")
+
+    def backfill(now: datetime) -> RunManifest:
+        return backfill_once(
+            _config(tmp_path),
+            start=datetime(2026, 10, 26, tzinfo=UTC),
+            end=datetime(2026, 10, 28, 23, 59, 59, tzinfo=UTC),
+            client=FakeClient([wrong]),
+            reader=RasterioReader(),
+            store=store,
+            polygons=_polygons(fixture_polygon),
+            now=now,
+            config_path=config_path,
+        )
+
+    first = backfill(NOW)
+    assert first.rejected == 1
+    second = backfill(NOW + timedelta(days=1))
+    assert (second.rejected, second.skipped_seen) == (0, 1)
+    assert second.ledger_files == []
+    assert len(_rejected_rows(store, wrong["id"])) == 1

@@ -26,6 +26,7 @@ from wetland_change.ledger import (
     exhausted_keys,
     read_ledger,
     read_ledger_parts,
+    rejected_keys,
     retry_ids,
     seen_keys,
     watermark,
@@ -110,6 +111,7 @@ def discover(
             cfg.stac, before=before, now=datetime.now(UTC)
         ),
         seen=seen_keys(ledger) | exhausted_keys(ledger),
+        rejected_seen=rejected_keys(ledger),
         retry_ids=retry_ids(ledger),
     )
     for scene in result.scenes:
