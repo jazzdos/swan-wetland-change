@@ -74,6 +74,13 @@ class RunManifest:
     # manifest because the crashed run's config is not known, the same reason
     # package_version and config_sha256 are None there.
     operation_epsg: int | None = None
+    # Library versions, the sha256 of uv.lock and the git commit of the code
+    # that made the run. None on a recovered manifest because only the crashed
+    # process knew its environment, the same reason package_version and
+    # config_sha256 are None there.
+    runtime: dict[str, str] | None = None
+    uv_lock_sha256: str | None = None
+    git_commit: str | None = None
 
     def to_json(self) -> str:
         def _default(value: Any) -> str:

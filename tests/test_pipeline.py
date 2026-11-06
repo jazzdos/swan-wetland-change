@@ -61,6 +61,7 @@ from wetland_change.pipeline import (
     score_once,
 )
 from wetland_change.raster.read import Grid, RasterioReader
+from wetland_change.runtime import Environment
 from wetland_change.stac import PlaceholderBaseUrlError
 from wetland_change.stats import ObservationRow
 from wetland_change.store import OutputStore
@@ -932,6 +933,65 @@ def test_score_once_scores_range_and_writes_manifest(
         _score_once(tmp_path, start, end, later)
 
 
+FIXED_ENVIRONMENT = Environment(
+    runtime={
+        "python": "3.12.0",
+        "gdal": "3.0",
+        "proj": "9.0",
+        "geopandas": "1",
+        "rasterio": "1",
+        "pyarrow": "1",
+        "numpy": "2",
+    },
+    uv_lock_sha256="a" * 64,
+    git_commit="b" * 40,
+)
+
+
+def _fix_environment(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(
+        "wetland_change.pipeline.capture_environment", lambda: FIXED_ENVIRONMENT
+    )
+
+
+def _assert_fixed_environment(payload: dict[str, Any]) -> None:
+    assert payload["runtime"] == FIXED_ENVIRONMENT.runtime
+    assert payload["uv_lock_sha256"] == "a" * 64
+    assert payload["git_commit"] == "b" * 40
+
+
+def test_run_and_score_manifests_record_the_environment(
+    fixture_item: dict[str, Any],
+    fixture_polygon: BaseGeometry,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _fix_environment(monkeypatch)
+    store = OutputStore(str(tmp_path / "out"))
+    run = _run(tmp_path, FakeClient([fixture_item]), _polygons(fixture_polygon), NOW)
+    _assert_fixed_environment(_manifest_json(store, run.run_id))
+    start = datetime(2026, 10, 26, tzinfo=UTC)
+    end = datetime(2026, 10, 28, 23, 59, 59, tzinfo=UTC)
+    score = _score_once(tmp_path, start, end, NOW + timedelta(days=1))
+    _assert_fixed_environment(_manifest_json(store, score.run_id))
+
+
+def test_requeue_manifest_records_the_environment(
+    fixture_item: dict[str, Any],
+    fixture_polygon: BaseGeometry,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    broken = copy.deepcopy(fixture_item)
+    broken["assets"]["green"]["href"] = str(tmp_path / "missing.tif")
+    store = _exhaust(tmp_path, broken, _polygons(fixture_polygon))
+    _fix_environment(monkeypatch)
+    manifest = _requeue(
+        tmp_path, store, NOW + timedelta(days=10), item_ids=[broken["id"]]
+    )
+    _assert_fixed_environment(_manifest_json(store, manifest.run_id))
+
+
 def test_score_once_records_removed_change_files(
     fixture_item: dict[str, Any], fixture_polygon: BaseGeometry, tmp_path: Path
 ) -> None:
@@ -1623,7 +1683,11 @@ def test_a_recovered_manifest_does_not_take_the_recovering_runs_config(
     assert recovered["recovered_by"] == RUN2
     assert recovered["package_version"] is None
     assert recovered["config_sha256"] is None
+    assert recovered["runtime"] is None
+    assert recovered["uv_lock_sha256"] is None
+    assert recovered["git_commit"] is None
     own = _manifest_json(store, RUN2)
+    assert "python" in own["runtime"]
     assert own["config_sha256"] == hashlib.sha256(b"# b\n").hexdigest()
     assert own["package_version"] is not None
     assert second.config_sha256 == own["config_sha256"]

@@ -54,6 +54,7 @@ from wetland_change.outputs.changes import change_path, write_changes
 from wetland_change.outputs.geoparquet import read_observations, write_observations
 from wetland_change.raster.read import RasterReader, read_stack
 from wetland_change.raster.scaling import check_band_scaling, parse_product_metadata
+from wetland_change.runtime import capture_environment
 from wetland_change.stac import build_and_write, ensure_publishable_base_url
 from wetland_change.stats import ObservationRow, rasterise, summarise
 from wetland_change.store import OutputStore
@@ -156,6 +157,7 @@ def _new_manifest(
     datetime_start: datetime | None = None,
     datetime_end: datetime | None = None,
 ) -> RunManifest:
+    env = capture_environment()
     return RunManifest(
         run_id=run_id,
         started_at=now,
@@ -175,6 +177,9 @@ def _new_manifest(
         datetime_end=datetime_end,
         output_root_override=output_root_override,
         operation_epsg=cfg.aoi.operation_epsg,
+        runtime=env.runtime,
+        uv_lock_sha256=env.uv_lock_sha256,
+        git_commit=env.git_commit,
     )
 
 
@@ -569,10 +574,10 @@ def _recovered_manifest(
     """Manifest of a daily run that raised before writing its own.
 
     Only what the ledger knows is filled in. skipped_seen, skipped_filter and
-    both watermarks, package_version, config_sha256 and operation_epsg stay
-    empty, because only the crashed process knew them; `recovered_by` marks
-    the manifest. Scoring fields come from the combined scoring result of the
-    run that recovered it.
+    both watermarks, package_version, config_sha256, operation_epsg, runtime,
+    uv_lock_sha256 and git_commit stay empty, because only the crashed process
+    knew them; `recovered_by` marks the manifest. Scoring fields come from the
+    combined scoring result of the run that recovered it.
     """
     status = rows["status"]
     processed = int((status == "succeeded").sum())
@@ -776,6 +781,7 @@ def score_once(
         operation_epsg=cfg.aoi.operation_epsg,
         date_range=(start.astimezone(UTC).date(), end.astimezone(UTC).date()),
     )
+    env = capture_environment()
     manifest = RunManifest(
         run_id=run_id,
         started_at=now,
@@ -794,6 +800,9 @@ def score_once(
         change_files=scored.files,
         change_files_removed=scored.removed,
         operation_epsg=cfg.aoi.operation_epsg,
+        runtime=env.runtime,
+        uv_lock_sha256=env.uv_lock_sha256,
+        git_commit=env.git_commit,
     )
     write_manifest(manifest, store)
     return manifest
@@ -825,6 +834,7 @@ def requeue_once(
     entries = requeue_entries(ledger, selected, run_id=run_id, processed_at=now)
     ledger_files = write_ledger(entries, store, run_id=run_id, part=0)
     remaining = exhausted_ids(ledger_with(ledger, entries))
+    env = capture_environment()
     manifest = RunManifest(
         run_id=run_id,
         started_at=now,
@@ -842,6 +852,9 @@ def requeue_once(
         exhausted_items=remaining,
         requeued_items=[entry.item_id for entry in entries],
         operation_epsg=cfg.aoi.operation_epsg,
+        runtime=env.runtime,
+        uv_lock_sha256=env.uv_lock_sha256,
+        git_commit=env.git_commit,
     )
     write_manifest(manifest, store)
     return manifest

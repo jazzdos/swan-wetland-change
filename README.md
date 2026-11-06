@@ -97,8 +97,12 @@ S3:
    EPSG. Files written before these keys existed still read.
    A later run finishes any daily run that has ledger rows and no manifest,
    scoring its dates and writing its manifest with `recovered_by` set and its
-   skipped tallies, watermarks, `package_version` and `config_sha256` empty.
+   skipped tallies, watermarks, `package_version`, `config_sha256`, `runtime`,
+   `uv_lock_sha256` and `git_commit` empty.
    The daily job verifies each recovered run by id after it verifies its own.
+   The run manifest records `runtime` (python, gdal, proj, geopandas, rasterio,
+   pyarrow and numpy versions), the sha256 of `uv.lock` as `uv_lock_sha256`, and
+   the `git_commit` of the code (null outside a git checkout).
 7. Change (`change.py`, `outputs/changes.py`). Score the daily aggregate per
    polygon against its month-of-year baseline; rows with absolute robust z
    above 3, valid fraction above 0.8 and at least 5 baseline samples go to
