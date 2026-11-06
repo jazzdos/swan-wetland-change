@@ -92,6 +92,7 @@ class _StubS3(ThreadingHTTPServer):
         super().__init__(("127.0.0.1", 0), _StubS3Handler)
         self.requests: list[tuple[str, str, str | None]] = []
         self.calls: list[tuple[str, str]] = []
+        self.keys: set[str] = set()
 
 
 class _StubS3Handler(BaseHTTPRequestHandler):
@@ -122,7 +123,10 @@ class _StubS3Handler(BaseHTTPRequestHandler):
         key = parts.path.removeprefix("/stub-bucket").strip("/")
         xml = {"Content-Type": "application/xml"}
         if self.command == "HEAD":
-            self._reply(200 if not key else 404)
+            self._reply(200 if not key or key in self.server.keys else 404)
+        elif self.command == "DELETE":
+            self.server.keys.discard(key)
+            self._reply(204)
         elif self.command == "GET":
             self._reply(
                 200,
@@ -171,10 +175,20 @@ def stub_s3() -> Iterator[_StubS3]:
     thread.join(timeout=5)
 
 
-def _s3_store(stub_s3: _StubS3, monkeypatch: pytest.MonkeyPatch) -> OutputStore:
+def _s3_store(
+    stub_s3: _StubS3, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> OutputStore:
+    """An S3 store aimed at the stub, with botocore and pyarrow kept off real AWS."""
     monkeypatch.setenv("AWS_EC2_METADATA_DISABLED", "true")
     monkeypatch.setenv("AWS_ACCESS_KEY_ID", "stub")
     monkeypatch.setenv("AWS_SECRET_ACCESS_KEY", "stub")
+    monkeypatch.setenv("AWS_REGION", "us-east-1")
+    monkeypatch.delenv("AWS_PROFILE", raising=False)
+    monkeypatch.delenv("AWS_SESSION_TOKEN", raising=False)
+    monkeypatch.setenv("AWS_CONFIG_FILE", str(tmp_path / "no-aws-config"))
+    monkeypatch.setenv(
+        "AWS_SHARED_CREDENTIALS_FILE", str(tmp_path / "no-aws-credentials")
+    )
     port = stub_s3.server_address[1]
     return OutputStore(
         f"s3://stub-bucket/prefix?endpoint_override=127.0.0.1:{port}"
@@ -183,9 +197,9 @@ def _s3_store(stub_s3: _StubS3, monkeypatch: pytest.MonkeyPatch) -> OutputStore:
 
 
 def test_s3_write_sends_the_content_type_header(
-    stub_s3: _StubS3, monkeypatch: pytest.MonkeyPatch
+    stub_s3: _StubS3, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
-    store = _s3_store(stub_s3, monkeypatch)
+    store = _s3_store(stub_s3, monkeypatch, tmp_path)
     expected = {
         "runs/r.json": "application/json",
         "observations/x.parquet": "application/vnd.apache.parquet",
@@ -204,9 +218,9 @@ def test_s3_write_sends_the_content_type_header(
 
 
 def test_s3_write_creates_no_directory_marker_keys(
-    stub_s3: _StubS3, monkeypatch: pytest.MonkeyPatch
+    stub_s3: _StubS3, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
-    store = _s3_store(stub_s3, monkeypatch)
+    store = _s3_store(stub_s3, monkeypatch, tmp_path)
     store.write_bytes("runs/a/r.json", b"{}")
     store.write_bytes("z.json", b"{}")
     for relpath in ("runs/a/r.json", "z.json"):
@@ -220,6 +234,71 @@ def test_s3_write_creates_no_directory_marker_keys(
         if method in ("PUT", "POST") and key.endswith("/")
     ]
     assert markers == [], stub_s3.calls
+
+
+def _no_directory_creation(stub_s3: _StubS3) -> list[tuple[str, str]]:
+    return [
+        (method, key)
+        for method, key in stub_s3.calls
+        if method not in ("GET", "HEAD") and key.endswith("/")
+    ]
+
+
+def test_s3_delete_sends_only_delete_for_a_nested_key(
+    stub_s3: _StubS3, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    store = _s3_store(stub_s3, monkeypatch, tmp_path)
+    stub_s3.keys.add("prefix/runs/a/r.json")
+    assert store.delete("runs/a/r.json") is True
+    assert ("DELETE", "/prefix/runs/a/r.json") in stub_s3.calls
+    assert [c for c in stub_s3.calls if c[0] in ("PUT", "POST")] == []
+    assert _no_directory_creation(stub_s3) == []
+    assert "prefix/runs/a/r.json" not in stub_s3.keys
+
+
+def test_s3_delete_of_a_missing_key_returns_false_without_deleting(
+    stub_s3: _StubS3, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    store = _s3_store(stub_s3, monkeypatch, tmp_path)
+    assert store.delete("nope.json") is False
+    assert [c for c in stub_s3.calls if c[0] == "DELETE"] == []
+
+
+def test_s3_delete_sends_only_delete_for_a_top_level_key(
+    stub_s3: _StubS3, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    store = _s3_store(stub_s3, monkeypatch, tmp_path)
+    stub_s3.keys.add("prefix/z.json")
+    assert store.delete("z.json") is True
+    assert ("DELETE", "/prefix/z.json") in stub_s3.calls
+    assert [c for c in stub_s3.calls if c[0] in ("PUT", "POST")] == []
+
+
+def test_s3_delete_client_targets_the_stub_endpoint(
+    stub_s3: _StubS3, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    store = _s3_store(stub_s3, monkeypatch, tmp_path)
+    stub_s3.keys.add("prefix/z.json")
+    store.delete("z.json")
+    port = stub_s3.server_address[1]
+    assert store._s3 is not None
+    assert store._s3.meta.endpoint_url == f"http://127.0.0.1:{port}"
+
+
+def test_local_delete_removes_files_and_reports_presence(tmp_path: Path) -> None:
+    store = OutputStore(str(tmp_path))
+    store.write_bytes("a/b.txt", b"x")
+    assert store.delete("a/b.txt") is True
+    assert not (tmp_path / "a" / "b.txt").exists()
+    assert store.delete("a/b.txt") is False
+    assert store.delete("never/existed.txt") is False
+
+
+def test_local_delete_builds_no_s3_client(tmp_path: Path) -> None:
+    store = OutputStore(str(tmp_path))
+    store.write_bytes("a/b.txt", b"x")
+    store.delete("a/b.txt")
+    assert store._s3 is None
 
 
 def test_local_write_creates_missing_parent_directories(tmp_path: Path) -> None:
