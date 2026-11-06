@@ -52,6 +52,7 @@ from wetland_change.manifest import KIND_REQUEUE, KIND_SCORE, RunManifest, new_r
 from wetland_change.outputs.changes import CHANGE_COLUMNS, change_path
 from wetland_change.outputs.geoparquet import observation_path, write_observations
 from wetland_change.pipeline import (
+    RunIdReusedError,
     _with_later_dates,
     backfill_once,
     requeue_once,
@@ -473,14 +474,48 @@ def test_stac_config_rejects_zero_lookback() -> None:
         )
 
 
+def _snapshot(root: Path) -> dict[str, bytes]:
+    return {
+        str(p.relative_to(root)): p.read_bytes()
+        for p in sorted(root.rglob("*"))
+        if p.is_file()
+    }
+
+
 def test_run_once_refuses_reused_run_id(
     fixture_item: dict[str, Any], fixture_polygon: BaseGeometry, tmp_path: Path
 ) -> None:
     polygons = _polygons(fixture_polygon)
     client = FakeClient([fixture_item])
     _run(tmp_path, client, polygons, NOW)
-    with pytest.raises(ValueError, match="run id"):
+    before = _snapshot(tmp_path / "out")
+    assert before
+    with pytest.raises(RunIdReusedError, match="already has"):
         _run(tmp_path, client, polygons, NOW)
+    assert _snapshot(tmp_path / "out") == before
+
+
+def test_run_once_refuses_a_run_id_with_ledger_parts_but_no_manifest(
+    fixture_item: dict[str, Any], fixture_polygon: BaseGeometry, tmp_path: Path
+) -> None:
+    polygons = _polygons(fixture_polygon)
+    client = FakeClient([fixture_item])
+    _run(tmp_path, client, polygons, NOW)
+    root = tmp_path / "out"
+    manifest_file = root / "runs" / f"{new_run_id(NOW)}.json"
+    assert manifest_file.is_file()
+    manifest_file.unlink()
+    before = _snapshot(root)
+    ledger_files = [name for name in before if name.startswith("ledger")]
+    assert ledger_files
+    with pytest.raises(RunIdReusedError, match="already has"):
+        _run(tmp_path, client, polygons, NOW)
+    after = _snapshot(root)
+    assert sorted(after) == sorted(before)
+    assert not manifest_file.exists()
+    assert {name: after[name] for name in ledger_files} == {
+        name: before[name] for name in ledger_files
+    }
 
 
 def test_run_once_records_output_root_override(

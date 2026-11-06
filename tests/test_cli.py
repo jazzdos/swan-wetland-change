@@ -206,6 +206,47 @@ def test_run_output_root_override_writes_manifest_there(
     assert not (tmp_path / "configured").exists()
 
 
+def test_run_refuses_a_reused_run_id(
+    monkeypatch: pytest.MonkeyPatch,
+    fixture_item: dict[str, Any],
+    fixture_polygon: BaseGeometry,
+    tmp_path: Path,
+) -> None:
+    cfgfile = _patch_cli(
+        monkeypatch, tmp_path, FakeClient([fixture_item]), _polygons(fixture_polygon)
+    )
+    root = tmp_path / "out"
+    args = [
+        "run",
+        "--config",
+        str(cfgfile),
+        "--output-root",
+        str(root),
+        "--now",
+        "2026-10-29T10:00:00",
+    ]
+    first = runner.invoke(app, args)
+    assert first.exit_code == 0, (first.output, first.exception)
+    before = {
+        str(p.relative_to(root)): p.read_bytes()
+        for p in sorted(root.rglob("*"))
+        if p.is_file()
+    }
+    assert before
+    second = runner.invoke(app, args)
+    assert second.exit_code == 2, (second.output, second.exception)
+    assert isinstance(second.exception, SystemExit)
+    text = " ".join(click.unstyle(second.output).replace("│", " ").split())
+    assert "already has" in text
+    assert second.stdout == ""
+    after = {
+        str(p.relative_to(root)): p.read_bytes()
+        for p in sorted(root.rglob("*"))
+        if p.is_file()
+    }
+    assert after == before
+
+
 def test_run_no_catalogue_leaves_no_stac_directory(
     monkeypatch: pytest.MonkeyPatch,
     fixture_item: dict[str, Any],
