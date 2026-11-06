@@ -150,7 +150,7 @@ The override form is `[water.overrides.ramsar-12]` with method = "mndwi", thresh
 
 Reported but not decision inputs: gap and agreement at -0.10, 0.00, +0.05, +0.10 and scl6 per row; the number of all rows below the computed agreement_min; and whether T equals +0.05.
 
-Status. The outcome is recorded in ADR 0010 as decided under Jarrod's delegation and pending his review. Changing ramsar-12's setting is an ADR 0005 calibration decision.
+Status. The outcome is recorded in ADR 0010 as decided under Jarrod's delegation; Jarrod approved it on 2026-11-06. Changing ramsar-12's setting is an ADR 0005 calibration decision.
 
 ## Spike results
 

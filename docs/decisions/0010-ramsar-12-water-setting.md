@@ -1,6 +1,6 @@
 # 0010 ramsar-12 water setting
 
-Status: decided under delegation by the orchestrator, 2026-11-06; pending Jarrod's review.
+Status: decided under delegation by the orchestrator, 2026-11-06; approved by Jarrod on 2026-11-06.
 Applies 0005; changes no setting.
 
 ## Context
@@ -26,8 +26,7 @@ This decision was made by the orchestrator under Jarrod's delegation of it,
 using the rule pre-registered in LEARNINGS.md ('Pre-registered hypotheses
 (st-2a78, 2026-11-06)') before the measurement ran. The pre-registration was
 committed as 959d15a and the script and its decision tests as ca8742e, both
-before the measurement. It is not Jarrod's decision, and he has not yet
-reviewed it.
+before the measurement. Jarrod reviewed and approved it on 2026-11-06.
 
 Disclosure:
 
