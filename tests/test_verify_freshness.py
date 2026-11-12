@@ -601,7 +601,10 @@ def test_datatake_listed_only_by_cdse_still_fails() -> None:
 
 
 def test_failing_es_search_leaves_cdse_on_its_own_footprint() -> None:
-    cdse = [cdse_item(OLD, geometry=COVERS_SMALL)]
+    cdse = [
+        cdse_item(OLD, geometry=COVERS_SMALL),
+        cdse_item(OLD2, geometry=MISSES_SMALL),
+    ]
     checks = count_checks(
         table(),
         RaisingClient(),  # type: ignore[arg-type]
@@ -614,6 +617,7 @@ def test_failing_es_search_leaves_cdse_on_its_own_footprint() -> None:
     check = pick(checks, CHECK_CDSE)
     assert check.passed is False
     assert check.detail["missing_from_ledger"] == [cdse[0]["id"]]
+    assert check.detail["reference_count"] == 1
     assert check.detail["footprint_edge"] == []
 
 
