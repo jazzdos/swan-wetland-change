@@ -15,6 +15,12 @@ generation time. A scene listed on only one side is not a mismatch while it
 was sensed less than `LATENCY` (24 h) before the check time; it is reported
 as `pending_latency`.
 
+Copernicus scope is decided once per datatake together with Earth Search (see
+`copernicus.reconcile_footprints`). A datatake both catalogues list whose
+footprint intersects the AOI in only one of them is reported as
+`footprint_edge` in `freshness_count_vs_copernicus` and not counted.
+`freshness_count_vs_earth_search` keeps Earth Search's own footprint filter.
+
 `freshness_exhausted_items` fails when any ledger item failed `MAX_ATTEMPTS`
 times and has no later succeeded row. Such an item is no longer retried or
 re-discovered, so nothing else reports it. It is not windowed: it fails until
@@ -28,6 +34,7 @@ from __future__ import annotations
 
 from collections.abc import Sequence
 from datetime import UTC, datetime, timedelta
+from typing import Any
 
 import pandas as pd
 import pyarrow as pa
@@ -45,6 +52,7 @@ from wetland_change.verify.copernicus import (
     datatake_key,
     in_aoi_only,
     normalise_scenes,
+    reconcile_footprints,
     rfc3339,
 )
 
@@ -117,7 +125,11 @@ def _scenes(
     end: datetime,
     cdse: bool,
 ) -> dict[str, Scene]:
-    """Locally filtered scenes of one catalogue sensed within [start, end]."""
+    """Scenes of one catalogue sensed within [start, end], with `in_aoi` set.
+
+    Scenes whose own footprint misses the AOI are kept so the caller decides
+    AOI membership.
+    """
     window = f"{rfc3339(start)}/{rfc3339(end)}"
     if cdse:
         search = client.search(
@@ -130,13 +142,11 @@ def _scenes(
             datetime=window,
             query={"eo:cloud_cover": {"lt": cfg.cloud_cover_max}},
         )
-    scenes = in_aoi_only(
-        normalise_scenes(
-            list(search.items_as_dicts()),
-            cloud_max=cfg.cloud_cover_max,
-            polygons=polygons_4326,
-            es_names=not cdse,
-        )
+    scenes = normalise_scenes(
+        list(search.items_as_dicts()),
+        cloud_max=cfg.cloud_cover_max,
+        polygons=polygons_4326,
+        es_names=not cdse,
     )
     return {k: s for k, s in scenes.items() if start <= s.sensed <= end}
 
@@ -162,7 +172,7 @@ def list_tile_counts(
         cdse=cdse,
     )
     counts: dict[str, int] = {}
-    for scene in scenes.values():
+    for scene in in_aoi_only(scenes).values():
         counts[scene.tile] = counts.get(scene.tile, 0) + 1
     return counts
 
@@ -204,7 +214,15 @@ def _compare(
     start: datetime,
     end: datetime,
     now: datetime,
+    footprint_edge: dict[str, Scene] | None = None,
 ) -> Check:
+    edge_names: list[str] | None = None
+    if footprint_edge is not None:
+        # A footprint-edge datatake is out of scope on both sides.
+        edge = {k: sc for k, sc in footprint_edge.items() if sc.tile == tile}
+        ledger_side = {k: v for k, v in ledger_side.items() if k not in edge}
+        reference_side = {k: v for k, v in reference_side.items() if k not in edge}
+        edge_names = sorted(sc.name for sc in edge.values())
     cutoff = now - LATENCY
     only_ledger = [v for k, v in ledger_side.items() if k not in reference_side]
     only_reference = [v for k, v in reference_side.items() if k not in ledger_side]
@@ -212,23 +230,26 @@ def _compare(
     missing_reference = sorted(n for n, s in only_ledger if s <= cutoff)
     missing_ledger = sorted(n for n, s in only_reference if s <= cutoff)
     mismatched = len(missing_reference) + len(missing_ledger)
+    detail: dict[str, Any] = {
+        "tile": tile,
+        "window_start": start.isoformat(),
+        "window_end": end.isoformat(),
+        "latency_hours": int(LATENCY.total_seconds() // 3600),
+        "ledger_count": len(ledger_side),
+        "reference_count": len(reference_side),
+        "missing_from_ledger": missing_ledger,
+        "missing_from_reference": missing_reference,
+        "pending_latency": sorted(n for n, _ in pending),
+    }
+    if edge_names is not None:
+        detail["footprint_edge"] = edge_names
     return Check(
         name=check_name,
         passed=mismatched == 0,
         measured=float(mismatched),
         threshold=0.0,
         reference=reference,
-        detail={
-            "tile": tile,
-            "window_start": start.isoformat(),
-            "window_end": end.isoformat(),
-            "latency_hours": int(LATENCY.total_seconds() // 3600),
-            "ledger_count": len(ledger_side),
-            "reference_count": len(reference_side),
-            "missing_from_ledger": missing_ledger,
-            "missing_from_reference": missing_reference,
-            "pending_latency": sorted(n for n, _ in pending),
-        },
+        detail=detail,
     )
 
 
@@ -260,13 +281,13 @@ def count_checks(
     """Per tile, ledger-vs-Earth Search then ledger-vs-CDSE count checks."""
     start, end = now - WINDOW, now
     ledger_sides = _ledger_sides(ledger, start, end)
-    listings: dict[str, dict[str, Scene] | Exception] = {}
+    raw: dict[str, dict[str, Scene] | Exception] = {}
     for source, client, is_cdse in (
         (CHECK_ES, es_client, False),
         (CHECK_CDSE, cdse_client, True),
     ):
         try:
-            listings[source] = _scenes(
+            raw[source] = _scenes(
                 client,
                 cfg,
                 bbox=bbox,
@@ -276,12 +297,30 @@ def count_checks(
                 cdse=is_cdse,
             )
         except Exception as exc:  # a dead catalogue must not hide the other checks
-            listings[source] = exc
+            raw[source] = exc
+
+    es_all, cdse_all = raw[CHECK_ES], raw[CHECK_CDSE]
+    listings: dict[str, dict[str, Scene] | Exception] = {}
+    edge: dict[str, Scene] = {}
+    # Earth Search keeps its own footprint filter: the pipeline discovers from it.
+    listings[CHECK_ES] = (
+        es_all if isinstance(es_all, Exception) else in_aoi_only(es_all)
+    )
+    if isinstance(cdse_all, Exception):
+        listings[CHECK_CDSE] = cdse_all
+    elif isinstance(es_all, Exception):
+        # No Earth Search listing to reconcile against: own footprint only.
+        listings[CHECK_CDSE] = in_aoi_only(cdse_all)
+    else:
+        rec = reconcile_footprints(es_all, cdse_all)
+        listings[CHECK_CDSE] = rec.cdse
+        edge = rec.footprint_edge
 
     tiles = set(SWAN_TILES) | set(ledger_sides)
     for found in listings.values():
         if not isinstance(found, Exception):
             tiles |= {s.tile for s in found.values()}
+    tiles |= {s.tile for s in edge.values()}
 
     references = {
         CHECK_ES: f"{cfg.endpoint} {cfg.collection}",
@@ -307,6 +346,7 @@ def count_checks(
                     start=start,
                     end=end,
                     now=now,
+                    footprint_edge=None if is_es else edge,
                 )
             )
     return checks

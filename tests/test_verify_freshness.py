@@ -1,15 +1,22 @@
 from __future__ import annotations
 
 import dataclasses
+import json
 from datetime import UTC, datetime, timedelta
 from typing import Any
 
 import pyarrow as pa
 import pytest
+from shapely.geometry import shape
+from shapely.geometry.base import BaseGeometry
 
 from tests.test_verify_copernicus import (
+    AOI_SMALL,
     BBOX,
     CFG,
+    COVERS_SMALL,
+    FIXTURES,
+    MISSES_SMALL,
     NOW,
     OUTSIDE,
     POLYGONS,
@@ -86,15 +93,20 @@ def table(*entries: LedgerEntry) -> pa.Table:
 
 
 def counts(
-    ledger: pa.Table, es: list[dict[str, Any]], cdse: list[dict[str, Any]]
+    ledger: pa.Table,
+    es: list[dict[str, Any]],
+    cdse: list[dict[str, Any]],
+    *,
+    polygons: list[BaseGeometry] | None = None,
+    bbox: tuple[float, float, float, float] = BBOX,
 ) -> list[Check]:
     return count_checks(
         ledger,
         RecordingClient(es),
         RecordingClient(cdse),
         CFG,
-        bbox=BBOX,
-        polygons_4326=POLYGONS,
+        bbox=bbox,
+        polygons_4326=POLYGONS if polygons is None else polygons,
         now=NOW,
     )
 
@@ -541,3 +553,98 @@ def test_list_tile_counts_search_kwargs() -> None:
     (kwargs,) = client.calls
     assert kwargs["datetime"] == "2026-09-01T00:00:00Z/2026-10-29T10:00:00Z"
     assert kwargs["query"] == {"eo:cloud_cover": {"lt": 20.0}}
+
+
+def test_cdse_only_footprint_edge_is_reported_not_counted() -> None:
+    es = [es_item(OLD, geometry=MISSES_SMALL)]
+    cdse = [cdse_item(OLD, geometry=COVERS_SMALL)]
+    check = pick(counts(table(), es, cdse, polygons=AOI_SMALL), CHECK_CDSE)
+    assert check.passed is True
+    assert check.measured == 0.0
+    assert check.detail["footprint_edge"] == [cdse[0]["id"]]
+    assert check.detail["missing_from_ledger"] == []
+    assert check.detail["missing_from_reference"] == []
+
+
+def test_cdse_only_footprint_edge_leaves_earth_search_check_unchanged() -> None:
+    es = [es_item(OLD, geometry=MISSES_SMALL)]
+    cdse = [cdse_item(OLD, geometry=COVERS_SMALL)]
+    check = pick(counts(table(), es, cdse, polygons=AOI_SMALL), CHECK_ES)
+    assert check.passed is True
+    assert "footprint_edge" not in check.detail
+    assert check.detail["ledger_count"] == 0
+    assert check.detail["reference_count"] == 0
+
+
+def test_earth_search_only_footprint_edge_is_reported_not_counted() -> None:
+    es = [es_item(OLD, geometry=COVERS_SMALL)]
+    cdse = [cdse_item(OLD, geometry=MISSES_SMALL)]
+    checks = counts(table(row(OLD)), es, cdse, polygons=AOI_SMALL)
+    check = pick(checks, CHECK_CDSE)
+    assert check.passed is True
+    assert check.measured == 0.0
+    assert check.detail["footprint_edge"] == [cdse[0]["id"]]
+    assert check.detail["ledger_count"] == 0
+    assert check.detail["reference_count"] == 0
+    es_check = pick(checks, CHECK_ES)
+    assert es_check.passed is True
+    assert es_check.detail["reference_count"] == 1
+
+
+def test_datatake_listed_only_by_cdse_still_fails() -> None:
+    cdse = [cdse_item(OLD, geometry=COVERS_SMALL)]
+    check = pick(counts(table(), [], cdse, polygons=AOI_SMALL), CHECK_CDSE)
+    assert check.passed is False
+    assert check.measured == 1.0
+    assert check.detail["missing_from_ledger"] == [cdse[0]["id"]]
+    assert check.detail["footprint_edge"] == []
+
+
+def test_failing_es_search_leaves_cdse_on_its_own_footprint() -> None:
+    cdse = [cdse_item(OLD, geometry=COVERS_SMALL)]
+    checks = count_checks(
+        table(),
+        RaisingClient(),  # type: ignore[arg-type]
+        RecordingClient(cdse),
+        CFG,
+        bbox=BBOX,
+        polygons_4326=AOI_SMALL,
+        now=NOW,
+    )
+    check = pick(checks, CHECK_CDSE)
+    assert check.passed is False
+    assert check.detail["missing_from_ledger"] == [cdse[0]["id"]]
+    assert check.detail["footprint_edge"] == []
+
+
+def test_footprint_edge_stays_on_its_own_tile() -> None:
+    es = [es_item(OLD, geometry=MISSES_SMALL)]
+    cdse = [cdse_item(OLD, geometry=COVERS_SMALL)]
+    checks = counts(table(), es, cdse, polygons=AOI_SMALL)
+    assert pick(checks, CHECK_CDSE, "50HLK").detail["footprint_edge"] == [cdse[0]["id"]]
+    assert pick(checks, CHECK_CDSE, "50HMK").detail["footprint_edge"] == []
+
+
+def test_real_footprint_edge_50hmk_20261014() -> None:
+    es_json = json.loads((FIXTURES / "es_item.json").read_text())
+    cdse_json = json.loads((FIXTURES / "cdse_item.json").read_text())
+    feature = json.loads((FIXTURES / "dea_qd4xhuft4_v3.geojson").read_text())[
+        "features"
+    ][0]
+    polygon = shape(feature["geometry"])
+    checks = counts(
+        table(),
+        [es_json],
+        [cdse_json],
+        polygons=[polygon],
+        bbox=polygon.buffer(0.01).bounds,
+    )
+    cdse_check = pick(checks, CHECK_CDSE, "50HMK")
+    assert cdse_check.passed is True
+    assert cdse_check.measured == 0.0
+    assert cdse_check.detail["footprint_edge"] == [
+        "S2C_MSIL2A_20261014T020311_N0513_R017_T50HMK_20261014T062152"
+    ]
+    es_check = pick(checks, CHECK_ES, "50HMK")
+    assert es_check.passed is True
+    assert es_check.measured == 0.0
