@@ -43,6 +43,7 @@ from wetland_change.verify.copernicus import (
     LATENCY,
     Scene,
     datatake_key,
+    in_aoi_only,
     normalise_scenes,
     rfc3339,
 )
@@ -129,11 +130,13 @@ def _scenes(
             datetime=window,
             query={"eo:cloud_cover": {"lt": cfg.cloud_cover_max}},
         )
-    scenes = normalise_scenes(
-        list(search.items_as_dicts()),
-        cloud_max=cfg.cloud_cover_max,
-        polygons=polygons_4326,
-        es_names=not cdse,
+    scenes = in_aoi_only(
+        normalise_scenes(
+            list(search.items_as_dicts()),
+            cloud_max=cfg.cloud_cover_max,
+            polygons=polygons_4326,
+            es_names=not cdse,
+        )
     )
     return {k: s for k, s in scenes.items() if start <= s.sensed <= end}
 
