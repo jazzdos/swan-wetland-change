@@ -1,4 +1,5 @@
 .worktrees/
+.DS_Store
 .env
 MACHINES.md
 data/*
