@@ -1,0 +1,65 @@
+{
+ "type": "FeatureCollection",
+ "crs": {
+  "type": "name",
+  "properties": {
+   "name": "urn:ogc:def:crs:EPSG::4326"
+  }
+ },
+ "features": [
+  {
+   "type": "Feature",
+   "id": "DigitalEarthAustraliaWaterbodies_v3.240232",
+   "geometry": {
+    "type": "MultiPolygon",
+    "coordinates": [
+     [
+      [
+       [
+        116.22768853,
+        -32.49222446
+       ],
+       [
+        116.22800789,
+        -32.4922575
+       ],
+       [
+        116.22796826,
+        -32.49252379
+       ],
+       [
+        116.22828762,
+        -32.49255683
+       ],
+       [
+        116.22824799,
+        -32.49282312
+       ],
+       [
+        116.22760927,
+        -32.49275704
+       ],
+       [
+        116.22768853,
+        -32.49222446
+       ]
+      ]
+     ]
+    ]
+   },
+   "geometry_name": "geom",
+   "properties": {
+    "uid": "qd4xhuft4_v3",
+    "timeseries": "https://data.dea.ga.gov.au/derivative/dea_waterbodies/3-0-0/timeseries/qd4x/qd4xhuft4_v3.csv",
+    "dt_wetobs": "2026-10-02T02:05:33Z",
+    "dt_satpass": "2026-10-26T02:05:31Z",
+    "dt_updated": "2026-11-05T13:34:42.259Z",
+    "dt_created": "2023-11-20Z",
+    "meta_url": "https://dx.doi.org/10.26186/148920",
+    "wet_sa_m2": 0,
+    "perimetr_m": 240,
+    "area_m2": 2700
+   }
+  }
+ ]
+}

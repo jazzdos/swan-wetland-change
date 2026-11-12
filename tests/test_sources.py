@@ -14,6 +14,7 @@ SOURCES_PATH: Final = REPO_ROOT / "data" / "SOURCES.md"
 FIXTURE_DIRS: Final = (
     REPO_ROOT / "tests" / "fixtures" / "thomsons_20261027",
     REPO_ROOT / "tests" / "fixtures" / "aoi",
+    REPO_ROOT / "tests" / "fixtures" / "footprint_edge_50hmk_20261014",
 )
 
 _PROVIDER_LINK: Final = (
