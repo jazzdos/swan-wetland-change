@@ -3,6 +3,7 @@
 Status: accepted, 2026-11-06; approved by Jarrod on 2026-11-06. Amends the
 Consequences of 0006; does not change the 5.0 pp limit or the per-row
 `Check.passed`.
+Amended by 0012: the pooled gap is taken over the ramsar rows only.
 
 ## Context
 

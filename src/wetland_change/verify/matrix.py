@@ -108,13 +108,17 @@ def matrix_status(checks: list[Check]) -> list[dict[str, Any]]:
     (docs/decisions/0008-exit-code-for-live-water-check-failures.md).
     `n_skipped` counts skips that carry a reason only; skips whose source
     raised are in `n_errored`, so the five counts add up to the row's checks.
+    Advisory rows (ADR 0012, docs/decisions/0012-live-check-limits-apply-to-their-
+    calibrated-layer.md) are left out of the status and of those five counts
+    and are counted in `n_advisory`.
     """
+    verdict = [c for c in checks if not c.advisory]
     rows: list[dict[str, Any]] = []
     for spec in MATRIX_ROWS:
         matched = (
             []
             if spec.row == END_TO_END
-            else [c for c in checks if spec.matches(c.name)]
+            else [c for c in verdict if spec.matches(c.name)]
         )
         rows.append(
             {
@@ -125,6 +129,11 @@ def matrix_status(checks: list[Check]) -> list[dict[str, Any]]:
                 "n_warn": sum(c.wet_area_only_failure for c in matched),
                 "n_skipped": sum(c.passed is None and not c.errored for c in matched),
                 "n_errored": sum(c.errored for c in matched),
+                "n_advisory": (
+                    0
+                    if spec.row == END_TO_END
+                    else sum(c.advisory and spec.matches(c.name) for c in checks)
+                ),
                 "check_names": list(dict.fromkeys(c.name for c in matched)),
                 "note": "" if matched else spec.note,
             }
@@ -132,9 +141,9 @@ def matrix_status(checks: list[Check]) -> list[dict[str, Any]]:
     end = next(r for r in rows if r["row"] == END_TO_END)
     if any(r["status"] == FAIL for r in rows):
         end["status"] = FAIL
-    elif not any(c.blocking or c.errored for c in checks):
-        if any(c.wet_area_only_failure for c in checks):
+    elif not any(c.blocking or c.errored for c in verdict):
+        if any(c.wet_area_only_failure for c in verdict):
             end["status"] = WARN
-        elif any(c.passed for c in checks):
+        elif any(c.passed for c in verdict):
             end["status"] = PASS
     return rows

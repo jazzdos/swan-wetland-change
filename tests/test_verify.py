@@ -999,6 +999,50 @@ def test_verify_run_appends_the_pooled_wet_area_check(
     assert expected is not None and pooled[0].measured == expected.measured
 
 
+def test_verify_run_marks_non_ramsar_live_rows_advisory(
+    fixture_item: dict[str, Any], fixture_polygon: BaseGeometry, tmp_path: Path
+) -> None:
+    cfg, store, run_id, polygons = _built_run(fixture_item, fixture_polygon, tmp_path)
+    lake = polygons[0]
+    polygons = [
+        lake,
+        dataclasses.replace(lake, polygon_id="dea-lake", layer="dea_waterbody"),
+        polygons[1],
+    ]
+    grid = RasterioReader().open_grid(fixture_item["assets"]["green"]["href"])
+    checks = verify_run(
+        cfg,
+        store,
+        run_id,
+        polygons=polygons,
+        wo_lookup=lambda scene, bbox: "wo.tif",
+        wo_reader_factory=lambda: FakeReader(
+            grid=grid, data=np.full((48, 48), WO_WET, np.uint8)
+        ),
+        pixel_checker=lambda scene, reader, window: Check(
+            "pixels_vs_planetary_computer", True, 1.0, 1.0, "fake"
+        ),
+        waterbody_polygons=[],
+        docs_dir=None,
+    )
+    wo = {c.detail["polygon_id"]: c for c in checks if c.name == "water_vs_dea_s2_wo"}
+    assert wo["ramsar-52"].passed is not None
+    assert wo["ramsar-52"].advisory is False
+    assert wo["ramsar-52"].detail["layer"] == "ramsar"
+    assert wo["dea-lake"].passed is None
+    assert wo["dea-lake"].advisory is True
+    assert wo["dea-lake"].detail["layer"] == "dea_waterbody"
+    assert wo["dea-lake"].measured == wo["ramsar-52"].measured
+    (pooled,) = [c for c in checks if c.name == POOLED_WET_AREA_CHECK]
+    assert pooled.detail["n_checks"] == 1
+    assert pooled.detail["layer"] == "ramsar"
+    report = json.loads(store.read_bytes(f"verification/{run_id}.json"))
+    assert report["n_advisory"] >= 1
+    assert {(a["check"], a["layer"]) for a in report["advisory"]} >= {
+        ("water_vs_dea_s2_wo", "dea_waterbody")
+    }
+
+
 def test_verify_run_without_scored_water_checks_adds_no_pooled_check(
     fixture_item: dict[str, Any], fixture_polygon: BaseGeometry, tmp_path: Path
 ) -> None:

@@ -6,7 +6,8 @@ design; does not change the agreement floors of 0005.
 The exit-code consequences below are amended by 0008: a check that fails
 on wet area alone is a warning and does not change the exit code; the run
 fails on wet area when the gap pooled over every scored live water check
-in the run exceeds 5.0 pp.
+in the run exceeds 5.0 pp. 0012 further narrows that pooled population to
+the ramsar rows only.
 
 ## Context
 
