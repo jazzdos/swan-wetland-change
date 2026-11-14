@@ -2,6 +2,7 @@ import csv
 import hashlib
 import importlib.util
 import re
+import sys
 from pathlib import Path
 from types import ModuleType
 from typing import Any
@@ -601,3 +602,98 @@ def test_adr_0012_status_and_rule_path() -> None:
     rule = REPO_CONFIG.parents[1] / LAYER_RULE
     assert rule.exists()
     assert rule.name == path.name
+
+
+NDVI_ROWS_PREFIX = "2026-11-12-ndvi-nbart"
+ADR_0013_NAME = "0013-ndvi-row-rule-against-dea-nbart.md"
+
+
+def _adr_0013_path() -> Path:
+    adrs = list(DECISIONS.glob("0013-*.md"))
+    assert len(adrs) == 1, f"expected one docs/decisions/0013-*.md, found {adrs}"
+    assert adrs[0].name == ADR_0013_NAME
+    return adrs[0]
+
+
+def test_adr_0013_recorded_sha256_match_committed_research_files() -> None:
+    recorded = dict(re.findall(SHA_LINE, _adr_0013_path().read_text()))
+    for name in (
+        f"docs/research/{NDVI_ROWS_PREFIX}-rows.py",
+        f"docs/research/{NDVI_ROWS_PREFIX}-nomination.csv",
+        f"docs/research/{NDVI_ROWS_PREFIX}-nomination.txt",
+        f"docs/research/{NDVI_ROWS_PREFIX}-rows.csv",
+        f"docs/research/{NDVI_ROWS_PREFIX}-rows.txt",
+        "docs/research/2026-11-12-issue-2-repro-20261029.json",
+        "docs/research/2026-11-12-issue-2-repro-20261111.json",
+    ):
+        assert name in recorded, f"ADR 0013 records no sha256 for {name}"
+    for name, digest in recorded.items():
+        actual = hashlib.sha256(
+            (REPO_CONFIG.parents[1] / name).read_bytes()
+        ).hexdigest()
+        assert digest == actual, f"ADR 0013 sha256 for {name} is stale"
+
+
+def _load_ndvi_rows_script() -> ModuleType:
+    path = RESEARCH / f"{NDVI_ROWS_PREFIX}-rows.py"
+    name = "ndvi_nbart_rows_adr_0013"
+    spec = importlib.util.spec_from_file_location(name, path)
+    assert spec is not None and spec.loader is not None
+    module = importlib.util.module_from_spec(spec)
+    sys.modules[name] = module
+    spec.loader.exec_module(module)
+    return module
+
+
+def test_adr_0013_outcome_matches_recomputation() -> None:
+    script = _load_ndvi_rows_script()
+    nomination_rows = script.load_rows(RESEARCH / f"{NDVI_ROWS_PREFIX}-nomination.csv")
+    confirm_rows = script.load_rows(RESEARCH / f"{NDVI_ROWS_PREFIX}-rows.csv")
+    g = script.nominate(nomination_rows).g
+    decision = script.decide(confirm_rows, g)
+
+    nomination_txt = (RESEARCH / f"{NDVI_ROWS_PREFIX}-nomination.txt").read_text()
+    rows_txt = (RESEARCH / f"{NDVI_ROWS_PREFIX}-rows.txt").read_text()
+    assert script.build_nomination_report(nomination_rows) == nomination_txt
+    assert script.build_report(confirm_rows, nomination_rows) == rows_txt
+
+    learnings = (REPO_CONFIG.parents[1] / "LEARNINGS.md").read_text()
+    adr = _adr_0013_path().read_text()
+    pattern = r"^NDVI row rule: (K0|K1)$"
+    in_learnings = re.findall(pattern, learnings, re.MULTILINE)
+    assert len(in_learnings) == 1, "expected one 'NDVI row rule:' line in LEARNINGS.md"
+    assert in_learnings[0] == decision.outcome
+    in_adr = re.findall(pattern, adr, re.MULTILINE)
+    assert in_adr == [decision.outcome]
+
+    if decision.outcome == "K1":
+        param = r"^NDVI row parameters: g = .+, S\* = .+$"
+        in_txt = re.findall(param, rows_txt, re.MULTILINE)
+        assert len(in_txt) == 1
+        assert re.findall(param, learnings, re.MULTILINE) == in_txt
+        assert re.findall(param, adr, re.MULTILINE) == in_txt
+
+
+def test_adr_0013_status_is_pre_registered_rule_approved() -> None:
+    status = [
+        line
+        for line in _adr_0013_path().read_text().splitlines()
+        if line.startswith("Status:")
+    ]
+    assert len(status) == 1
+    assert "decided by the pre-registered rule" in status[0]
+    assert "approved by Jarrod on 2026-11-14" in status[0]
+    assert "not yet approved" not in status[0]
+
+
+def test_learnings_records_issue_2_live_run_finding() -> None:
+    learnings = (REPO_CONFIG.parents[1] / "LEARNINGS.md").read_text()
+    live = learnings.split("\n## Live run findings\n", 1)[1]
+    heading = "### Issue #2 daily verify exit 3 (2026-11-12)"
+    assert heading in live
+    entry = live.split(heading, 1)[1].split("\n### ", 1)[0]
+    for needle in ("43072355326", "ADR 0012", "ndvi_vs_dea_nbart"):
+        assert needle in entry, f"issue #2 entry lacks {needle}"
+    assert live.index(heading) < live.index(
+        "### Catalogue footprint difference failed the Copernicus count check"
+    )

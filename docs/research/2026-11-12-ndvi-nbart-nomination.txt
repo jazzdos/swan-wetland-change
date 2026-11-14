@@ -1,0 +1,50 @@
+NDVI row rule against DEA NBART: nomination (st-da75)
+Collection: sentinel-2-c1-l2a
+Source CRS and operation CRS: EPSG:32750. Units: reflectance and NDVI unitless. DEA NBART is not ground truth.
+
+== Rows by status ==
+scored: 78
+skipped: 1
+grid_differs: 0
+crs_differs: 0
+read_error: 0
+no_dea_item: 0
+rejected_by_discover: 0
+not_returned: 0
+not_in_sample: 0
+
+== Rows not scored ==
+2026-11-11 S2B_T50HLJ_20261111T022009_L2A ramsar-16 skipped: pipeline median not finite or fewer than 100 compared pixels
+
+== Reproduction of the eight seen failing rows ==
+Reproduction: pass
+2026-10-29 S2A_T50HLJ_20261029T021516_L2A ramsar-15: ok ndvi_stored=0.11502256989479065 report=0.11502256989479065 deviation=0.0 recorded_dea_served=True recorded_ndvi_dea=0.21412286162376404 report_dea=0.21412286162376404 deviation=0.0 n_compared=6742 report_n_compared=6742 run_day_item=15ea7fec-e565-400b-a2c7-051485dab1cd (final) message=ok
+2026-10-29 S2A_T50HLJ_20261029T021516_L2A ramsar-20: ok ndvi_stored=-0.6696979403495789 report=-0.6696979403495789 deviation=0.0 recorded_dea_served=True recorded_ndvi_dea=-0.577576756477356 report_dea=-0.577576756477356 deviation=0.0 n_compared=1942 report_n_compared=1942 run_day_item=15ea7fec-e565-400b-a2c7-051485dab1cd (final) message=ok
+2026-10-29 S2A_T50HLJ_20261029T021516_L2A ramsar-21: ok ndvi_stored=-0.808092474937439 report=-0.808092474937439 deviation=0.0 recorded_dea_served=True recorded_ndvi_dea=-0.6574639081954956 report_dea=-0.6574639081954956 deviation=0.0 n_compared=5976 report_n_compared=5976 run_day_item=15ea7fec-e565-400b-a2c7-051485dab1cd (final) message=ok
+2026-10-29 S2A_T50HLK_20261029T021516_L2A ramsar-27: ok ndvi_stored=-0.5448275804519653 report=-0.5448275804519653 deviation=0.0 recorded_dea_served=True recorded_ndvi_dea=-0.4314381182193756 report_dea=-0.4314381182193756 deviation=0.0 n_compared=641110 report_n_compared=641110 run_day_item=db9546b0-7a1c-40f0-be5d-bad97788733e (final) message=ok
+2026-11-11 S2B_T50HLK_20261111T022009_L2A ramsar-13: ok ndvi_stored=0.4216691851615906 report=0.4216691851615906 deviation=0.0 recorded_dea_served=True recorded_ndvi_dea=0.34752321243286133 report_dea=0.34752321243286133 deviation=0.0 n_compared=228 report_n_compared=228 run_day_item=e2b6b9df-8064-4729-962f-6ed5193b22ad (nrt) message=ok
+2026-11-11 S2B_T50HLJ_20261111T022009_L2A ramsar-13: ok ndvi_stored=0.448962926864624 report=0.448962926864624 deviation=0.0 recorded_dea_served=True recorded_ndvi_dea=0.3482922315597534 report_dea=0.3482922315597534 deviation=0.0 n_compared=228 report_n_compared=228 run_day_item=0fea38ac-eddc-4852-ba7b-76875fc9f218 (nrt) message=ok
+2026-11-11 S2B_T50HLJ_20261111T022009_L2A ramsar-20: ok ndvi_stored=-0.22585752606391907 report=-0.22585752606391907 deviation=0.0 recorded_dea_served=True recorded_ndvi_dea=-0.15610051155090332 report_dea=-0.15610051155090332 deviation=0.0 n_compared=1732 report_n_compared=1732 run_day_item=0fea38ac-eddc-4852-ba7b-76875fc9f218 (nrt) message=ok
+2026-11-11 S2B_T50HLJ_20261111T022009_L2A ramsar-21: ok ndvi_stored=-0.05206305533647537 report=-0.05206305533647537 deviation=0.0 recorded_dea_served=True recorded_ndvi_dea=0.006604120135307312 report_dea=0.006604120135307312 deviation=0.0 n_compared=3756 report_n_compared=3756 run_day_item=0fea38ac-eddc-4852-ba7b-76875fc9f218 (nrt) message=ok
+Other report rows that match their report: 65 of 65
+Other report rows the read did not produce, counted as not matching: 0
+
+== Candidate g over the scored nomination rows ==
+g, S*, |W|, W pass share, |I|, I within-g share, coverage, N1, N2, N3
+0.002, 0.08, 73, 0.9452, 5, 0.0000, 0.9359, False, False, True
+0.003, 0.12, 70, 0.9429, 8, 0.1250, 0.8974, False, False, True
+0.004, 0.16, 68, 0.9706, 10, 0.3000, 0.8718, True, False, True
+0.005, 0.20, 62, 1.0000, 16, 0.3750, 0.7949, True, False, True
+0.006, 0.24, 51, 1.0000, 27, 0.2222, 0.6538, True, False, True
+0.007, 0.28, 23, 1.0000, 55, 0.1818, 0.2949, True, False, False
+0.008, 0.32, 3, 1.0000, 75, 0.1733, 0.0385, True, False, False
+0.009, 0.36, 0, n/a, 78, 0.1795, 0.0000, True, False, False
+0.010, 0.40, 0, n/a, 78, 0.2564, 0.0000, True, False, False
+Nominated g: none
+
+== Failing passes and rows on the nomination passes ==
+K0 failing passes: 2 of 2 (share 1.0000)
+K0 failing row share: 9 of 78 (share 0.1154)
+
+== H2 (not a decision input) ==
+H2: not supported. same-pixel gap at most 0.05 and abs_diff above 0.05 on both rows. {'50HLK': {'same_pixel_gap': 0.07414597272872925, 'abs_diff': 0.07414597272872925}, '50HLJ': {'same_pixel_gap': 0.1006706953048706, 'abs_diff': 0.1006706953048706}}
