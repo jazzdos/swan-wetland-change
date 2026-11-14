@@ -6,7 +6,7 @@ priority: P1
 complexity: hard
 depends_on: []
 discovered_from: st-a32a
-touches: [LEARNINGS.md, data/SOURCES.md, docs/decisions/0013-ndvi-row-rule-against-dea-nbart.md, docs/research/2026-11-12-ndvi-nbart-rows.py, tests/test_config.py]
+touches: [LEARNINGS.md, README.md, data/SOURCES.md, docs/decisions/0013-ndvi-row-rule-against-dea-nbart.md, docs/research/2026-11-12-ndvi-nbart-nomination.csv, docs/research/2026-11-12-ndvi-nbart-nomination.txt, docs/research/2026-11-12-ndvi-nbart-rows.csv, docs/research/2026-11-12-ndvi-nbart-rows.py, docs/research/2026-11-12-ndvi-nbart-rows.txt, tests/test_config.py, tests/test_ndvi_rows_decision.py]
 exclusive: false
 created: 2026-11-12
 updated: 2026-11-14
@@ -260,6 +260,7 @@ The script should also pass `uv run ruff check` and `uv run ruff format --check`
 ## Implementation Notes
 
 - 2026-11-14T11:12:30.658Z: 2026-11-14: work is on branch story/st-da75 at e230d78 (098fb14 pre-registration, fe0cf3c script and tests, 47233f0 hardening batch, 3b82198 nomination read, cd5af57 confirmatory read, e230d78 ADR 0013 and LEARNINGS entries). Outcome by the pre-registered rule: NDVI row rule: K0. No g on the grid is admissible (N2 fails at every g), so K1 is not nominated and A0 to A5 are not computed. Each live read ran once: nomination 04:45:16Z to 04:51:07Z, confirmatory 05:03:18Z to 05:25:43Z, both exit 0. Measured on the current rule: 8 of 8 confirmatory passes and 87 of 292 scored rows fail; nomination 2 of 2 passes and 9 of 78 rows. H1 not supported, H2 not supported, H3 supported, H4 untestable. Touches beyond the story's list: tests/test_ndvi_rows_decision.py and docs/research/2026-11-12-ndvi-nbart-nomination.csv, .txt and 2026-11-12-ndvi-nbart-rows.csv, .txt. The pre-registration text was amended in review before it was committed (no threshold, sample id, candidate or criterion changed), and a hardening batch was added to the plan before the live reads. Gates passed on e230d78 in the build's final verification. The branch is not merged: the pre-registered Status rule parks the story on a K0 outcome.
+- 2026-11-14T12:09:55.011Z: 2026-11-14: Jarrod replied 'push & approved recommended' to the park question. The orchestrator's reading: ADR 0013 is approved and the status quo (NDVI row rule: K0) is kept, as ADR 0013 decides; the branch story/st-da75 is merged and the story closed. No other rule was named, so ndvi_vs_dea_nbart stays blocking on ramsar rows.
 
 ## Questions
 
