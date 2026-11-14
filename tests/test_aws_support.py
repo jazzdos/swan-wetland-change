@@ -66,8 +66,51 @@ def test_credential_source_names_env_keys_profile_and_none(
     source = credential_source()
     assert source is not None
     assert "AWS_ACCESS_KEY_ID" in source
-    assert "AWS_PROFILE" not in source
+    assert "AWS_PROFILE=p" in source
     assert SENTINEL_KEY not in source
+
+
+def test_credential_source_labels_keys_and_profile_in_order(
+    clean_env: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setenv("AWS_ACCESS_KEY_ID", SENTINEL_KEY)
+    monkeypatch.setenv("AWS_PROFILE", "p")
+
+    source = credential_source()
+
+    assert source == "AWS_ACCESS_KEY_ID (environment keys); AWS_PROFILE=p"
+    assert source.index("AWS_ACCESS_KEY_ID") < source.index("AWS_PROFILE=p")
+    assert SENTINEL_KEY not in source
+
+
+def test_credential_source_labels_every_discoverable_source(
+    clean_env: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setenv("AWS_ACCESS_KEY_ID", SENTINEL_KEY)
+    monkeypatch.setenv("AWS_PROFILE", "p")
+    monkeypatch.setenv("AWS_WEB_IDENTITY_TOKEN_FILE", "/some/token")
+    (clean_env / ".aws").mkdir()
+    (clean_env / ".aws" / "credentials").write_text("")
+
+    assert credential_source() == (
+        "AWS_ACCESS_KEY_ID (environment keys); AWS_PROFILE=p; "
+        "AWS_WEB_IDENTITY_TOKEN_FILE; ~/.aws/credentials"
+    )
+
+
+def test_secret_failure_names_keys_and_profile_when_both_set(
+    clean_env: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setenv("AWS_ACCESS_KEY_ID", SENTINEL_KEY)
+    monkeypatch.setenv("AWS_PROFILE", "p")
+    con = _FakeConnection("Secret Validation Failure")
+
+    with pytest.raises(pytest.fail.Exception) as exc:
+        create_credential_chain_secret(con, "outputs_s3", "ap-southeast-2")
+
+    message = str(exc.value)
+    assert "AWS_ACCESS_KEY_ID" in message
+    assert "AWS_PROFILE=p" in message
 
 
 def test_secret_failure_names_source_and_export_route(

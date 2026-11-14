@@ -26,20 +26,22 @@ class _SupportsExecute(Protocol):
 
 
 def credential_source() -> str | None:
-    """Label the first discoverable AWS credential source, or None if there is none.
+    """Label every discoverable AWS credential source, or None if there is none.
 
-    The label never contains a credential value.
+    The labels are joined with "; ". The label never contains a credential value.
+    Which source DuckDB uses when several are set is not measured here.
     """
+    labels: list[str] = []
     if os.environ.get("AWS_ACCESS_KEY_ID"):
-        return "AWS_ACCESS_KEY_ID (environment keys)"
+        labels.append("AWS_ACCESS_KEY_ID (environment keys)")
     profile = os.environ.get("AWS_PROFILE")
     if profile:
-        return f"AWS_PROFILE={profile}"
+        labels.append(f"AWS_PROFILE={profile}")
     if os.environ.get("AWS_WEB_IDENTITY_TOKEN_FILE"):
-        return "AWS_WEB_IDENTITY_TOKEN_FILE"
+        labels.append("AWS_WEB_IDENTITY_TOKEN_FILE")
     if (Path.home() / ".aws" / "credentials").exists():
-        return "~/.aws/credentials"
-    return None
+        labels.append("~/.aws/credentials")
+    return "; ".join(labels) if labels else None
 
 
 def _redact(text: str) -> str:
