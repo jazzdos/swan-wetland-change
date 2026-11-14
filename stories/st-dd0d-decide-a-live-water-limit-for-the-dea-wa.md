@@ -93,6 +93,7 @@ The story is then parked.
 ## Implementation Notes
 
 - 2026-11-14T12:09:55.157Z: 2026-11-14: Jarrod replied 'push & approved recommended' to the park question. The question did not label a recommendation. The orchestrator's recommendation, taken as approved, is option (b): commit the LEARNINGS.md pre-registration now with the story's minimum (8 scheduled runs on at least 6 acquisition dates); the sample closes at the 8th eligible run and no later than 2027-01-31; weekly verify.yml runs are excluded; a run counts only if it scores at least 30 waterbody rows. The story is then parked until the sample closes.
+- 2026-11-14T13:30:43.834Z: 2026-11-14: after the report that said option (b) and the terms of this pre-registration were the orchestrator's picks, and that listed keeping the 30-row minimum as its recommendation, Jarrod replied 'push approve recommended'. The orchestrator's reading: the terms stand as committed in f33e562 (30-row minimum kept, no amendment to LEARNINGS.md) and main is to be pushed. This is the orchestrator's reading of a three-word reply, not a term-by-term approval. Pre-push metadata check at 2026-11-14 13:30 UTC: the newest pipeline run is still 43475454140 (started 2026-11-13 17:42 UTC), and origin/main was at 4f8573f with no 'Verification report for <id>' commit after 2db25a1, so no sample run existed when the rule reached GitHub.
 
 ## Questions
 
