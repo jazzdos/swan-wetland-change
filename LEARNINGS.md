@@ -834,6 +834,8 @@ Zero-processed days: job duration 45 to 56 s (scheduled runs 50 to 56 s), and 50
 
 How many scenes fit in the 120 minute job. Fixed overhead is the job total minus the pipeline and verify steps: 1560 - 336 - 1174 = 50 s. At 302.0 s per scene, (7200 - 50) / 302.0 = 23.7, so 23 scenes. For the pipeline step alone, 7200 / 67.2 = 107 scenes. The estimate assumes linear scaling from one run of 5 scenes. The verify step also reads the whole stored observation history for the Spearman check (see "Spearman threshold calibration" and ADR 0007), so its cost per scene is not separable from the history it reads at n = 1, and its fixed part grows with the store. `pipeline.yml` sets no step-level timeout on the verify step, so a slow verify is bounded only by the 120 minute job limit.
 
+Correction (2026-11-14). The two bounds above use different bases: (7200 - 50) / 302.0 = 23.7 for pipeline plus verify subtracts the 50 s fixed overhead, and 7200 / 67.2 = 107 for the pipeline step alone does not. On the same (7200 - 50) base the pipeline step alone gives (7200 - 50) / 67.2 = 106.4, so 106 scenes. The 23 scenes for pipeline plus verify stands.
+
 What spike 5 planned and what these runs cover. The design lists uv sync time, rasterio import, OIDC role assumption, minutes per run, and free Actions minutes for public repositories.
 
 - uv sync time: covered. "Install the project" is `uv sync --locked`, 5 s on this run (5 to 6 s on the 8 runs read); "Install uv and Python" was 1 to 2 s.
