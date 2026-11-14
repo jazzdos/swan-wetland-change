@@ -417,12 +417,14 @@ As of this commit:
   The trial has not passed, and four weeks have not elapsed.
 - Verify findings still open: ramsar-21 failed water agreement on 2026-11-11
   (0.8539 against 0.91; st-b6bf, open), and DEA Waterbodies rows are advisory
-  under ADR 0012 with no calibrated limit (st-dd0d, open, to be decided from
-  the trial's advisory summaries). A profile created by `aws login` is not
-  read by the DuckDB credential chain; the route (export the credentials to
-  the environment) is given under "Querying with DuckDB", and the two live
-  tests in `tests/test_live_private_outputs.py` name the credential source and
-  that route when DuckDB cannot build the secret (st-b49e).
+  under ADR 0012 with no calibrated limit (st-dd0d, open: its rule is
+  pre-registered in LEARNINGS.md, and its sample of scheduled runs closes once
+  it holds at least 8 eligible runs on at least 6 acquisition dates, and no
+  later than 2027-01-31). A profile created by `aws login` is not read by the
+  DuckDB credential chain; the route (export the credentials to the
+  environment) is given under "Querying with DuckDB", and the two live tests
+  in `tests/test_live_private_outputs.py` name the credential source and that
+  route when DuckDB cannot build the secret (st-b49e).
 - The scheduled-job-alive row reads not-run in the verify report because
   freshness is a separate command (`wetland-change freshness`). It runs in the
   weekly `verify.yml` job, whose one run (42548248931) failed it before
