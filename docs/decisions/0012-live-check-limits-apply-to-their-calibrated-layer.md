@@ -17,8 +17,8 @@ calibrated on the ramsar layer only:
 - Wet area clause: absolute gap of 5.0 pp or less, ADR 0006.
 - Exit rule: a row that fails only the clause is a `warn`, and the run fails
   on the pooled gap, ADR 0008.
-- NDVI median absolute difference of 0.05 or less and a correlation of 0.95
-  or more over the run, from the design
+- NDVI median absolute difference of 0.05 or less and a correlation above
+  0.95 over the run, from the design
   (`docs/plans/2026-10-29-swan-wetland-change-design.md`).
 
 Issue #2 (CI run 43072355326) reported that `verify` fails on the daily run.
