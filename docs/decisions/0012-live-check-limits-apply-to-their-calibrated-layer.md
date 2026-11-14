@@ -1,6 +1,6 @@
 # 0012 Live check limits apply to the layer they were calibrated on
 
-Status: decided by the orchestrator on 2026-11-12, not yet approved by Jarrod.
+Status: decided by the orchestrator on 2026-11-12; approved by Jarrod on 2026-11-14.
 Amends the Decision of 0008 (pooled population) and the NDVI row of the
 design (correlation population).
 

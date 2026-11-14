@@ -596,7 +596,8 @@ def test_adr_0012_status_and_rule_path() -> None:
         line for line in path.read_text().splitlines() if line.startswith("Status:")
     )
     assert "decided by the orchestrator on 2026-11-12" in status
-    assert "not yet approved by Jarrod" in status
+    assert "approved by Jarrod on 2026-11-14" in status
+    assert "not yet approved" not in status
     rule = REPO_CONFIG.parents[1] / LAYER_RULE
     assert rule.exists()
     assert rule.name == path.name
