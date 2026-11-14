@@ -26,6 +26,7 @@ from __future__ import annotations
 import logging
 import math
 from collections.abc import Callable, Iterable, Iterator
+from dataclasses import dataclass
 from typing import Any
 
 import numpy as np
@@ -157,16 +158,30 @@ def pooled_agreement(checks: Iterable[Check]) -> tuple[float, int] | None:
     return agreed / total, total
 
 
-def pooled_wet_area_check(checks: Iterable[Check]) -> Check | None:
-    """Pixel-weighted wet area gap over the scored live water checks of a run.
+@dataclass(frozen=True)
+class PooledWetArea:
+    """Integer-count pooled wet area of a set of live water checks.
 
-    Contributors are `water_vs_dea_s2_wo` checks that were scored, have mutually
-    clear pixels and carry both wet area shares; errored and skipped checks do
-    not contribute. The gap is the signed percentage-point difference between
-    the pooled pipeline and WO wet shares, positive when the pipeline is wetter.
-    It passes at or within `WET_AREA_MAX_PP`, as the per-row clause does. Wet
-    counts are `round(share * n)` summed as integers, so the limit is exact.
-    Returns None when nothing contributes.
+    `gap_pp` is the signed percentage-point difference between the pooled
+    pipeline and WO wet shares, positive when the pipeline is wetter.
+    """
+
+    gap_pp: float
+    pipeline: float
+    wo: float
+    n_mutually_clear: int
+    n_checks: int
+    reference: str
+
+
+def pooled_wet_area(checks: Iterable[Check]) -> PooledWetArea | None:
+    """Integer-count pooled wet gap over the `water_vs_dea_s2_wo` rows given.
+
+    The caller picks the rows and `passed` is not looked at, so advisory rows
+    (docs/decisions/0012-live-check-limits-apply-to-their-calibrated-layer.md)
+    pool the same way. Contributors have mutually clear pixels and both wet
+    area shares. Wet counts are `round(share * n)` summed as integers, so the
+    gap is exact at the limit. Returns None when nothing contributes.
     """
     pipeline_sum = 0
     wo_sum = 0
@@ -174,14 +189,13 @@ def pooled_wet_area_check(checks: Iterable[Check]) -> Check | None:
     count = 0
     reference = ""
     for check in checks:
-        if check.name != "water_vs_dea_s2_wo" or check.passed is None:
+        if check.name != "water_vs_dea_s2_wo":
             continue
-        n = int(check.detail.get("n_mutually_clear", 0))
+        n = int(check.detail.get("n_mutually_clear") or 0)
         pipeline = check.detail.get("wet_area_pipeline")
         wo = check.detail.get("wet_area_wo")
         if n <= 0 or pipeline is None or wo is None:
             continue
-        # Wet counts are recovered as integers, so the gap is exact at the limit.
         pipeline_sum += round(pipeline * n)
         wo_sum += round(wo * n)
         total += n
@@ -189,21 +203,57 @@ def pooled_wet_area_check(checks: Iterable[Check]) -> Check | None:
         reference = reference or check.reference
     if total == 0:
         return None
-    gap = 100 * (pipeline_sum - wo_sum) / total
+    return PooledWetArea(
+        gap_pp=100 * (pipeline_sum - wo_sum) / total,
+        pipeline=pipeline_sum / total,
+        wo=wo_sum / total,
+        n_mutually_clear=total,
+        n_checks=count,
+        reference=reference,
+    )
+
+
+def pooled_wet_area_check(
+    checks: Iterable[Check], *, layer: str | None = None
+) -> Check | None:
+    """Pixel-weighted wet area gap over the scored live water checks of a run.
+
+    Contributors are `water_vs_dea_s2_wo` checks that were scored, have mutually
+    clear pixels and carry both wet area shares; errored and skipped checks do
+    not contribute, and neither do advisory rows, which hold no `passed`. The
+    gap is the signed percentage-point difference between the pooled pipeline
+    and WO wet shares, positive when the pipeline is wetter. It passes at or
+    within `WET_AREA_MAX_PP`, as the per-row clause does. Returns None when
+    nothing contributes.
+
+    The caller picks the rows. With `layer` the check records the layer it was
+    pooled over and the rule names ADR 0012; the caller passes only rows of that
+    layer (docs/decisions/0012-live-check-limits-apply-to-their-calibrated-layer.md).
+    """
+    pooled = pooled_wet_area(c for c in checks if c.passed is not None)
+    if pooled is None:
+        return None
+    detail: dict[str, Any] = {
+        "n_checks": pooled.n_checks,
+        "n_mutually_clear": pooled.n_mutually_clear,
+        "wet_area_pipeline": pooled.pipeline,
+        "wet_area_wo": pooled.wo,
+        "wet_area_max_pp": WET_AREA_MAX_PP,
+        "rule": "pooled over every scored live water check in the run, ADR 0008",
+    }
+    if layer is not None:
+        detail["layer"] = layer
+        detail["rule"] = (
+            f"pooled over every scored live water check on the {layer} layer, "
+            "ADR 0008 and ADR 0012"
+        )
     return Check(
         POOLED_WET_AREA_CHECK,
-        passed=bool(abs(gap) <= WET_AREA_MAX_PP),
-        measured=gap,
+        passed=bool(abs(pooled.gap_pp) <= WET_AREA_MAX_PP),
+        measured=pooled.gap_pp,
         threshold=WET_AREA_MAX_PP,
-        reference=reference,
-        detail={
-            "n_checks": count,
-            "n_mutually_clear": total,
-            "wet_area_pipeline": pipeline_sum / total,
-            "wet_area_wo": wo_sum / total,
-            "wet_area_max_pp": WET_AREA_MAX_PP,
-            "rule": "pooled over every scored live water check in the run, ADR 0008",
-        },
+        reference=pooled.reference,
+        detail=detail,
     )
 
 

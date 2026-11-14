@@ -317,7 +317,8 @@ def verify(
     (docs/decisions/0008-exit-code-for-live-water-check-failures.md).
     """
     from wetland_change.manifest import manifest_path
-    from wetland_change.verify.checks import check_note
+    from wetland_change.verify.checks import check_note, verdict_checks
+    from wetland_change.verify.layers import advisory_note, advisory_summaries
     from wetland_change.verify.run import (
         ManifestReadError,
         latest_run_id,
@@ -344,7 +345,11 @@ def verify(
     except ManifestReadError as exc:
         typer.echo(str(exc), err=True)
         raise typer.Exit(code=5) from exc
-    checks = verify_run(cfg, store, target, polygons=polygons)
+    all_checks = verify_run(cfg, store, target, polygons=polygons)
+    # Advisory rows (ADR 0012) hold no verdict: the CLI prints one summary line
+    # per live check and layer instead of a line per row, and they never move
+    # the exit code.
+    checks = verdict_checks(all_checks)
     n_warned = 0
     for check in checks:
         if check.passed is None:
@@ -359,6 +364,17 @@ def verify(
         if note:
             fields.append(note)
         typer.echo("\t".join(fields))
+    for summary in advisory_summaries(all_checks):
+        typer.echo(
+            "\t".join(
+                [
+                    "advisory",
+                    str(summary["check"]),
+                    str(summary["layer"]),
+                    advisory_note(summary),
+                ]
+            )
+        )
     if n_warned:
         typer.echo(
             f"{n_warned} live water checks failed on wet area alone for run "

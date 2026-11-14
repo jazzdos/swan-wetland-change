@@ -1,3 +1,4 @@
+import csv
 import hashlib
 import importlib.util
 import re
@@ -497,3 +498,105 @@ def test_adr_0010_states_delegation_and_review_status() -> None:
         r"pending Jarrod's review|approved by Jarrod on \d{4}-\d{2}-\d{2}",
         status,
     )
+
+
+def _adr_0012_path() -> Path:
+    adrs = list(DECISIONS.glob("0012-*.md"))
+    assert len(adrs) == 1, f"expected one docs/decisions/0012-*.md, found {adrs}"
+    return adrs[0]
+
+
+def test_adr_0012_recorded_sha256_match_committed_research_files() -> None:
+    recorded = dict(re.findall(SHA_LINE, _adr_0012_path().read_text()))
+    for name in (
+        "docs/research/2026-11-12-live-check-layers.py",
+        "docs/research/2026-11-12-live-check-layers.csv",
+        "docs/research/2026-11-12-live-check-layers.txt",
+        "docs/research/2026-11-12-issue-2-repro-20261111.json",
+        "docs/research/2026-11-12-issue-2-repro-20261029.json",
+    ):
+        assert name in recorded, f"ADR 0012 records no sha256 for {name}"
+    for name, digest in recorded.items():
+        actual = hashlib.sha256(
+            (REPO_CONFIG.parents[1] / name).read_bytes()
+        ).hexdigest()
+        assert digest == actual, f"ADR 0012 sha256 for {name} is stale"
+
+
+def _load_layers_script() -> ModuleType:
+    path = (
+        REPO_CONFIG.parents[1] / "docs" / "research" / "2026-11-12-live-check-layers.py"
+    )
+    spec = importlib.util.spec_from_file_location("live_check_layers", path)
+    assert spec is not None and spec.loader is not None
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
+def test_adr_0012_layer_counts_match_recomputation() -> None:
+    script = _load_layers_script()
+    research = REPO_CONFIG.parents[1] / "docs" / "research"
+    payloads = {
+        label: script.load_payload(path)
+        for label, path in script.DEFAULT_INPUTS.items()
+    }
+    rows = [
+        row
+        for label, payload in payloads.items()
+        for row in script.summarise(label, payload)
+    ]
+    with (research / "2026-11-12-live-check-layers.csv").open(newline="") as handle:
+        committed = list(csv.DictReader(handle))
+    assert rows == committed
+    assert (
+        script.report_text(script.DEFAULT_INPUTS)
+        == (research / "2026-11-12-live-check-layers.txt").read_text()
+    )
+
+    def pick(
+        label: str, check: str, layer: str, size_bin: str = "all"
+    ) -> dict[str, str]:
+        (row,) = [
+            r
+            for r in committed
+            if (r["label"], r["check"], r["layer"], r["size_bin"])
+            == (label, check, layer, size_bin)
+        ]
+        return row
+
+    water = "water_vs_dea_s2_wo"
+    ramsar_water = pick("2026-11-11", water, "ramsar")
+    assert ramsar_water["n_fail"] == "1"
+    assert ramsar_water["n_warn"] == "5"
+    waterbody_water = pick("2026-11-11", water, "dea_waterbody")
+    assert waterbody_water["n_fail"] == "262"
+    assert waterbody_water["n_pass"] == "290"
+    ndvi = "ndvi_vs_dea_nbart"
+    assert float(pick("2026-10-29", ndvi, "all")["pearson"]) < 0.95
+    assert float(pick("2026-10-29", ndvi, "ramsar")["pearson"]) >= 0.95
+
+    for label, payload in payloads.items():
+        by_name = {c["name"]: c for c in payload["checks"]}
+        pooled = by_name["water_vs_dea_s2_wo_pooled_wet_area"]["measured"]
+        corr = by_name["ndvi_correlation_vs_dea_nbart"]["measured"]
+        assert float(pick(label, water, "all")["pooled_wet_gap_pp"]) == pytest.approx(
+            pooled, abs=1e-4
+        )
+        assert float(pick(label, ndvi, "all")["pearson"]) == pytest.approx(
+            corr, abs=1e-4
+        )
+
+
+def test_adr_0012_status_and_rule_path() -> None:
+    from wetland_change.verify.layers import LAYER_RULE
+
+    path = _adr_0012_path()
+    status = next(
+        line for line in path.read_text().splitlines() if line.startswith("Status:")
+    )
+    assert "decided by the orchestrator on 2026-11-12" in status
+    assert "not yet approved by Jarrod" in status
+    rule = REPO_CONFIG.parents[1] / LAYER_RULE
+    assert rule.exists()
+    assert rule.name == path.name

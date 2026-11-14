@@ -185,3 +185,12 @@ def test_every_running_locally_subcommand_answers_help() -> None:
         result = runner.invoke(app, [name, "--help"])
         assert result.exit_code == 0, name
         assert "Usage" in click.unstyle(result.output), name
+
+
+def test_readme_live_rows_state_the_layer_rule() -> None:
+    rows = _table_rows(_section(_readme(), "Verification matrix"))
+    by_name = {row[0]: row for row in rows}
+    for name in ("Water extent, live", "NDVI"):
+        text = " ".join(by_name[name])
+        assert "0012" in text, name
+        assert "ramsar" in text, name

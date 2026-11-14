@@ -550,6 +550,43 @@ def test_verify_a_warn_alone_counts_as_scored(
     assert result.exit_code == 0, (result.output, result.exception)
 
 
+def test_verify_prints_one_advisory_line_per_layer_and_ignores_advisory_rows(
+    monkeypatch: pytest.MonkeyPatch,
+    fixture_item: dict[str, Any],
+    fixture_polygon: BaseGeometry,
+    tmp_path: Path,
+) -> None:
+    from wetland_change.verify.layers import apply_layer_rule
+
+    failing = _wo_check(
+        passed=False,
+        measured=0.5,
+        diff_pp=1.0,
+        wet_passed=True,
+        polygon_id="dea-a",
+    )
+    errored = Check(
+        "water_vs_dea_s2_wo",
+        None,
+        None,
+        None,
+        "DEA STAC",
+        {"polygon_id": "dea-b", "error": "boom"},
+    )
+    rows = apply_layer_rule(
+        [_pass_check(), failing, errored],
+        {"dea-a": "dea_waterbody", "dea-b": "dea_waterbody"},
+    )
+    result = _verify_with(monkeypatch, tmp_path, fixture_item, fixture_polygon, rows)
+    assert result.exit_code == 0
+    lines = result.output.splitlines()
+    advisory = [line for line in lines if line.startswith("advisory\t")]
+    assert len(advisory) == 2
+    assert advisory[0].split("\t")[1:3] == ["water_vs_dea_s2_wo", "dea_waterbody"]
+    assert not any("dea-a" in line or "dea-b" in line for line in lines)
+    assert not [line for line in lines if line.startswith("skip\twater_vs_dea")]
+
+
 def test_verify_blocking_non_water_failure_exits_three(
     monkeypatch: pytest.MonkeyPatch,
     fixture_item: dict[str, Any],

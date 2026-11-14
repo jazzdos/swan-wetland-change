@@ -36,6 +36,7 @@ from wetland_change.verify.copernicus import (
     discovery_checks,
     run_window,
 )
+from wetland_change.verify.layers import BLOCKING_LAYER, apply_layer_rule
 from wetland_change.verify.ndvi import (
     CHECK_NAME as NDVI_CHECK,
 )
@@ -393,6 +394,15 @@ def verify_run(
     waterbodies_loader: SeriesLoader = fetch_series,
     clock: Callable[[], datetime] = lambda: datetime.now(UTC),
 ) -> list[Check]:
+    """Run every verification check for one run and write the report.
+
+    Live water and NDVI rows are scored per polygon. A limit applies only to
+    the layer it was calibrated on (docs/decisions/
+    0012-live-check-limits-apply-to-their-calibrated-layer.md): ramsar rows keep
+    their verdict, and rows on any other layer are advisory, measured and stored
+    with no verdict. The pooled wet area check and the NDVI correlation use
+    ramsar rows only. History checks are unchanged.
+    """
     reader = reader or RasterioReader()
     checks: list[Check] = []
     ledger = read_ledger(store)
@@ -413,16 +423,22 @@ def verify_run(
                 store,
             )
         )
-    # One run-level wet area gate over every scored live water check
-    # (docs/decisions/0008-exit-code-for-live-water-check-failures.md).
-    pooled = pooled_wet_area_check(checks)
+    # Live rows off the ramsar layer become advisory: they keep their measured
+    # values and hold no verdict, so the pooled gate and the NDVI correlation
+    # below, which read scored rows only, cover the ramsar layer alone
+    # (docs/decisions/0012-live-check-limits-apply-to-their-calibrated-layer.md).
+    checks = apply_layer_rule(checks, {p.polygon_id: p.layer for p in polygons})
+    ramsar = [c for c in checks if c.detail.get("layer") == BLOCKING_LAYER]
+    # One run-level wet area gate over every scored ramsar live water check
+    # (docs/decisions/0008-exit-code-for-live-water-check-failures.md, ADR 0012).
+    pooled = pooled_wet_area_check(ramsar, layer=BLOCKING_LAYER)
     if pooled is not None:
         checks.append(pooled)
     listed_at = clock()
     if scenes:
         scored = [
             c
-            for c in checks
+            for c in ramsar
             if c.name == NDVI_CHECK
             and c.passed is not None
             and "ndvi_median" in c.detail
@@ -437,6 +453,7 @@ def verify_run(
                         [c.detail["dea_ndvi_median"] for c in scored],
                         detail={
                             "run_id": run_id,
+                            "layer": BLOCKING_LAYER,
                             "rows": [
                                 [c.detail.get("item"), c.detail.get("polygon_id")]
                                 for c in scored
