@@ -496,6 +496,71 @@ The global setting (MNDWI above -0.1, agreement_min 0.91) stays for ramsar-12. N
 
 Limits. The confirmatory dates are 2026-08-23 to 2026-09-07, the wetter season, so the dry end of the season rests on the seen rows and is not confirmed. The sample is 7 rows on 4 dates, and the 2 tiles of one date are not independent. DEA S2 WO is unvalidated, so this measures consistency with WO and not accuracy. The 12 seen rows were not used to decide, except as seen-row counts in R6. The result does not say why the gap changes sign between August to early September and September to October; the two samples differ in date, and no test here separates a seasonal effect from a scene effect.
 
+### S5 runner timing (2026-11-14)
+
+Spike 5 in the design ("Pre-start spikes", item 5) planned a runner dry run in a throwaway public repository: uv sync time, rasterio import, OIDC role assumption, minutes per run, and confirmation that Actions minutes are free on standard runners for public repositories. It was blocked on a throwaway repository with an OIDC role. The production workflow `.github/workflows/pipeline.yml` (cron `17 10 * * *`, 10:17 UTC; `runs-on: ubuntu-24.04`; job `timeout-minutes: 120`) has since run through OIDC, so the figures below are read from those runs with `gh run list` and `gh run view` on 2026-11-14, not from a dry run. No run for 2026-11-14 was listed at the time of writing.
+
+Runs read: 8, one `workflow_dispatch` and 7 scheduled. The manifest printed by the step "Read the processed scene count and recovered runs" shows processed 0 and failed 0 on 7 of them. One run processed scenes.
+
+- 42227866026, workflow_dispatch, 2026-11-06, created 13:43:58Z. Processed 0. "Verify the run" skipped. Job 45 s.
+- 42391137737, scheduled, 2026-11-07, created 16:24:29Z. Processed 0, verify skipped. Job 50 s.
+- 42500964092, scheduled, 2026-11-08, created 16:39:02Z. Processed 0, verify skipped. Job 54 s.
+- 42695477540, scheduled, 2026-11-09, created 20:42:14Z. Processed 0, verify skipped. Job 50 s.
+- 42868562753, scheduled, 2026-11-10, created 17:47:39Z. Processed 0, verify skipped. Job 53 s.
+- 43072355326, scheduled, 2026-11-11, created 17:52:40Z. Processed 5, failed 0. "Verify the run" ran. Job 1560 s.
+- 43278279989, scheduled, 2026-11-12, created 18:17:29Z. Processed 0, verify skipped. Job 53 s.
+- 43475454140, scheduled, 2026-11-13, created 17:42:32Z. Processed 0, verify skipped. Job 56 s.
+
+Processed runs as measured on the day: n = 1 (43072355326). The story's n = 1 matches the runs listed.
+
+Run 43072355326 concluded `failure`. The step "Verify the run" failed: its output holds FAIL rows on `water_vs_dea_s2_wo` and `ndvi_vs_dea_nbart` (424 lines containing FAIL in the log). The pipeline step succeeded, and "Build the catalogue" and "Commit the verification report" still ran and succeeded. Seconds per step, from each step's `completedAt` minus `startedAt`, for steps of 1 s or more:
+
+| Step | Seconds | Conclusion |
+|---|---|---|
+| Set up job | 3 | success |
+| Check out the repository | 1 | success |
+| Install uv and Python | 2 | success |
+| Install the project (`uv sync --locked`) | 5 | success |
+| Assume the AWS role through OIDC | 1 | success |
+| Fetch the AOI | 4 | success |
+| Run the incremental pipeline (17:53:00 to 17:58:36) | 336 | success |
+| Verify the run (17:58:36 to 18:18:10) | 1174 | failure |
+| Build the catalogue so it links the verification report | 28 | success |
+| Commit the verification report | 2 | success |
+| Job total (`startedAt` 17:52:43 to `completedAt` 18:18:43) | 1560 (26 min 0 s) | failure |
+
+The read count step, the skipped "Verify the runs this run recovered" step and the post steps are under 1 s. Gaps between steps are not attributed. The job total is 1560 s against the 7200 s limit.
+
+Seconds per scene, with `processed` as the divisor. In the manifest, `processed` counts ledger entries with status succeeded (`_tally` in `src/wetland_change/pipeline.py` adds 1 per succeeded entry). A ledger entry is keyed by `item_id`, one Earth Search item, so a scene here is one scene-tile (one tile of one pass), not a pass.
+
+- Pipeline step: 336 / 5 = 67.2 s per scene.
+- Verify step: 1174 / 5 = 234.8 s per scene.
+- Sum: 302.0 s per scene.
+
+The local figure in `docs/research/2026-11-03-backfill-hypotheses.md` is 138.7 s (sleep call excluded) to 152.3 s per processed scene, which is the sum of the 35 backfill call durations divided by the 1147 succeeded ledger entries. It covers the backfill process only, run as three overlapping lanes on a laptop, so its seconds are summed runner time, and it does not include verify. Only the pipeline step is comparable: 67.2 s on the runner against 138.7 to 152.3 s locally. The 67.2 s includes the step's fixed work (start-up and discovery) spread over 5 scenes. No test here separates a machine effect from a lane or batch-size effect.
+
+Start delay against the 10:17 UTC cron, from `createdAt` on the same UTC date, scheduled runs only: 6 h 07 m (11-07), 6 h 22 m (11-08), 10 h 25 m (11-09), 7 h 30 m (11-10), 7 h 35 m (11-11), 8 h 00 m (11-12), 7 h 25 m (11-13). The range is 6.1 to 10.4 h. The dispatch run is not a cron start and is left out. These delays exceed the 21-minute smallest margin recorded in "DEA WO availability at first processing (2026-11-06)"; this is an observation only and changes no decision. The weekly verify workflow (`verify.yml`) runs at 22:43 UTC on Sundays.
+
+Zero-processed days: job duration 45 to 56 s (scheduled runs 50 to 56 s), and 50 to 80 s from run creation to the run's `updatedAt` (the 80 s is 43475454140).
+
+How many scenes fit in the 120 minute job. Fixed overhead is the job total minus the pipeline and verify steps: 1560 - 336 - 1174 = 50 s. At 302.0 s per scene, (7200 - 50) / 302.0 = 23.7, so 23 scenes. For the pipeline step alone, 7200 / 67.2 = 107 scenes. The estimate assumes linear scaling from one run of 5 scenes. The verify step also reads the whole stored observation history for the Spearman check (see "Spearman threshold calibration" and ADR 0007), so its cost per scene is not separable from the history it reads at n = 1, and its fixed part grows with the store. `pipeline.yml` sets no step-level timeout on the verify step, so a slow verify is bounded only by the 120 minute job limit.
+
+What spike 5 planned and what these runs cover. The design lists uv sync time, rasterio import, OIDC role assumption, minutes per run, and free Actions minutes for public repositories.
+
+- uv sync time: covered. "Install the project" is `uv sync --locked`, 5 s on this run (5 to 6 s on the 8 runs read); "Install uv and Python" was 1 to 2 s.
+- OIDC role assumption: covered. "Assume the AWS role through OIDC" was 1 s on this run and 1 to 2 s on the others, and the later S3 steps used the credentials.
+- Minutes per run: covered for one processed run (26 min 0 s) and 7 zero-processed runs (under 1 min).
+- rasterio import: not timed separately. It happens inside the first `uv run` steps and is not isolated.
+- Free Actions minutes: not checked in this entry. `gh repo view` reports this repository as PRIVATE on 2026-11-14, so the planned public-repository condition does not hold for these runs, and the minutes the runs used were not looked up.
+- Peak memory on the runner: not measured. The design's risk table assigns "Runner time and memory for Peel-Yalgorup" to spike 3, not spike 5; spike 5 as written plans no memory measurement. The S3 entry above recorded a peak RSS of 518 MiB for the largest polygon read, which was a local run, not a runner.
+- Per-request S3 latency: not measured, and not in the spike 5 plan either.
+
+Other spikes. Spike 6 (hand-written catalogue on a bucket with CORS, opened in stac-browser) and the anonymous-read form of spike 7 (DuckDB reading the observations from S3 with one glob, with no credentials) stay blocked while the output bucket is private (`docs/decisions/0011-private-output-bucket.md`). The credentialed read is recorded in `stories/st-b49e-say-how-a-reader-with-an-aws-login-profi.md`: on 2026-11-14 both tests in `tests/test_live_private_outputs.py` passed against the bucket with credentials exported to the environment, and failed with `AWS_PROFILE` set to a login-session profile.
+
+Report size. The per-processed-day verification report for the run, `docs/research/verification-20261111T175303Z.md`, is 730856 bytes (about 730 KB). The workflow committed it as 37af4e4 ("Verification report for 43072355326").
+
+Limits. One processed run (n = 1, 5 scenes), on one day of one season (2026-11-11). That run failed verify, so the verify duration may differ from a passing verify, and a day with more scenes may scale differently. No repeat measurement was made. The runs read are the 8 listed by `gh run list` on 2026-11-14, and a later run may change the count.
+
 ## Live run findings
 
 ### Catalogue footprint difference failed the Copernicus count check (2026-11-12)
