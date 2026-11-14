@@ -6,7 +6,6 @@ Run with: uv run pytest -q -m live tests/test_live_private_outputs.py
 
 from __future__ import annotations
 
-import os
 import re
 import urllib.error
 import urllib.request
@@ -16,6 +15,7 @@ from urllib.parse import urlparse
 import duckdb
 import pytest
 
+from tests.aws_support import create_credential_chain_secret, credential_source
 from wetland_change.config import load_config
 from wetland_change.stac.catalogue import WRITE_INDEX_KEY
 
@@ -48,10 +48,7 @@ def _anonymous_status(url: str) -> int:
 
 
 def _aws_credentials_discoverable() -> bool:
-    markers = ("AWS_ACCESS_KEY_ID", "AWS_PROFILE", "AWS_WEB_IDENTITY_TOKEN_FILE")
-    if any(os.environ.get(name) for name in markers):
-        return True
-    return (Path.home() / ".aws" / "credentials").exists()
+    return credential_source() is not None
 
 
 def _existing_key(bucket: str, region: str) -> str:
@@ -69,10 +66,7 @@ def _existing_key(bucket: str, region: str) -> str:
     con.execute("LOAD httpfs")
     con.execute("INSTALL aws")
     con.execute("LOAD aws")
-    con.execute(
-        "CREATE OR REPLACE SECRET key_probe "
-        f"(TYPE s3, PROVIDER credential_chain, REGION '{region}')"
-    )
+    create_credential_chain_secret(con, "key_probe", region)
     row = con.execute(
         f"SELECT file FROM glob('s3://{bucket}/{OBSERVATIONS_GLOB}') LIMIT 1"
     ).fetchone()
@@ -130,10 +124,7 @@ def test_credentialed_reader_globs_observations() -> None:
     con.execute("LOAD httpfs")
     con.execute("INSTALL aws")
     con.execute("LOAD aws")
-    con.execute(
-        "CREATE OR REPLACE SECRET outputs_s3 "
-        f"(TYPE s3, PROVIDER credential_chain, REGION '{region}')"
-    )
+    create_credential_chain_secret(con, "outputs_s3", region)
     row_count = con.execute(
         "SELECT count(*) FROM read_parquet("
         f"'s3://{bucket}/{OBSERVATIONS_GLOB}', hive_partitioning=true)"

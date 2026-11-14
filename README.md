@@ -326,9 +326,25 @@ ORDER BY polygon_id, datetime
 
 The S3 bucket is private, so DuckDB needs AWS credentials. The
 `credential_chain` secret below uses the standard AWS chain: environment
-variables, a shared profile, SSO, or an assumed role. The identity needs
-`s3:ListBucket` on the bucket and `s3:GetObject` on its objects, granted in
-IAM outside this repository's module. A request without credentials is denied.
+variables, a shared profile that holds keys, SSO, or an assumed role. The
+identity needs `s3:ListBucket` on the bucket and `s3:GetObject` on its
+objects, granted in IAM outside this repository's module. A request without
+credentials is denied.
+
+A profile created by `aws login` (it holds `login_session` in `~/.aws/config`,
+and `aws configure list` shows its key type as `login`) is not read by the
+DuckDB credential chain, so the query below fails for it with a "Secret
+Validation Failure" error even though `aws sts get-caller-identity` works.
+Export its credentials to the environment first and run the SQL in the same
+shell:
+
+```sh
+eval "$(aws configure export-credentials --profile <profile> --format env)"
+unset AWS_PROFILE
+```
+
+The exported variables are short-lived secrets. Do not print, log or commit
+them.
 
 ```sql
 INSTALL httpfs;
@@ -402,8 +418,11 @@ As of this commit:
 - Verify findings still open: ramsar-21 failed water agreement on 2026-11-11
   (0.8539 against 0.91; st-b6bf, open), and DEA Waterbodies rows are advisory
   under ADR 0012 with no calibrated limit (st-dd0d, open, to be decided from
-  the trial's advisory summaries). st-b49e (open) covers DuckDB and `aws login`
-  profiles, described under "Querying with DuckDB".
+  the trial's advisory summaries). A profile created by `aws login` is not
+  read by the DuckDB credential chain; the route (export the credentials to
+  the environment) is given under "Querying with DuckDB", and the two live
+  tests in `tests/test_live_private_outputs.py` name the credential source and
+  that route when DuckDB cannot build the secret (st-b49e).
 - The scheduled-job-alive row reads not-run in the verify report because
   freshness is a separate command (`wetland-change freshness`). It runs in the
   weekly `verify.yml` job, whose one run (42548248931) failed it before
@@ -422,8 +441,11 @@ As of this commit:
 - The credentialed S3 query in "Querying with DuckDB" was run against the
   project bucket on 2026-11-14 on merged `main` (a0693ba): both tests in
   `tests/test_live_private_outputs.py` passed with credentials exported to the
-  environment. A reader whose profile comes from `aws login` fails in DuckDB's
-  credential chain (st-b49e, open).
+  environment. A profile created by `aws login` is not read by DuckDB's
+  credential chain; the route (export the credentials to the environment) is
+  given under "Querying with DuckDB", and the two live tests name the
+  credential source and that route when DuckDB cannot build the secret
+  (st-b49e).
 - Water thresholds are calibrated against DEA Sentinel-2 Water Observations
   over August to October 2026 only, and DEA's product is itself unvalidated,
   so agreement measures consistency with DEA, not accuracy (ADR 0005).
