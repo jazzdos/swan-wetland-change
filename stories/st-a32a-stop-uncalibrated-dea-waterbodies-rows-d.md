@@ -9,7 +9,7 @@ discovered_from: st-c6d5
 touches: [README.md, data/SOURCES.md, docs/decisions/0006-wet-area-within-5pp-on-live-water-check.md, docs/decisions/0008-exit-code-for-live-water-check-failures.md, docs/decisions/0012-live-check-limits-apply-to-their-calibrated-layer.md, docs/research/2026-11-12-issue-2-repro-20261029.json, docs/research/2026-11-12-issue-2-repro-20261111.json, docs/research/2026-11-12-live-check-layers.csv, docs/research/2026-11-12-live-check-layers.py, docs/research/2026-11-12-live-check-layers.txt, src/wetland_change/cli.py, src/wetland_change/verify/checks.py, src/wetland_change/verify/layers.py, src/wetland_change/verify/matrix.py, src/wetland_change/verify/run.py, src/wetland_change/verify/wo.py, tests/test_cli.py, tests/test_config.py, tests/test_readme.py, tests/test_verify.py, tests/test_verify_layer_rule.py, tests/test_verify_layer_rule_run.py]
 exclusive: false
 created: 2026-11-12
-updated: 2026-11-12
+updated: 2026-11-14
 ---
 
 ## Description
@@ -247,5 +247,6 @@ No non-live check blocks in either report.
 ## Implementation Notes
 
 - 2026-11-12T05:49:01.366Z: Built by kit build-flow run wf_30ea62bb-4d1 (4 tasks, 3 batches, each reviewed clean) and committed as 6d4b53a on story/st-a32a. Fresh gates in the worktree before the commit: ruff check, ruff format --check, mypy and pytest -q all exit 0. Red shown on a detached checkout of main: 7 of 10 new end-to-end tests fail there (verify exits 3 and all_passed is False when only waterbody live rows fail). Research script reproduces the diagnosis numbers with no mismatch: 2026-11-11 dea_waterbody water 290 pass 262 fail 47 warn; 2026-10-29 323 pass 297 fail 33 warn. Deviations from the plan: the data/SOURCES.md row sits after the st-2a78 row and not at the table end (orchestrator change to avoid a merge conflict with story/st-9812); ADRs 0006 and 0008 each gained a one-line pointer to 0012; tests/test_cli.py and tests/test_verify.py each gained one test and lost none; ADR 0012 states measured line counts in place of the plan's 'about a thousand lines' and gives the size-bin failure share as 0.40 to 0.50 for 100 to 9999 pixels. Both reproduced runs still exit 3 under the rule on ramsar rows alone (st-da75 and st-b6bf). ADR 0012 is not yet approved by Jarrod.
+- 2026-11-14T02:10:32.466Z: touches-expansion: overlaps st-9812 (stories/st-747e-record-the-first-trial-week-runner-timin.md, stories/st-9812-stop-a-catalogue-footprint-difference-fa.md, stories/st-a32a-stop-uncalibrated-dea-waterbodies-rows-d.md, stories/st-b6bf-decide-whether-ramsar-21-needs-its-own-w.md, stories/st-da75-measure-why-ramsar-ndvi-rows-miss-the-de.md, stories/st-dd0d-decide-a-live-water-limit-for-the-dea-wa.md) — coordinate or split
 
 ## Questions

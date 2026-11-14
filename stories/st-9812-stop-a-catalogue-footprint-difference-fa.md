@@ -7,7 +7,7 @@ depends_on: []
 touches: [LEARNINGS.md, data/SOURCES.md, src/wetland_change/verify/copernicus.py, src/wetland_change/verify/freshness.py, tests/fixtures/footprint_edge_50hmk_20261014/cdse_item.json, tests/fixtures/footprint_edge_50hmk_20261014/dea_qd4xhuft4_v3.geojson, tests/fixtures/footprint_edge_50hmk_20261014/es_item.json, tests/test_sources.py, tests/test_verify_copernicus.py, tests/test_verify_freshness.py]
 exclusive: false
 created: 2026-11-12
-updated: 2026-11-12
+updated: 2026-11-14
 ---
 
 ## Description
@@ -83,5 +83,6 @@ Semantics, applied identically to both checks:
 ## Implementation Notes
 
 - 2026-11-12T04:10:45.897Z: Built via build-flow run wf_fdb63410-5ca in 3 batches, each reviewed clean. Scene gains in_aoi; normalise_scenes flags instead of dropping on footprint; reconcile_footprints decides membership per datatake; discovery_vs_copernicus and freshness_count_vs_copernicus report footprint_edge and do not count it; freshness_count_vs_earth_search keeps Earth Search's own footprint filter. Fixture tests/fixtures/footprint_edge_50hmk_20261014 holds the real footprints (re-measured: CDSE covers 0.5388 of dea-qd4xhuft4_v3, CDSE minus Earth Search 68.82 km2, Earth Search footprint 566.36 m from the polygon), rowed in data/SOURCES.md. Red first on unmodified code: measured 1.0 on the synthetic and real-footprint cases. Final verification: ruff check, ruff format --check, mypy and pytest all exit 0.
+- 2026-11-14T02:10:32.462Z: touches-expansion: overlaps st-a32a (stories/st-747e-record-the-first-trial-week-runner-timin.md, stories/st-9812-stop-a-catalogue-footprint-difference-fa.md, stories/st-a32a-stop-uncalibrated-dea-waterbodies-rows-d.md, stories/st-b6bf-decide-whether-ramsar-21-needs-its-own-w.md, stories/st-da75-measure-why-ramsar-ndvi-rows-miss-the-de.md, stories/st-dd0d-decide-a-live-water-limit-for-the-dea-wa.md) — coordinate or split
 
 ## Questions
