@@ -358,6 +358,89 @@ How the script runs. The research script `docs/research/<date>-waterbody-layer-a
 
 Status. The outcome is recorded in ADR 0015 (`docs/decisions/0015-waterbody-layer-live-water-limit.md`) with a status line saying it is decided by this pre-registered rule and is not yet approved by Jarrod. st-dd0d stays parked until the sample closes.
 
+## Pre-registered hypotheses (st-b6bf, 2026-11-14)
+
+Recorded before any confirmatory pass exists and before the research script `docs/research/2026-11-12-ramsar-21-confirm.py` is written. Nothing is measured for this section and no setting changes.
+
+Context. GitHub issue #2 (CI run 43072355326) had one ramsar water failure. On the 2026-11-11 pass ramsar-21 (Peel-Yalgorup System, 59.9 ha, tile 50HLJ, global water setting MNDWI above -0.1, agreement_min 0.91) scored `water_vs_dea_s2_wo` agreement 0.8539 on 3,299 mutually clear pixels. The pipeline called 0.7051 of them wet and DEA Sentinel-2 Water Observations (WO) 0.5608, a wet gap of +14.43 pp. Under ADR 0008 an agreement failure on a ramsar polygon fails the run, and ADR 0012 keeps ramsar rows blocking. Story st-b6bf decides whether ramsar-21 gets a per-polygon override in `config/pipeline.toml` under ADR 0005, by the st-2a78 method: seen rows only nominate, and the decision is made on passes not yet seen.
+
+Disclosure.
+
+- (a) Seen water rows for ramsar-21, all on 50HLJ at the global setting:
+  - Six rows in `docs/research/2026-11-05-wet-area-gap.csv`, on 2026-09-12, 2026-09-17, 2026-10-02, 2026-10-12, 2026-10-27 and 2026-10-29: 5,756 to 5,885 mutually clear pixels, agreement 0.9746 to 0.9808, pipeline wet share 0.7897 to 0.8084, WO wet share 0.7689 to 0.7849 and gap +1.68 to +2.45 pp. All six pass agreement and the 5 pp clause.
+  - 2026-10-29 again in `docs/research/2026-11-12-issue-2-repro-20261029.json`, with the same agreement and count and SCL class 6 agreement 0.9412.
+  - 2026-11-11 in `docs/research/2026-11-12-issue-2-repro-20261111.json` (sha256 9b53bbd3a877fc721610b7ca5f25dcadfe431a9db0db58223da583da213ba26a, identical to the untracked `scratch/issue-2-repro/verification-20261111-scenes-20261112T032325Z.json`) and in `docs/research/verification-20261111T175303Z.md`: the failing row above, with SCL class 6 agreement 0.8369.
+  - No ramsar-21 row has been seen at any MNDWI threshold other than -0.1 or with NDWI. SCL class 6 agreement has been seen on 2026-10-29 and 2026-11-11 only.
+- (b) Other seen values. ramsar-21 NDVI medians in `docs/research/2026-11-12-ndvi-nbart-rows.csv` and `docs/research/2026-11-12-ndvi-nbart-nomination.csv` are -0.861 to -0.682 from 2026-09-12 to 2026-10-27, -0.808 on 2026-10-29, -0.052 on 2026-11-11 and -0.527 on 2026-01-30. On the 2026-11-11 50HLJ pass ramsar-12, ramsar-20 and ramsar-27 passed agreement and failed only the clause, at +7.54, +5.20 and +5.69 pp, and on the same date's 50HLK pass ramsar-12 and ramsar-27 failed only the clause at +7.30 and +5.16 pp. For ramsar-12 (ADR 0010) raised MNDWI thresholds fitted the seen September and October rows and made the August and September confirmatory rows drier than WO.
+- (c) On 2026-11-14 the planner read Earth Search and DEA STAC item metadata only, with no pixel read.
+  - ramsar-21 lies on tile 50HLJ only.
+  - After 2026-11-01 Earth Search held three 50HLJ items: S2B_T50HLJ_20261101T021955_L2A at 42.4 percent cloud and S2C_T50HLJ_20261106T022033_L2A at 34.1 percent, both above the limit and never processed, and S2B_T50HLJ_20261111T022009_L2A at 12.1 percent, the seen row. At about 12:55 UTC no 50HLJ item after 2026-11-11 existed, so the sample held 0 rows.
+  - From 2025-11-01 to 2025-12-31, 9 of 16 50HLJ acquisition dates had an item under 20 percent cloud. Two of those dates, 2025-12-21 and 2025-12-31, had two 50HLJ items each, so a date can give two rows.
+  - If every pass is clear, 3 dates are expected by 2026-11-21 and 6 by about 2026-12-01. At last season's clear share, 3 are expected by about 2026-12-06 and 6 by about 2026-12-26.
+- (d) WO retention. On 2026-11-14 the DEA explorer STAC listed `ga_s2_wo_provisional_3` items for 50HLJ back to 2025-01-05, and a HEAD request for that item's `water` asset returned HTTP 200. The 'about three months' retention in the st-5f74 section and ADR 0009 did not hold for 50HLJ on that day. The rule below does not depend on either figure: a row whose WO item DEA does not serve is listed and left out.
+- (e) Who set the terms. The minimum sample (at least 6 confirmatory rows on at least 3 acquisition dates after 2026-11-01, inside WO retention), the 5.0 pp clause, the gain over the global setting, the no-over-correction rule and the 0.91 floor were written in story st-b6bf on 2026-11-12, after the 2026-11-11 row was seen. On 2026-11-14 the story's park question offered option (a), park with nothing committed, and option (b), commit this pre-registration now with a forward-looking sample of eligible 50HLJ passes to a fixed end date such as 2026-12-31, then park the measurement until six eligible passes exist. The question labelled no recommendation. Jarrod replied 'push & approved recommended', and the orchestrator took option (b), its own recommendation, with the window 2026-11-12 to 2026-12-31, as approved. The candidates, the reproduction gate, the close, the status mode, the R6 pooling and the wording of R1 to R6 were written by the planner on 2026-11-14. The close at the first date that meets the minimum is the planner's reading of 'until six eligible passes exist'. After the build's review on 2026-11-14 the orchestrator added three clarifications before the section was committed: the `discover` arguments and the listing of rejected and windowless items in the confirmatory sample, the handling of a reproduction gate failure in the decision run, and the note on rows from one date in (i).
+- (f) The daily `pipeline` run keeps scoring ramsar-21 at the global setting on each new pass. It commits its markdown report to main as `docs/research/verification-<run_id>.md`, and writes the verification JSON and observation rows with `dea_wo_agreement` (ADR 0009) to the output store. These are routes to the sample's values, closed under Blindness below. A red run conclusion in `gh run list` does not single out ramsar-21, because `ndvi_vs_dea_nbart` failed every measured pass under ADR 0013, and the issue that `alert.yml` opens holds only the conclusion and the run URL.
+- (g) The sample falls in November and December, while the polygon dries. An adopted override applies all year, and the wet-season rows enter the decision only through the R6 pooling.
+- (h) DEA S2 WO is unvalidated. The rule measures consistency with WO, as ADR 0005 says, not accuracy.
+- (i) Choosing among 6 candidates on about 6 rows, and testing the chosen one on the same rows, is a small-sample choice. Two rows from one acquisition date are not independent, and they still count as two rows toward R1 and R4.
+
+Definitions.
+
+- Row: ramsar-21 on one Earth Search `sentinel-2-c1-l2a` scene-tile for which `plan_window` (`src/wetland_change/windows.py`) returns a window. Reads are those of `wo_check` (`src/wetland_change/verify/wo.py`) and `docs/research/2026-11-06-ramsar-12-confirm.py`:
+  - The scene grid is taken from the green asset.
+  - Before any pixel read, the raising guards of `process_scene` (`src/wetland_change/pipeline.py`) run: grid and item EPSG equal to the operation EPSG 32750, and `check_band_scaling` for every band's scale and offset against the ESA product XML. A guard failure raises and stops the run; it is not a dropped row.
+  - `read_stack` reads the bands, with reflectance as DN times scale plus offset from the item's `raster:bands`, and `rasterise` gives the inside mask.
+  - The WO item is the one `find_wo_href` returns. A WO grid transform different from the scene's drops the row as 'grid differs'.
+- clear is `clear_mask(scl, green, nir, swir16)` combined with inside, as in `wo_check`. WO clear is `(wo & WO_EXCLUDE) == 0` and WO wet is `(wo & 128) > 0`. n is the count of pixels that are clear and WO clear. A setting calls a pixel wet as `water_pixels` (`src/wetland_change/stats.py`) does: MNDWI strictly above the threshold, or SCL class 6 for scl6.
+- Per row and setting: a is the count of mutually clear pixels the setting calls wet and WO calls dry, b is the reverse, gap_pp = 100 * (a - b) / n and agreement = 1 - (a + b) / n. Pooled agreement over a set of rows is 1 - sum(a + b) / sum(n). These are exact rationals of the counts.
+- A row needs n of at least 100 (`verify.min_clear_pixels`). Otherwise it is listed as 'fewer than 100 mutually clear pixels'.
+- Reflectance and indices are unitless, and gap is in percentage points. The source CRS and the operation CRS are EPSG:32750 for both sources.
+
+Candidates C. MNDWI above t for t in {-0.05, 0.00, +0.05, +0.10, +0.15, +0.20}. These are the values above the global -0.10 on the grid st-7047 used for ramsar-12 (Part B, G1), since the seen failure is an over-call and only a higher threshold can reduce one. No ramsar-21 data nominated them (disclosure (a)). Baseline: the global -0.10. NDWI settings are not candidates, so a change is to the global method's threshold only, as in st-2a78. scl6 is reported for context only: on the failing seen row it agreed with WO less (0.8369) than the global setting (0.8539).
+
+Seen rows. ramsar-21 on the 7 seen scene-tiles: S2B_T50HLJ_20260912T022111_L2A, S2C_T50HLJ_20260917T022244_L2A, S2B_T50HLJ_20261002T021907_L2A, S2B_T50HLJ_20261012T021555_L2A, S2C_T50HLJ_20261027T022351_L2A, S2A_T50HLJ_20261029T021516_L2A and S2B_T50HLJ_20261111T022009_L2A. They enter only the reproduction gate and the R6 pooling.
+
+Reproduction gate. Before any confirmatory row is read, the script reads the seen rows at -0.10. Each must give the recorded n_mutually_clear and a gap_pp within 0.01 pp of the recorded value: `docs/research/2026-11-05-wet-area-gap.csv` for the first six, and `docs/research/2026-11-12-issue-2-repro-20261111.json` (3,299 pixels, +14.4286 pp) for 2026-11-11. A seen row whose WO item DEA does not serve is listed and left out of R6; it does not fail the gate. If any other seen row fails, the script prints the failing rows, writes no file, exits non-zero and reads no confirmatory row. A fix to the script's reading code is allowed at most twice in total, and a fix never changes a constant, a rule or the sample. st-b6bf is parked with the gate message when the cause is outside the script or the last allowed attempt still fails. Every attempt and its date are recorded in the Spike results entry.
+
+Confirmatory sample. The items that the pipeline's own `discover` (`src/wetland_change/catalogue/search.py`) returns for ramsar-21 with acquisition time from 2026-11-12T00:00:00Z to 2026-12-31T23:59:59Z (its `datetime_range`) and cloud cover below `cloud_cover_max` 20.0 as `discover` applies it, each with a window from `plan_window`. On 2026-11-14 these can only be 50HLJ items. An item is a confirmatory row when DEA serves its WO item per `find_wo_href`, the WO grid transform equals the scene's and n is at least 100. Every other item is listed with its reason (no WO item, grid differs, fewer than 100 mutually clear pixels), and nothing is substituted. `discover` is called with that `datetime_range`, `created_from` None, empty `seen` and `rejected_seen` and no `retry_ids`, so no item is skipped as already processed. An item acquired in the range that `discover` rejects, or that has no window, is listed with that reason and is not a row. Two items on one tile and date are two rows.
+
+Close. Rows are taken in order of UTC acquisition date. The sample closes at the end of the first UTC acquisition date on which it holds at least 6 rows on at least 3 distinct dates, and every row of that date is in it. With one 50HLJ row per date that is the 6th date with a row. If no date meets this by 2026-12-31, the sample closes then and holds every row acquired from 2026-11-12 to 2026-12-31. No row before the close is dropped, and none after it is added.
+
+Status mode. Before the close the script may run in a status mode. It runs the reproduction gate and, for each confirmatory item, reads only what the row test needs: the WO lookup, the two grids, and the scene and WO clear masks for n. It prints each item's id, date and row status with its drop reason, the counts of rows and dates, and whether the sample has closed. It computes no index, wet share, agreement or gap for a confirmatory item, and writes no file. st-b6bf is re-parked with those counts.
+
+Decision run. After the close the script runs once in decision mode, no earlier than the second UTC day after the closing date, so that date's items and WO items are listed. The decision run recomputes the rows and the close by the rules above, its result governs, and any difference from the last status run is reported. If a network failure stops it before it writes its files, it is rerun once and both attempts are recorded. If the rerun also stops, or the run stops for any other reason before its files are written, no decision is computed, the outcome is recorded as 'inconclusive' and the global setting stays. A reproduction gate failure is not such a stop: it is handled as the Reproduction gate paragraph says, before any confirmatory row is read, and the decision run starts again after an allowed fix.
+
+Selection. T is the candidate in C with the lowest mean absolute gap_pp over the confirmatory rows, computed exactly. Ties go to the lower threshold.
+
+Decision rule. Adopt a per-polygon override for ramsar-21 at T only if all of R1 to R6 hold. Otherwise keep the global setting and record the failed rule ids.
+
+- R1, sample: at least 6 confirmatory rows on at least 3 distinct acquisition dates. Failing R1 is recorded as 'inconclusive' and keeps the global setting. R2 to R6 are then reported for context when the sample holds at least one row.
+- R2, clause: the absolute gap_pp at T is 5.0 or less on every confirmatory row.
+- R3, gain: pooled agreement at T minus pooled agreement at -0.10, over the confirmatory rows, is at least 0.005.
+- R4, consistency: agreement at T is strictly greater than agreement at -0.10 on at least two thirds of the confirmatory rows.
+- R5, no over-correction: the absolute value of the mean signed gap_pp at T over the confirmatory rows is 2.0 or less.
+- R6, floor: agreement_min is the floor to 0.01 of (pooled agreement at T over the seen rows that passed the gate and the confirmatory rows, minus 0.02), the ADR 0005 convention, computed exactly with rational arithmetic. The override is adopted only if agreement_min is at least 0.91.
+
+The override form is `[water.overrides.ramsar-21]` with method = "mndwi", threshold = T and agreement_min as computed.
+
+Reported, not decision inputs:
+
+- per seen and confirmatory row: n, the WO href, the pipeline and WO wet shares, and gap_pp and agreement at -0.10, at each candidate and at scl6;
+- R2 to R6 values for every candidate, not only T;
+- the number of all rows below the computed agreement_min at T, and the seen rows from 2026-09-12 to 2026-10-29 that fail that agreement_min or the 5.0 pp clause at T;
+- every dropped item and every seen row left out, with its reason.
+
+How the script runs. `docs/research/2026-11-12-ramsar-21-confirm.py` and its decision tests are written and committed, with the tests passing on synthetic rows, before the decision run, and that commit is recorded in ADR 0014. The decision run writes `docs/research/2026-11-12-ramsar-21-confirm.csv`, one row per seen or confirmatory row and setting, and `docs/research/2026-11-12-ramsar-21-confirm.txt`. The outcome is written as a line on its own, `ramsar-21 water setting: override` or `ramsar-21 water setting: keep-global`, followed by a line `Failed rules: <ids>` naming the failed rules or `none`. For an override a third line gives `ramsar-21 override: mndwi above <T>, agreement_min <agreement_min>`.
+
+Blindness. Until the decision files are committed:
+
+- no `docs/research/verification-*.md` other than `verification-20261029T131944Z.md` and `verification-20261111T175303Z.md` is opened, and no `git diff`, `git log -p`, `git show` or search output that includes another one is read;
+- no run log of a `pipeline` or `verify.yml` run newer than 43475454140 is read;
+- no object in the output store is read (`verification/`, observations, run manifests or catalogue), and no `wetland-change run`, `backfill`, `score` or `verify` call is made over a confirmatory scene outside the scheduled workflows;
+- outside the script, only commit metadata, `gh run list` JSON fields and Earth Search and DEA STAC item metadata are read, with no pixel read. The status mode is the only pixel read of a confirmatory item before the decision run.
+
+Status. The outcome is recorded in ADR 0014 (`docs/decisions/0014-ramsar-21-water-setting.md`) with a status line saying it is decided by this pre-registered rule under Jarrod's request to complete the outstanding work and is not yet approved by Jarrod. No limit is loosened without the confirmatory sample. If an override is adopted, st-b6bf adds it to `config/pipeline.toml` in the commit that records ADR 0014, and it reaches the scheduled pipeline only when main is pushed, which needs Jarrod's ask. st-b6bf stays parked until the sample closes.
+
 ## Spike results
 
 ### S1 Forrestdale seam (2026-10-29)
