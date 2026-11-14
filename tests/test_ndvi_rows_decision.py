@@ -2054,3 +2054,15 @@ def test_committed_nomination_matches_recomputation() -> None:
     assert [line for line in text.splitlines() if line.startswith("Nominated g:")] == [
         expected
     ]
+
+
+def test_committed_confirm_rows_match_recomputation() -> None:
+    confirm_rows = nr.load_rows(nr.ROWS_CSV)
+    nomination_rows = nr.load_rows(nr.NOMINATION_CSV)
+    text = nr.ROWS_TXT.read_text(encoding="utf-8")
+    assert nr.build_report(confirm_rows, nomination_rows) == text
+    sample_ids = {item_id for ids in nr.CONFIRM_SAMPLE.values() for item_id in ids}
+    assert {
+        row.item_id for row in confirm_rows if row.status != "not_in_sample"
+    } == sample_ids
+    assert all(row.sample == "confirm" for row in confirm_rows)
