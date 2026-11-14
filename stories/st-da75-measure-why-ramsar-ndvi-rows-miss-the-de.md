@@ -9,7 +9,7 @@ discovered_from: st-a32a
 touches: [LEARNINGS.md, data/SOURCES.md, docs/decisions/0013-ndvi-row-rule-against-dea-nbart.md, docs/research/2026-11-12-ndvi-nbart-rows.py, tests/test_config.py]
 exclusive: false
 created: 2026-11-12
-updated: 2026-11-12
+updated: 2026-11-14
 ---
 
 ## Description
