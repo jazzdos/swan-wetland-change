@@ -655,7 +655,67 @@ The global setting (MNDWI above -0.1, agreement_min 0.91) stays for ramsar-12. N
 
 Limits. The confirmatory dates are 2026-08-23 to 2026-09-07, the wetter season, so the dry end of the season rests on the seen rows and is not confirmed. The sample is 7 rows on 4 dates, and the 2 tiles of one date are not independent. DEA S2 WO is unvalidated, so this measures consistency with WO and not accuracy. The 12 seen rows were not used to decide, except as seen-row counts in R6. The result does not say why the gap changes sign between August to early September and September to October; the two samples differ in date, and no test here separates a seasonal effect from a scene effect.
 
+### NDVI row rule against DEA NBART (2026-11-14)
+
+Rows: [docs/research/2026-11-12-ndvi-nbart-nomination.csv](docs/research/2026-11-12-ndvi-nbart-nomination.csv) with [docs/research/2026-11-12-ndvi-nbart-nomination.txt](docs/research/2026-11-12-ndvi-nbart-nomination.txt) for the nomination sample, and [docs/research/2026-11-12-ndvi-nbart-rows.csv](docs/research/2026-11-12-ndvi-nbart-rows.csv) with [docs/research/2026-11-12-ndvi-nbart-rows.txt](docs/research/2026-11-12-ndvi-nbart-rows.txt) for the confirmatory sample. All four are written by [docs/research/2026-11-12-ndvi-nbart-rows.py](docs/research/2026-11-12-ndvi-nbart-rows.py). The candidates, samples, parameter rule, reproduction gate and A0 to A5 are the st-da75 pre-registration above. Both reads used the DBCA-010 ramsar GeoJSON whose sha256 matches the DBCA-010 row of `data/SOURCES.md`.
+
+Commits on story/st-da75, oldest first:
+
+- 098fb14, "st-da75: Pre-register the NDVI row rule against DEA NBART".
+- fe0cf3c, "st-da75: Add the NDVI row research script and its decision tests".
+- 47233f0, "st-da75: Harden the NDVI row script before the live reads". This is the only script change after fe0cf3c, and it came before any live read. No decision function, constant or sample changed.
+- 3b82198, "st-da75: Record the NDVI row nomination read". This is the nomination commit, and the confirmatory phase took its input from the nomination files committed there.
+- cd5af57, "st-da75: Record the NDVI row confirmatory read".
+
+Runs, both against Earth Search and DEA on 2026-11-14 (UTC):
+
+- Nomination: one attempt, 04:45:16 to 04:51:07 (5 min 51 s), exit 0, results written, no rerun.
+- Confirmatory: one attempt, 05:03:18 to 05:25:43 (22 min 25 s), exit 0, results written, no rerun.
+
+Nomination sample: 8 scene-tiles (3 on 2026-10-29, 5 on 2026-11-11), 79 rows. 78 were scored and 1 was skipped; no row had a grid or CRS difference, a read error, no DEA item or a rejection by `discover`. The skipped row is 2026-11-11 S2B_T50HLJ_20261111T022009_L2A ramsar-16 ('pipeline median not finite or fewer than 100 compared pixels'; 0 compared pixels). DEA maturity of the 8 scene-tiles: 3 final (all of 2026-10-29) and 5 nrt (all of 2026-11-11). The 78 scored rows are 34 on 2026-10-29 and 44 on 2026-11-11.
+
+Reproduction of the eight seen failing rows: pass. All 8 reproduced `ndvi_stored`, the DEA NDVI median and `n_compared` with deviation 0.0, each against the DEA item the report recorded, which DEA still served. Of the other scored ramsar rows of the two issue #2 reports, 65 of 65 matched. 0 report rows were not produced.
+
+Confirmatory sample: 32 scene-tiles on 8 passes, all 32 read. 294 rows: 292 scored and 2 skipped, with no grid or CRS difference, read error, missing DEA item, rejection by `discover`, row not returned or row outside the sample. Both skipped rows are on 2026-09-12 S2B_T50HLJ_20260912T022111_L2A and share the reason 'pipeline median not finite or fewer than 100 compared pixels'. For ramsar-14 the pipeline median is not finite (0 clear pixels and 0 compared pixels). For ramsar-22 the median is finite (0.4947) and the compared pixels are 28, below 100. DEA maturity of the scene-tiles read: 29 final and 3 nrt (2026-10-27 on 50HLK, 50JLL and 50JML). Of the 292 scored rows, 270 are against final items and 22 against nrt items.
+
+Nominated g: none. K1 is not nominated, so A0 to A5 are not computed. No g in 0.002 to 0.010 meets N2: the share of I(g) rows with band_max at most g is 0.0000 to 0.3750 (0.3750 at g = 0.005), against the 0.95 required. N1 also fails at g = 0.002 (0.9452) and g = 0.003 (0.9429), and N3 fails from g = 0.007 (W holds 0.2949 of the scored rows at g = 0.007).
+
+K0, the only candidate, by the share of passes on which the NDVI checks alone would make `verify` exit 3, and the failing row share:
+
+- Confirmatory: 8 of 8 passes (1.0000); 87 of 292 scored rows fail (0.2979). The correlation check passes on every pass (r from 0.9779 to 0.9995), so the failures are rows.
+- Nomination passes: 2 of 2 passes (1.0000); 9 of 78 scored rows fail (0.1154).
+- K1 is not nominated, so no K1 share is computed.
+
+Rows found after the pre-registration. The nomination read produced six rows that the issue #2 reports held as a RasterioIOError or with no value: 2026-10-29 tile 50HLJ ramsar-26, ramsar-27 and ramsar-28 (scored) and 2026-11-11 tile 50HLJ ramsar-14 and ramsar-15 (scored) and ramsar-16 (skipped). Their `matches_report` is blank. One of them, 2026-10-29 50HLJ ramsar-27 (abs_diff 0.0776, red + nir 0.0428, band_max 0.0030), fails K0 and is not among the eight seen failing rows. The nomination K0 failing row share is therefore 9 of 78, against the 8 failing rows the reports gave. This was found after the pre-registration and did not change any rule.
+
+A0 to A5: not computed, K1 not nominated.
+
+Failed: none computed. The result is not inconclusive: A0 is not evaluated without a nominated g, and the pre-registration sets the outcome to K0.
+
+NDVI row rule: K0
+
+Hypotheses, reported and not decision inputs:
+
+- H1: not supported. K1 is not nominated.
+- H2: not supported. On both 2026-11-11 ramsar-13 rows of the nomination sample, read against the run-day DEA item, the same-pixel gap equals abs_diff and is above 0.05 (50HLK 0.0741, 50HLJ 0.1007). The pipeline median over the compared pixels is the stored median, so the mask does not explain the gap.
+- H3: supported. Over 97 confirmatory pairs of one polygon and pass on two tiles with equal `n_compared`, the median between-tile difference of `ndvi_stored` is 0.0099 and of `ndvi_dea` 0.0047, which meets both the factor of two and the 0.005 floor.
+- H4: untestable. The run-day DEA items of both 2026-11-11 tiles (50HLK and 50HLJ) are still nrt. As context, the K0 failing share by DEA maturity over the confirmatory rows is 86 of 270 on final items and 1 of 22 on nrt items.
+
+Cause, per the reading rule: H3 (tile) is the one supported hypothesis. The decision does not depend on it. H1 and H2 are not supported and H4 is untestable.
+
+Context only, not a decision input: the rows TXT also lists the number of confirmatory passes that fail a K1 rule at each g of the grid, 8 of 8 at g = 0.002 to 0.008 and 7 of 8 at g = 0.009 and 0.010. The pre-registration does not use it when no g is nominated, and no conclusion is drawn from it.
+
+Limits. DEA NBART is another processing of the same Sentinel-2 acquisition and is not ground truth, so this measures consistency and not accuracy. The confirmatory sample is final maturity except the 3 nrt scene-tiles (22 scored rows), while daily runs score against nrt, and the nomination 2026-11-11 rows are against nrt items. The confirmatory sample is 8 passes, which is a small number of passes. The tiles of one pass share an acquisition and are not independent, so the 292 rows are fewer independent observations than their count. The 2 nomination passes were seen, and the nomination failing rows and H2 rest on them. The earlier live check of the 0.05 tolerance was read over the live test's Thomsons Lake box (`THOMSONS_32750` in `tests/test_live_verify.py`), not over a ramsar polygon.
+
 ## Live run findings
+
+### Issue #2 daily verify exit 3 (2026-11-12)
+
+The daily verify of CI run 43072355326 (GitHub issue #2) exited 3. Reproduced at ad1fe76 on the 2026-11-11 and 2026-10-29 passes, most of the failing rows were DEA Waterbodies rows judged against limits calibrated on the ramsar layer only: 262 blocking water rows and 150 blocking NDVI rows on the waterbody layer on 2026-11-11, and 297 and 310 on 2026-10-29 (`docs/research/2026-11-12-live-check-layers.txt`). The fix was st-a32a, under ADR 0012 (`docs/decisions/0012-live-check-limits-apply-to-their-calibrated-layer.md`, approved by Jarrod on 2026-11-14): waterbody rows are advisory, and ramsar rows keep their limits.
+
+After the layer rule, `ndvi_vs_dea_nbart` still failed 4 ramsar rows on each of the 2026-10-29 and 2026-11-11 passes (ramsar-15, ramsar-20, ramsar-21 and ramsar-27 on 2026-10-29; ramsar-13 twice, ramsar-20 and ramsar-21 on 2026-11-11), so `verify` still exited 3. st-da75 measured the row on 32 scene-tiles on 8 passes, with the pre-registered rule choosing between the status quo (K0) and a conditioning split (K1). K1 was not nominated, since no band-difference limit g was admissible on the nomination rows. K0 stays: the check fails all 8 passes and 87 of 292 scored confirmatory rows. See ADR 0013 (`docs/decisions/0013-ndvi-row-rule-against-dea-nbart.md`, not yet approved by Jarrod) and the Spike results entry 'NDVI row rule against DEA NBART (2026-11-14)'.
+
+Rule: apply a check's limit only to the layer it was calibrated on, and measure a limit that keeps failing on its own rows before changing it.
 
 ### Catalogue footprint difference failed the Copernicus count check (2026-11-12)
 
