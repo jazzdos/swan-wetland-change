@@ -122,7 +122,8 @@ on later runs; it does not abort the run.
 ### Scheduled jobs
 
 - `.github/workflows/pipeline.yml`: daily at 10:17 UTC and on manual
-  dispatch. Fetches the AOI, runs `wetland-change run --no-catalogue`, then
+  dispatch (observed scheduled starts were 6 to 10 hours after the cron time,
+  2026-11-07 to 2026-11-13). Fetches the AOI, runs `wetland-change run --no-catalogue`, then
   `verify` when the run processed scenes, then `verify --run-id` for each run
   it recovered, then `build-catalogue` on every day
   that is not cancelled (so the catalogue links the run's report, and reports
@@ -184,10 +185,10 @@ recorded in `LEARNINGS.md`, and the Collection 1 backfill
 | Water extent, history | DEA Waterbodies v3 CSV per lake; DEA `ga_ls_wo_3` per scene | `src/wetland_change/verify/waterbodies.py` (`water_vs_dea_waterbodies`, `water_spearman_vs_dea_waterbodies`); `tests/test_verify_waterbodies.py` | Implemented against the Waterbodies CSV with a 10 pp per-pass tolerance (spike S9). The `ga_ls_wo_3` per-scene comparison is not implemented as a standing check: S9 found Waterbodies v3 within 0.2 pp of `ga_ls_wo_3` on all 129 passes, consistent with Waterbodies being derived from it, and used it once to set the tolerance (`LEARNINGS.md`, "S9 historical tolerance"). The per-lake Spearman is scored over every stored observation up to the newest scene of the verified run, so it reaches its 10 pair minimum on a daily run; per-pass checks cover the verified run only. `spearman_min` is 0.83, calibrated on the whole backfill (ADR 0007, `docs/decisions/0007-spearman-threshold-from-whole-history.md`). The backfill rho is 0.855 to 0.893 on four lakes, below the design's 0.9, so H4 is not supported. |
 | NDVI | DEA NBART, same acquisition | `src/wetland_change/verify/ndvi.py` (`ndvi_vs_dea_nbart`, `ndvi_correlation_vs_dea_nbart`), `src/wetland_change/verify/layers.py`; `tests/test_verify_ndvi.py` | Implemented. One live check on 2026-10-30 passed with an absolute difference of about 0.003 against a 0.05 tolerance (`LEARNINGS.md`, "DEA NBART scale"). The check skips a polygon below `[verify] min_clear_pixels` (default 100) compared pixels, and the skip is a reason skip, not an error. Rows on DEA Waterbodies polygons are advisory and reported as one summary with their median absolute difference, and the correlation uses ramsar rows only (ADR 0012, `docs/decisions/0012-live-check-limits-apply-to-their-calibrated-layer.md`). |
 | GeoParquet output | geoparquet-validator; DuckDB and GDAL as readers | `src/wetland_change/outputs/geoparquet.py`; `tests/test_geoparquet.py`, `tests/test_pipeline.py`, `tests/test_readme.py` | Implemented. The validator, DuckDB, pyarrow and geopandas readers run in the default suite and agree on row counts and bounds (`tests/test_geoparquet.py`). Footer keys `source_epsg`, `operation_epsg`, `geometry_epsg`, `units`, `scl_classes_dropped` and `water_settings` record CRSs, units, the SCL classes the clear mask drops and each polygon's water rule. GDAL is not exercised because the pinned pyogrio wheel has no Parquet driver. |
-| STAC catalogue | stac-validator (through stac-check 1.14), stac-check, pystac validate, stac-browser | `src/wetland_change/stac/catalogue.py`; `tests/test_catalogue.py`, `tests/test_run_catalogue.py` | Implemented offline: pystac `validate_all` and stac-check pass, and all hrefs are absolute https. The bucket is private (`docs/decisions/0011-private-output-bucket.md`), so the catalogue is read with AWS credentials or from a local copy. The live checks are not implemented because the infrastructure has not been applied and no bucket exists. |
+| STAC catalogue | stac-validator (through stac-check 1.14), stac-check, pystac validate, stac-browser | `src/wetland_change/stac/catalogue.py`; `tests/test_catalogue.py`, `tests/test_run_catalogue.py` | Implemented offline: pystac `validate_all` and stac-check pass, and all hrefs are absolute https. The bucket is private (`docs/decisions/0011-private-output-bucket.md`), so the catalogue is read with AWS credentials or from a local copy. No live STAC check is implemented, and the bucket exists but is private, so stac-browser is not used. |
 | Incremental and idempotent | pytest-regressions golden run; watermark replay | `tests/test_golden_run.py`, `tests/test_pipeline.py`, `tests/test_ledger.py`, `tests/test_catalogue.py` | Implemented: byte-identical outputs on rerun, no duplicates after watermark replay, golden observation rows. The ledger-against-Copernicus count is covered per tile over 30 days by the freshness row; the backfill reached coverage 1.0 against a fresh Earth Search reference. |
 | Change detection | DEA Waterbodies Forrestdale record | `src/wetland_change/change.py`, `src/wetland_change/outputs/changes.py`; `tests/test_change.py`, `tests/test_change_outputs.py` | Implemented. Backfill 2022-12-01 to 2026-11-02 (1147 items): H1 supported, H2 untestable, H3 not supported, H4 not supported. See below. |
-| Scheduled job alive | Earth Search and Copernicus counts per tile per 30 days | `src/wetland_change/verify/freshness.py` (`freshness_*`); `tests/test_verify_freshness.py`; alert workflow `.github/workflows/alert.yml`, `tests/test_workflows.py` | Implemented. Not yet run on a schedule (see Limitations). |
+| Scheduled job alive | Earth Search and Copernicus counts per tile per 30 days | `src/wetland_change/verify/freshness.py` (`freshness_*`); `tests/test_verify_freshness.py`; alert workflow `.github/workflows/alert.yml`, `tests/test_workflows.py` | Implemented. Runs in the weekly `verify.yml` job; its one run (2026-11-09) failed before st-9812 and no weekly run has passed yet (see Limitations). |
 | End to end | `verify` over the latest daily run | `src/wetland_change/verify/run.py`, `src/wetland_change/verify/checks.py`; `tests/test_verify.py`, `tests/test_workflows.py` | Implemented and run locally (first live run: 127 checks, 115 passed, 12 failed, all 12 explained in `docs/handoffs/2026-10-29-milestone-1.md`). A green weekly `verify.yml` run has not happened (see Limitations). |
 
 ### Backfill results
@@ -365,33 +366,64 @@ variables, Actions, Variables). `.github/workflows/pipeline.yml` and
 
 The role trusts only runs on `main`, so both workflows work only from `main`.
 
-Two more steps come before the first scheduled run, both in `infra/README.md`.
-`catalogue.base_url` in `config/pipeline.toml` still holds the `.invalid`
-placeholder and must be set to the `bucket_url` output; `run`, `backfill`,
-`score` and `build-catalogue` refuse an `s3://` output root until it is. The
-output root should then be seeded from the backfill, because an empty root
-leaves the first daily run bounded only by `stac.initial_lookback_days`.
+Two more steps come before the first scheduled run of a fresh deployment, both
+in `infra/README.md`. `catalogue.base_url` in `config/pipeline.toml` holds the
+`.invalid` placeholder until it is set to the `bucket_url` output; `run`,
+`backfill`, `score` and `build-catalogue` refuse an `s3://` output root until
+it is. The output root should then be seeded from the backfill, because an
+empty root leaves the first daily run bounded only by
+`stac.initial_lookback_days`. This deployment did both on 2026-11-06:
+`catalogue.base_url` was set to the bucket URL in commit 2b8d582, and the
+output root was seeded from the 2026-11-02 backfill copy.
 
 ## Limitations
 
 As of this commit:
 
-- The infrastructure in `infra/` has not been applied. No bucket, OIDC role
-  or repository variables exist yet.
-- The `pipeline` and `verify` workflows are disabled on GitHub until it is.
+- Four-week trial state (success criterion 1): in progress, not met. Scheduled
+  `pipeline` runs have happened every day from 2026-11-07 to 2026-11-13 (7
+  runs, plus a manual dispatch on 2026-11-06). Six of the seven succeeded. Run
+  43072355326 (2026-11-11) failed at the step "Verify the run" (verify exited
+  non-zero). It is the only run that processed scenes (5, n = 1 processed run);
+  the other six scheduled runs took about a minute and processed none. One
+  weekly `verify` run exists, 42548248931 (2026-11-09), which failed. GitHub
+  issue #1 (the weekly run: a catalogue footprint difference failed the
+  Copernicus count check, fixed by st-9812; the run's "Verify the latest daily
+  run" step also exited 2 with "no daily run with processed scenes in the
+  output root", because no daily run had processed scenes before 2026-11-11)
+  and issue #2 (the pipeline run:
+  DEA Waterbodies rows failing limits calibrated on the ramsar layer, fixed by
+  st-a32a under ADR 0012, approved 2026-11-14) both read CLOSED on GitHub,
+  closed on 2026-11-14 after those merges. Issue #2 had a second cause: ramsar
+  rows failing `ndvi_vs_dea_nbart`. st-da75 measures it; its pre-registered
+  rule keeps the status quo, its ADR 0013 is not approved and its branch is not
+  merged, so on `main` the daily verify can still exit 3 on ramsar NDVI rows.
+  The trial has not passed, and four weeks have not elapsed.
+- Verify findings still open: ramsar-21 failed water agreement on 2026-11-11
+  (0.8539 against 0.91; st-b6bf, open), and DEA Waterbodies rows are advisory
+  under ADR 0012 with no calibrated limit (st-dd0d, open, to be decided from
+  the trial's advisory summaries). st-b49e (open) covers DuckDB and `aws login`
+  profiles, described under "Querying with DuckDB".
 - The scheduled-job-alive row reads not-run in the verify report because
-  freshness is a separate command (`wetland-change freshness`).
-- No scheduled run has happened. The freshness and end-to-end rows, and
-  success criterion 1 (four weeks of unattended daily runs), are untested.
-- Whether GitHub-hosted runners can reach the DEA hosts has not been tested.
-  The workflows' "Fetch the AOI" step downloads the DEA Waterbodies polygons
-  from the DEA WFS, so an unreachable host fails that step.
-- The live STAC checks wait on the bucket. The design's stac-browser on GitHub
-  Pages is not used while the bucket is private, so design success criteria 2
-  and 3 apply to credentialed readers (ADR 0011).
-- The credentialed S3 query in "Querying with DuckDB" has not been run against
-  the project bucket because none is applied yet. Its live test is
-  `tests/test_live_private_outputs.py`.
+  freshness is a separate command (`wetland-change freshness`). It runs in the
+  weekly `verify.yml` job, whose one run (42548248931) failed it before
+  st-9812. The freshness and end-to-end rows are therefore in progress: no
+  weekly run has passed yet.
+- GitHub-hosted runners can reach the DEA hosts. The "Fetch the AOI" step
+  (DEA WFS) succeeded in every run read, and the verify step of run
+  43072355326 read DEA Water Observations and the DEA explorer STAC from the
+  runner. The weekly run's live contract tests also passed on the runner.
+- No live STAC check is implemented: `verify` reports the STAC row as not-run
+  with the standing test `tests/test_catalogue.py` (`src/wetland_change/verify/matrix.py`).
+  The pipeline builds the catalogue each run and that step succeeded. The
+  design's stac-browser on GitHub Pages is not used while the bucket is
+  private, so design success criteria 2 and 3 apply to credentialed readers
+  (ADR 0011).
+- The credentialed S3 query in "Querying with DuckDB" was run against the
+  project bucket on 2026-11-14 on merged `main` (a0693ba): both tests in
+  `tests/test_live_private_outputs.py` passed with credentials exported to the
+  environment. A reader whose profile comes from `aws login` fails in DuckDB's
+  credential chain (st-b49e, open).
 - Water thresholds are calibrated against DEA Sentinel-2 Water Observations
   over August to October 2026 only, and DEA's product is itself unvalidated,
   so agreement measures consistency with DEA, not accuracy (ADR 0005).
@@ -401,9 +433,10 @@ As of this commit:
 - Hypotheses H2 to H4 are untestable or not supported on the current
   backfill; H4's rho of 0.855 to 0.893 sits below the 0.9 target, and
   `spearman_min` is calibrated to 0.83 instead (ADR 0007).
-- Each `verify` reads every stored observation file (1147 files and about
-  236 MB today, growing with each pass) for the Spearman check. S3 read time
-  is unmeasured (ADR 0007).
+- Each `verify` reads every stored observation file for the Spearman check
+  (1147 files and about 236 MB at the backfill; the store has grown with each
+  pass). The 2026-11-11 verify step took 1174 s in total, and the S3 read time
+  inside it is not separately measured (ADR 0007).
 - The `dea_wo_agreement` observation column is the agreement at first
   processing (`docs/decisions/0009-dea-wo-agreement-populated-at-processing-time.md`).
   It is null for rows written before that change, for backfill rows, when
@@ -421,21 +454,28 @@ As of this commit:
   items from 2022-01-01 (1194, `LEARNINGS.md`, "S4 backfill count"), but it is
   not a backfill source, and reading its products to fill the 2022 gap would
   need a Copernicus account.
-- `catalogue.base_url` is the `.invalid` placeholder and the output root has
-  not been seeded from the backfill (st-30ad, st-5241; `infra/README.md`).
-  Neither step can run before the bucket exists.
-- Nothing has run against S3. The OIDC session length (st-a919), the bucket
-  lifecycle rule and content types (st-4fa1), and ledger compaction, which
-  deletes ledger parts from an unversioned private bucket (st-b101), are
-  tested on local stores and stub servers only. The three runner and bucket spikes of the design (5, runner
-  dry run; 6, catalogue in stac-browser; 7, DuckDB over S3) have not been run,
-  so seconds per scene on a GitHub runner and per-request S3 latency are
-  unmeasured. The local figure is 139 to 152 s per scene
-  (`docs/research/2026-11-03-backfill-hypotheses.md`) against a 120 minute job
-  timeout.
-- Deleting an object from S3 re-creates its parent directory marker, because
-  pyarrow's `delete_file` does (st-c667, open). Ledger compaction and
-  `pipeline.py` call it. Writes no longer create markers (st-2cc2).
+- Runs against S3 exist: the pipeline job has used the private bucket through
+  the OIDC role in every run since 2026-11-06. Spike 5 (runner
+  dry run) is answered from run 43072355326 (`LEARNINGS.md`, "S5 runner
+  timing (2026-11-14)"): the pipeline step took 336 s for 5 scenes (67 s per
+  scene), the verify step 1174 s (235 s per scene), and the job 26 minutes
+  against the 120 minute timeout. That is one processed run (n = 1), and it
+  failed verify. The local figure was 139 to 152 s per scene
+  (`docs/research/2026-11-03-backfill-hypotheses.md`). Spike 6 (catalogue in
+  stac-browser) and the anonymous half of spike 7 (DuckDB over S3 with no
+  credentials) stay blocked while the bucket is private (ADR 0011). Not
+  measured: per-request S3 latency and peak memory on the runner.
+- Not exercised on the applied bucket or in the logs read: the OIDC session
+  length (st-a919, 10800 s), which has only carried a 26 minute job; the
+  bucket lifecycle rule and object content types (st-4fa1), which no recorded
+  check has read back from the bucket; and ledger compaction (st-b101), which
+  the logs of run 43072355326 do not mention. Compaction deletes ledger parts
+  from an unversioned private bucket. These were tested on local stores and
+  stub servers only.
+- S3 deletes use a botocore `DeleteObject`, so they no longer re-create the
+  parent directory marker that pyarrow's `delete_file` wrote (st-c667, merged;
+  `src/wetland_change/store.py`). Writes stopped creating markers earlier
+  (st-2cc2).
 - ramsar-12 (Peel-Yalgorup, 100.7 ha) reads wetter than DEA Water
   Observations on every sampled row at the global MNDWI -0.1 setting, and it
   accounts for 5 of the 9 rows that fail only the 5 pp clause. Which source is
@@ -444,17 +484,21 @@ As of this commit:
   the global setting; on those rows the pipeline is drier than WO, not wetter.
   The decision was made under delegation and is pending Jarrod's review
   (ADR 0010; `LEARNINGS.md`, "ramsar-12 setting confirmation").
-- Observation and change files carry the geometry CRS only. The operation CRS
-  (EPSG:32750), units and the clear-pixel and water rules are in this README
-  and `config/pipeline.toml`, not in the files (st-2bfd, open). The run
-  manifest records no Python, GDAL, PROJ or package versions and no
-  `uv.lock` hash (st-2bc1, open).
-- The calibration and tolerance scripts behind the thresholds are untracked,
-  and two committed research scripts no longer reproduce their committed
-  outputs at the branch head (st-e6f1, open). Smaller reproducibility items
-  are st-73ad (pixel area and vector engine), st-5acd (missing
-  `data/SOURCES.md` rows) and st-eb5a (the DEA Waterbodies checksum covers
-  fields that DEA refreshes).
+- Observation and change files written since st-2bfd carry a provenance footer:
+  `source_epsg`, `operation_epsg` (EPSG:32750), `geometry_epsg`, `units`,
+  `scl_classes_dropped`, `scl_classes_clear`, `clear_pixel_rule`,
+  `water_settings` and `water_units_note` (`src/wetland_change/outputs/provenance.py`).
+  The 1,147 backfill files predate it. st-1b87 added the command
+  `add-observation-footers` to rewrite them; the repository holds no record
+  that it has been run against the bucket. The run manifest records the Python,
+  GDAL, PROJ, rasterio, pyarrow and other package versions, the `uv.lock`
+  sha256 and the git commit (st-2bc1). Both stories are merged.
+- The reproducibility items of the 2026-11-06 audit are merged: the
+  calibration and tolerance scripts are committed under `docs/research/` and
+  two stale research scripts were fixed (st-e6f1), pixel area is derived from
+  the window transform and the vector engine is pinned (st-73ad), the missing
+  `data/SOURCES.md` rows were added (st-5acd), and the DEA Waterbodies
+  geometry has its own checksum (st-eb5a).
 
 The review that found most of the items above is
 `docs/research/2026-11-04-milestone-2-review.md`. The state after fixing it,
