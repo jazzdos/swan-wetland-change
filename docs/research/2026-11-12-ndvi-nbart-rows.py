@@ -15,7 +15,20 @@ scene-tiles once, takes g only from the committed nomination files and writes
 the rows CSV and the report. Neither command writes before its whole sample is
 read, and confirm refuses before any network call when the nomination is not
 committed at HEAD, differs from the committed version or records a
-reproduction gate failure.
+reproduction gate failure. confirm also refuses, before any network call, when
+its rows CSV, its report or an --out or --report target already exists, because
+the sample is read once; a run stopped by a network error writes no file, so
+the one allowed rerun is not blocked.
+
+Error routing. A network error (an OSError) on one of the eight seen rows of
+the nomination propagates, and no file is written. A scene-level DEA lookup, DEA
+grid open or recorded-item fetch failure gives read_error rows for every planned
+polygon of the scene, unless the same rule makes it propagate. Every other
+per-polygon error gives a read_error row. The scene guards and the Earth Search
+discovery raise. The DEA item lookup and the recorded-item fetch are each tried
+up to DEA_LOOKUP_TRIES times, DEA_LOOKUP_DELAY_S seconds apart, when the error is
+a network error; any other error is not retried and a 404 for the recorded item
+means it is not served.
 
 --ramsar is the DBCA-010 Ramsar layer (config aoi.ramsar_path is relative and
 absent in a worktree). Anonymous public reads of Earth Search and DEA only.
@@ -28,7 +41,8 @@ the operation CRS are EPSG:32750. Reflectance and NDVI are unitless. DEA NBART
 is another processing of the same acquisition and is not ground truth, so a
 result here measures consistency between two processings.
 
-Everything above `measure` is pure. The module top level imports only the
+Everything above `measure` is pure, except that the nomination report reads the
+two committed reports. The module top level imports only the
 standard library and numpy; everything else is imported inside functions, so
 importing the module does no network or file I/O.
 """
@@ -37,12 +51,14 @@ import argparse
 import csv
 import dataclasses
 import functools
+import itertools
 import json
 import logging
 import math
 import re
 import statistics
 import subprocess
+import time
 from collections.abc import Callable, Iterable, Sequence
 from dataclasses import dataclass
 from datetime import UTC, datetime
@@ -150,6 +166,8 @@ CORRELATION_MIN: Final = 0.95
 CORRELATION_MIN_ROWS: Final = 5
 MIN_PIXELS: Final = 100
 REPRO_ATOL: Final = 1e-6
+DEA_LOOKUP_TRIES: Final = 3
+DEA_LOOKUP_DELAY_S: Final = 5.0
 
 SHARE_W: Final = Fraction(95, 100)
 SHARE_I: Final = Fraction(95, 100)
@@ -162,6 +180,10 @@ MIN_PASSES: Final = 6
 H3_MIN_PAIRS: Final = 10
 H3_RATIO: Final = 2
 H3_FLOOR: Final = 0.005
+H3_PAIR_RULE: Final = (
+    "pairs are every two scored rows of one polygon and pass, taken in item_id "
+    "order, on different tiles with equal n_compared"
+)
 
 STATUSES: Final = (
     "scored",
@@ -227,6 +249,7 @@ class Row:
     recorded_dea_served: bool | None = None
     recorded_ndvi_dea: float | None = None
     recorded_n_compared: int | None = None
+    recorded_reason: str = ""
     seen_failing: bool = False
     matches_report: bool | None = None
 
@@ -265,6 +288,8 @@ def _decode(kind: str, text: str) -> object:
     if text == "":
         return None
     if kind == "bool":
+        if text not in ("true", "false"):
+            raise ValueError(f"not a boolean: {text!r}")
         return text == "true"
     if kind == "int":
         return int(text)
@@ -346,6 +371,28 @@ def is_network_error(exc: BaseException) -> bool:
 def propagate_read_error(sample: str, seen_failing: bool, exc: BaseException) -> bool:
     """A network error on one of the eight seen nomination rows stops the run."""
     return sample == "nomination" and seen_failing and is_network_error(exc)
+
+
+def with_retries[T](
+    call: Callable[[], T],
+    *,
+    tries: int = DEA_LOOKUP_TRIES,
+    delay_s: float = DEA_LOOKUP_DELAY_S,
+    sleep: Callable[[float], object] = time.sleep,
+) -> T:
+    """call(), tried again after a network error, at most tries calls in all.
+
+    A network error (is_network_error) sleeps delay_s and tries again; the last
+    one is raised when every try failed. Any other error is raised at once.
+    """
+    for attempt in range(1, tries + 1):
+        try:
+            return call()
+        except Exception as err:
+            if not is_network_error(err) or attempt == tries:
+                raise
+            sleep(delay_s)
+    raise ValueError(f"tries must be at least 1, got {tries}")
 
 
 # Candidates -----------------------------------------------------------------
@@ -509,7 +556,10 @@ def _reproduces(row: Row) -> tuple[bool, str]:
         )
     if row.recorded_dea_served is True:
         if row.recorded_ndvi_dea is None or row.report_dea_ndvi_median is None:
-            problems.append("no recorded DEA value")
+            problems.append(
+                "no recorded DEA value"
+                + (f": {row.recorded_reason}" if row.recorded_reason else "")
+            )
         elif not abs(row.recorded_ndvi_dea - row.report_dea_ndvi_median) <= REPRO_ATOL:
             problems.append(
                 f"recorded DEA median {row.recorded_ndvi_dea!r} differs from report "
@@ -703,15 +753,18 @@ def _h3(confirm_rows: Sequence[Row]) -> Hypothesis:
         groups.setdefault((row.pass_date, row.polygon_id), []).append(row)
     pairs = [
         (first, second)
-        for first, second in (
-            tuple(group) for group in groups.values() if len(group) == 2
+        for group in groups.values()
+        for first, second in itertools.combinations(
+            sorted(group, key=lambda row: row.item_id), 2
         )
         if first.tile != second.tile and first.n_compared == second.n_compared
     ]
     numbers: dict[str, Any] = {"n_pairs": len(pairs)}
     if len(pairs) < H3_MIN_PAIRS:
         return Hypothesis(
-            UNTESTABLE, f"{len(pairs)} pairs, at least 10 needed", numbers
+            UNTESTABLE,
+            f"{len(pairs)} pairs, at least 10 needed; {H3_PAIR_RULE}",
+            numbers,
         )
     stored = statistics.median(
         abs(_num(a.ndvi_stored) - _num(b.ndvi_stored)) for a, b in pairs
@@ -722,7 +775,7 @@ def _h3(confirm_rows: Sequence[Row]) -> Hypothesis:
     return Hypothesis(
         SUPPORTED if holds else NOT_SUPPORTED,
         "median between-tile difference of ndvi_stored at least twice that of "
-        "ndvi_dea and at least 0.005",
+        f"ndvi_dea and at least 0.005; {H3_PAIR_RULE}",
         numbers,
     )
 
@@ -849,19 +902,34 @@ def _hypothesis_lines(result: dict[str, Hypothesis]) -> list[str]:
     ]
 
 
+def _other_report_rows(rows: Sequence[Row]) -> tuple[int, int, list[tuple[str, str]]]:
+    """Match count, total and unproduced keys of the other committed report rows.
+
+    The other rows are every scored ramsar ndvi_vs_dea_nbart row of the reports
+    in REPORTS outside SEEN_FAILING. A report row with no row in rows counts as
+    not matching and is listed as (item id, polygon id).
+    """
+    seen = {(item_id, polygon_id) for _, item_id, polygon_id in SEEN_FAILING}
+    produced = {(row.item_id, row.polygon_id): row for row in rows if row.polygon_id}
+    keys = sorted(
+        (key for key in load_report_values() if key not in seen),
+        key=lambda key: (key[0], _natural(key[1])),
+    )
+    matched = sum(
+        1 for key in keys if key in produced and produced[key].matches_report is True
+    )
+    return matched, len(keys), [key for key in keys if key not in produced]
+
+
 def build_nomination_report(rows: Iterable[Row]) -> str:
-    """The nomination text, rebuilt from the rows alone (no timestamps)."""
+    """The nomination text, rebuilt from the rows and the committed reports.
+
+    The text carries no timestamps, so the same rows give the same text.
+    """
     rows = sorted(rows, key=_row_order)
-    nomination = nominate(rows)
     results = reproduction(rows)
     gate_ok = all(ok for _, ok, _ in results)
-    seen_keys = set(SEEN_FAILING)
-    others = [
-        row
-        for row in rows
-        if (row.pass_date, row.item_id, row.polygon_id) not in seen_keys
-        and row.matches_report is not None
-    ]
+    matched, other_total, not_produced = _other_report_rows(rows)
     out = [
         "NDVI row rule against DEA NBART: nomination (st-da75)",
         f"Collection: {COLLECTION}",
@@ -905,27 +973,36 @@ def build_nomination_report(rows: Iterable[Row]) -> str:
             f"run_day_item={row.dea_item or '-'} ({row.dea_maturity or '-'}) "
             f"message={message}"
         )
-    matched = sum(1 for row in others if row.matches_report)
-    out.extend(
-        [
-            f"Other report rows that match their report: {matched} of {len(others)}",
-            "",
-            "== Candidate g over the scored nomination rows ==",
-            "g, S*, |W|, W pass share, |I|, I within-g share, coverage, N1, N2, N3",
-        ]
-    )
-    for entry in nomination.table:
-        out.append(
-            f"{_g_label(entry.g)}, {_s_label(entry.g)}, {entry.n_w}, "
-            f"{_share(entry.w_share)}, {entry.n_i}, {_share(entry.i_share)}, "
-            f"{_share(entry.coverage)}, {entry.n1}, {entry.n2}, {entry.n3}"
-        )
-    chosen = nomination.g
+    out.append(f"Other report rows that match their report: {matched} of {other_total}")
     out.append(
-        f"Nominated g: {_g_label(chosen)}"
-        if chosen is not None
-        else "Nominated g: none"
+        "Other report rows the read did not produce, counted as not matching: "
+        f"{len(not_produced)}"
     )
+    out.extend(f"  {item_id} {polygon_id}" for item_id, polygon_id in not_produced)
+    chosen: Fraction | None = None
+    if not gate_ok:
+        out.extend(["", "Nominated g: not computed (reproduction gate failed)"])
+    else:
+        nomination = nominate(rows)
+        out.extend(
+            [
+                "",
+                "== Candidate g over the scored nomination rows ==",
+                "g, S*, |W|, W pass share, |I|, I within-g share, coverage, N1, N2, N3",
+            ]
+        )
+        for entry in nomination.table:
+            out.append(
+                f"{_g_label(entry.g)}, {_s_label(entry.g)}, {entry.n_w}, "
+                f"{_share(entry.w_share)}, {entry.n_i}, {_share(entry.i_share)}, "
+                f"{_share(entry.coverage)}, {entry.n1}, {entry.n2}, {entry.n3}"
+            )
+        chosen = nomination.g
+        out.append(
+            f"Nominated g: {_g_label(chosen)}"
+            if chosen is not None
+            else "Nominated g: none"
+        )
     out.extend(["", "== Failing passes and rows on the nomination passes =="])
     out.extend(_candidate_lines("K0", rows, k0_passes))
     if chosen is not None:
@@ -1168,6 +1245,31 @@ def compare_pixels(
     )
 
 
+def read_dea_window(
+    dea: Any, red_href: str, nir_href: str, window10: Any, shape: tuple[int, ...]
+) -> tuple[np.ndarray, np.ndarray]:
+    """The DEA red and NIR digital numbers of a window, both of the given shape."""
+    red_dn = dea.read(red_href, window10)
+    nir_dn = dea.read(nir_href, window10)
+    if red_dn.shape != shape or nir_dn.shape != shape:
+        raise ValueError(
+            f"DEA window shapes {red_dn.shape}, {nir_dn.shape} differ from {shape}"
+        )
+    return red_dn, nir_dn
+
+
+def grid_difference(
+    item_epsg: int, dea_epsg: int, scene_epsg: int, aligned: bool, operation_epsg: int
+) -> str:
+    """Why a recorded DEA item is not on the scene's grid, or an empty string."""
+    if {item_epsg, dea_epsg, scene_epsg} != {operation_epsg}:
+        return (
+            f"recorded item EPSG {item_epsg}, recorded grid EPSG {dea_epsg}, "
+            f"scene grid EPSG {scene_epsg}"
+        )
+    return "" if aligned else "recorded grid transform differs from the scene's"
+
+
 @dataclass(frozen=True, slots=True)
 class ReportValue:
     """One scored ndvi_vs_dea_nbart ramsar row of a committed report."""
@@ -1305,7 +1407,10 @@ def measure(sample: str, ramsar_path: Path) -> list[Row]:
     config = config.model_copy(
         update={"aoi": config.aoi.model_copy(update={"ramsar_path": ramsar_path})}
     )
-    assert config.stac.collection == COLLECTION
+    if config.stac.collection != COLLECTION:
+        raise ValueError(
+            f"config collection {config.stac.collection!r} is not {COLLECTION!r}"
+        )
     operation_epsg = config.aoi.operation_epsg
     polygons = load_ramsar(
         config.aoi.ramsar_path,
@@ -1396,9 +1501,15 @@ def measure(sample: str, ramsar_path: Path) -> list[Row]:
             item_fields: dict[str, Any] = {}
             run_status: str | None = None
             run_reason = ""
-            recorded: dict[tuple[str, str], Any] = {}
+            # (item or None, why it is not on the scene's grid, or empty)
+            recorded: dict[tuple[str, str], tuple[Any, str]] = {}
             try:
-                nbart = find_nbart_item(scene, bbox)
+                nbart = with_retries(
+                    functools.partial(find_nbart_item, scene, bbox),
+                    tries=DEA_LOOKUP_TRIES,
+                    delay_s=DEA_LOOKUP_DELAY_S,
+                    sleep=time.sleep,
+                )
                 if nbart is None:
                     run_status = "no_dea_item"
                     run_reason = "find_nbart_item found no DEA ARD item"
@@ -1426,17 +1537,26 @@ def measure(sample: str, ramsar_path: Path) -> list[Row]:
                     key = (report.dea_collection, report.dea_item)
                     if nbart is not None and report.dea_item == nbart.item_id:
                         if run_status is not None:
-                            recorded[key] = (nbart, False)
+                            recorded[key] = (nbart, run_reason)
                         continue
                     if key not in recorded:
-                        item = fetch_recorded_item(*key)
-                        aligned = item is not None
+                        item = with_retries(
+                            functools.partial(fetch_recorded_item, *key),
+                            tries=DEA_LOOKUP_TRIES,
+                            delay_s=DEA_LOOKUP_DELAY_S,
+                            sleep=time.sleep,
+                        )
+                        why = ""
                         if item is not None:
                             recorded_grid = dea.open_grid(item.red_href)
-                            aligned = {item.epsg, recorded_grid.epsg, grid.epsg} == {
-                                operation_epsg
-                            } and recorded_grid.transform == grid.transform
-                        recorded[key] = (item, aligned)
+                            why = grid_difference(
+                                item.epsg,
+                                recorded_grid.epsg,
+                                grid.epsg,
+                                recorded_grid.transform == grid.transform,
+                                operation_epsg,
+                            )
+                        recorded[key] = (item, why)
             except Exception as err:
                 # A scene-level DEA failure gives read_error rows for every
                 # planned polygon, unless it is a network error on a seen row.
@@ -1480,14 +1600,15 @@ def measure(sample: str, ramsar_path: Path) -> list[Row]:
                     ).ndvi_median
                     measures = None
                     if run_status is None:
-                        assert nbart is not None
-                        red_dn = dea.read(nbart.red_href, window.window10)
-                        nir_dn = dea.read(nbart.nir_href, window.window10)
-                        if red_dn.shape != stack.shape or nir_dn.shape != stack.shape:
-                            raise ValueError(
-                                f"DEA window shapes {red_dn.shape}, {nir_dn.shape} "
-                                f"differ from {stack.shape}"
-                            )
+                        if nbart is None:
+                            raise ValueError("no DEA item for a scene with no status")
+                        red_dn, nir_dn = read_dea_window(
+                            dea,
+                            nbart.red_href,
+                            nbart.nir_href,
+                            window.window10,
+                            stack.shape,
+                        )
                         measures = compare_pixels(
                             scl=stack.scl,
                             green=stack.green,
@@ -1501,6 +1622,7 @@ def measure(sample: str, ramsar_path: Path) -> list[Row]:
                     served: bool | None = None
                     recorded_ndvi: float | None = None
                     recorded_n: int | None = None
+                    recorded_why = ""
                     if (
                         report is not None
                         and measures is not None
@@ -1511,11 +1633,18 @@ def measure(sample: str, ramsar_path: Path) -> list[Row]:
                         recorded_ndvi = measures.ndvi_dea
                         recorded_n = measures.n_compared
                     elif report is not None:
-                        item, aligned = recorded[
+                        item, recorded_why = recorded[
                             (report.dea_collection, report.dea_item)
                         ]
                         served = item is not None
-                        if item is not None and aligned:
+                        if item is not None and not recorded_why:
+                            recorded_red, recorded_nir = read_dea_window(
+                                dea,
+                                item.red_href,
+                                item.nir_href,
+                                window.window10,
+                                stack.shape,
+                            )
                             clear = (
                                 clear_mask(
                                     stack.scl,
@@ -1527,15 +1656,14 @@ def measure(sample: str, ramsar_path: Path) -> list[Row]:
                                 & inside
                             )
                             recorded_ndvi, recorded_n, _ = dea_ndvi_median(
-                                dea.read(item.red_href, window.window10),
-                                dea.read(item.nir_href, window.window10),
-                                clear,
+                                recorded_red, recorded_nir, clear
                             )
                     recorded_fields: dict[str, Any] = {
                         "ndvi_stored": float(ndvi_stored),
                         "recorded_dea_served": served,
                         "recorded_ndvi_dea": recorded_ndvi,
                         "recorded_n_compared": recorded_n,
+                        "recorded_reason": recorded_why,
                         **item_fields,
                     }
                     if run_status is not None or measures is None:
@@ -1628,6 +1756,17 @@ def main(argv: Sequence[str] | None = None) -> int:
         message = nomination_ready(
             nomination_rows, NOMINATION_TXT.read_text(encoding="utf-8")
         )
+    if message is None:
+        existing = [
+            path
+            for path in dict.fromkeys((ROWS_CSV, ROWS_TXT, args.out, args.report))
+            if path.exists()
+        ]
+        if existing:
+            message = (
+                "confirm reads its sample once and results already exist: "
+                + ", ".join(str(path) for path in existing)
+            )
     if message is not None:
         print(message)
         return 2

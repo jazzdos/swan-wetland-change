@@ -18,7 +18,7 @@ import sys
 from collections.abc import Callable
 from fractions import Fraction
 from pathlib import Path
-from types import ModuleType
+from types import ModuleType, SimpleNamespace
 from typing import Any
 
 import numpy as np
@@ -229,6 +229,8 @@ def test_output_paths_columns_and_statuses() -> None:
     assert nr.ROWS_CSV == research / "2026-11-12-ndvi-nbart-rows.csv"
     assert nr.ROWS_TXT == research / "2026-11-12-ndvi-nbart-rows.txt"
     assert nr.COLUMNS == tuple(f.name for f in dataclasses.fields(nr.Row))
+    columns = list(nr.COLUMNS)
+    assert columns.index("recorded_reason") == columns.index("recorded_n_compared") + 1
     assert nr.STATUSES[0] == "scored"
     assert "not_in_sample" in nr.STATUSES
     assert nr.UNITS == "reflectance and NDVI unitless"
@@ -773,6 +775,7 @@ def test_csv_round_trip(tmp_path: Path) -> None:
             d_red=-0.0,
             report_passed=False,
             recorded_dea_served=True,
+            recorded_reason='recorded item EPSG 32749, "quoted", with a comma',
             seen_failing=True,
             matches_report=None,
         ),
@@ -901,6 +904,9 @@ def test_nomination_report_contents() -> None:
     assert "H2" in text
     for _, _, polygon in nr.SEEN_FAILING:
         assert polygon in text
+    assert "Nominated g: not computed" not in text
+    assert "K1(0.002) failing passes" in text
+    assert "== Candidate g over the scored nomination rows ==" in text
     failed = nr.build_nomination_report(seen_gate_rows(recorded_n_compared=5))
     assert "Reproduction: fail" in failed.splitlines()
     assert "Nominated g: none" in nr.build_nomination_report(_gate_nomination_rows())
@@ -1347,3 +1353,687 @@ def test_nominate_writes_nothing_on_a_network_error(
 def test_item_id_helpers() -> None:
     assert nr.tile_of("S2A_T50HLJ_20261029T021516_L2A") == "50HLJ"
     assert nr.pass_date_of("S2A_T50HLJ_20261029T021516_L2A") == "2026-10-29"
+
+
+# batch b2b: review findings ------------------------------------------------
+
+
+def _h3_numbers(rows: list[Any]) -> Any:
+    decision = nr.decide(rows, G)
+    return nr.hypotheses(seen_gate_rows(), rows, G, decision)["H3"]
+
+
+def test_h3_pairs_every_two_tiles_of_a_polygon_and_pass() -> None:
+    def group(n_hlk: int, n_hmk: int) -> list[Any]:
+        return [
+            mk("2026-09-17", "50HLJ", "ramsar-1", n=300),
+            mk("2026-09-17", "50HLK", "ramsar-1", n=n_hlk),
+            mk("2026-09-17", "50HMK", "ramsar-1", n=n_hmk),
+        ]
+
+    three = _h3_numbers(group(300, 300))
+    assert three.numbers["n_pairs"] == 3
+    only_two = _h3_numbers(group(300, 301))
+    assert only_two.numbers["n_pairs"] == 1
+    none = _h3_numbers(group(301, 302))
+    assert none.numbers["n_pairs"] == 0
+    skipped = group(300, 300)
+    skipped[2] = dataclasses.replace(skipped[2], status="skipped")
+    assert _h3_numbers(skipped).numbers["n_pairs"] == 1
+    for result in (three, only_two):
+        assert "every two scored rows" in result.detail
+        assert "item_id order" in result.detail
+        assert "equal n_compared" in result.detail
+    supported = _h3_numbers(_h3_rows(10, 0.02, 0.005))
+    assert "every two scored rows" in supported.detail
+
+
+def _other_report_keys() -> list[tuple[str, str]]:
+    seen = {(item, polygon) for _, item, polygon in nr.SEEN_FAILING}
+    return sorted(key for key in nr.load_report_values() if key not in seen)
+
+
+def _report_row(key: tuple[str, str], *, matches: bool) -> Any:
+    value = nr.load_report_values()[key]
+    item_id, polygon = key
+    return mk(
+        nr.pass_date_of(item_id),
+        nr.tile_of(item_id),
+        polygon,
+        sample="nomination",
+        item_id=item_id,
+        report_ndvi_median=value.ndvi_median,
+        report_dea_ndvi_median=value.dea_ndvi_median,
+        report_n_compared=value.n_compared,
+        matches_report=matches,
+    )
+
+
+def test_other_report_rows_count_every_committed_report_row() -> None:
+    keys = _other_report_keys()
+    assert len(keys) == 65  # the other scored ramsar rows of the two reports
+    rows = _g_nomination_rows()
+    rows += [_report_row(keys[0], matches=True), _report_row(keys[1], matches=False)]
+    text = nr.build_nomination_report(rows)
+    lines = text.splitlines()
+    assert "Other report rows that match their report: 1 of 65" in lines
+    absent = [f"{item} {polygon}" for item, polygon in keys[2:]]
+    header = [line for line in lines if "the read did not produce" in line]
+    assert len(header) == 1 and header[0].endswith(": 63")
+    for entry in absent:
+        assert any(line.strip() == entry for line in lines)
+    for item, polygon in keys[:2]:
+        assert not any(line.strip() == f"{item} {polygon}" for line in lines)
+    assert nr.build_nomination_report(rows) == text
+
+
+def test_other_report_rows_with_no_rows_are_all_absent() -> None:
+    text = nr.build_nomination_report(_g_nomination_rows())
+    assert "Other report rows that match their report: 0 of 65" in text.splitlines()
+    assert any(
+        "the read did not produce" in line and line.endswith(": 65")
+        for line in text.splitlines()
+    )
+
+
+def test_failed_gate_nomination_text_computes_no_g() -> None:
+    rows = seen_gate_rows(recorded_n_compared=5)
+    text = nr.build_nomination_report(rows)
+    lines = text.splitlines()
+    assert "Reproduction: fail" in lines
+    assert "Nominated g: not computed (reproduction gate failed)" in lines
+    assert "Nominated g: none" not in text
+    assert "== Candidate g over the scored nomination rows ==" not in text
+    assert "g, S*, |W|" not in text
+    assert "K1" not in text
+    assert "== Rows by status ==" in text
+    for key in nr.SEEN_FAILING:
+        assert " ".join(key) in text
+    assert "Other report rows that match their report" in text
+    assert "K0 failing passes" in text
+    assert "K0 failing row share" in text
+    message = nr.nomination_ready(rows, text)
+    assert message is not None and "Reproduction gate failed" in message
+
+
+def test_confirm_refuses_when_an_output_already_exists(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    repo = _init_repo(tmp_path / "repo")
+    _patch_outputs(monkeypatch, repo)
+    _commit_nomination(repo, _gate_nomination_rows())
+    calls: list[str] = []
+
+    def measure(sample: str, ramsar_path: Path) -> list[Any]:
+        calls.append(sample)
+        return fixture()
+
+    monkeypatch.setattr(nr, "measure", measure)
+    other_csv, other_txt = tmp_path / "other.csv", tmp_path / "other.txt"
+    cases = {
+        "ROWS_CSV": (nr.ROWS_CSV, []),
+        "ROWS_TXT": (nr.ROWS_TXT, []),
+        "out": (other_csv, ["--out", str(other_csv), "--report", str(other_txt)]),
+        "report": (other_txt, ["--out", str(other_csv), "--report", str(other_txt)]),
+    }
+    for name, (target, extra) in cases.items():
+        target.write_text("earlier results\n")
+        assert nr.main(["confirm", "--ramsar", "x.geojson", *extra]) == 2, name
+        assert str(target) in capsys.readouterr().out
+        assert calls == []
+        assert target.read_text() == "earlier results\n"
+        target.unlink()
+    assert nr.main(["confirm", "--ramsar", "x.geojson"]) == 0
+    assert calls == ["confirm"]
+
+
+def test_recorded_item_fields_and_gate_message_quote_the_cause() -> None:
+    row = seen_gate_rows(
+        recorded_ndvi_dea=None,
+        recorded_n_compared=None,
+        recorded_reason="recorded grid transform differs from the scene's",
+    )[0]
+    ok, message = nr._reproduces(row)
+    assert not ok
+    assert "no recorded DEA value" in message
+    assert "recorded grid transform differs from the scene's" in message
+    plain = dataclasses.replace(row, recorded_reason="")
+    assert "no recorded DEA value" in nr._reproduces(plain)[1]
+
+
+def test_load_rows_is_strict(tmp_path: Path) -> None:
+    path = tmp_path / "rows.csv"
+    nr.write_rows(path, [mk(seen_failing=True, report_passed=False)])
+    with path.open(newline="") as handle:
+        table = list(csv.reader(handle))
+    bool_column = table[0].index("seen_failing")
+    optional_column = table[0].index("report_passed")
+    assert nr.load_rows(path)[0].seen_failing is True
+
+    def rewrite(table_: list[list[str]]) -> None:
+        with path.open("w", newline="") as handle:
+            csv.writer(handle, lineterminator="\n").writerows(table_)
+
+    for bad in ("True", "TRUE", "1", "yes", "t", " true"):
+        table[1][optional_column] = bad
+        rewrite(table)
+        with pytest.raises(ValueError, match="boolean"):
+            nr.load_rows(path)
+    for good, expected in (("true", True), ("false", False), ("", None)):
+        table[1][optional_column] = good
+        rewrite(table)
+        assert nr.load_rows(path)[0].report_passed is expected
+    table[1][bool_column] = "maybe"
+    table[1][optional_column] = "true"
+    rewrite(table)
+    with pytest.raises(ValueError, match="boolean"):
+        nr.load_rows(path)
+
+
+def test_load_rows_requires_the_exact_header(tmp_path: Path) -> None:
+    path = tmp_path / "rows.csv"
+    nr.write_rows(path, [mk()])
+    with path.open(newline="") as handle:
+        table = list(csv.reader(handle))
+
+    def load(header: list[str], width: int | None = None) -> None:
+        body = [header, *[row[:width] for row in table[1:]]]
+        with path.open("w", newline="") as handle:
+            csv.writer(handle, lineterminator="\n").writerows(body)
+        nr.load_rows(path)
+
+    with pytest.raises(ValueError, match="expected columns"):
+        load(table[0][:-1], len(table[0]) - 1)
+    with pytest.raises(ValueError, match="expected columns"):
+        load([*table[0][1:], table[0][0]])
+    with pytest.raises(ValueError, match="expected columns"):
+        load([*table[0], "extra"])
+
+
+def test_with_retries() -> None:
+    assert (nr.DEA_LOOKUP_TRIES, nr.DEA_LOOKUP_DELAY_S) == (3, 5.0)
+    sleeps: list[float] = []
+    calls: list[int] = []
+
+    def flaky(failures: int, error: BaseException) -> Callable[[], str]:
+        calls.clear()
+
+        def call() -> str:
+            calls.append(1)
+            if len(calls) <= failures:
+                raise error
+            return "value"
+
+        return call
+
+    result = nr.with_retries(
+        flaky(2, OSError("blip")), delay_s=7.0, sleep=sleeps.append
+    )
+    assert result == "value" and len(calls) == 3 and sleeps == [7.0, 7.0]
+    sleeps.clear()
+    with pytest.raises(requests.ConnectionError, match="still down"):
+        nr.with_retries(
+            flaky(3, requests.ConnectionError("still down")), sleep=sleeps.append
+        )
+    assert len(calls) == 3 and sleeps == [nr.DEA_LOOKUP_DELAY_S] * 2
+    sleeps.clear()
+    with pytest.raises(ValueError, match="bad"):
+        nr.with_retries(flaky(1, ValueError("bad")), sleep=sleeps.append)
+    assert len(calls) == 1 and sleeps == []
+    sleeps.clear()
+    assert nr.with_retries(lambda: 5, sleep=sleeps.append) == 5 and sleeps == []
+    with pytest.raises(OSError, match="again"):
+        nr.with_retries(flaky(2, OSError("again")), tries=2, sleep=sleeps.append)
+    assert len(calls) == 2 and len(sleeps) == 1
+
+
+def test_read_dea_window_checks_both_shapes() -> None:
+    class Reader:
+        def read(self, href: str, window: object) -> np.ndarray:
+            return np.zeros((3, 3) if href == "bad" else (2, 2))
+
+    red, nir = nr.read_dea_window(Reader(), "red", "nir", None, (2, 2))
+    assert red.shape == nir.shape == (2, 2)
+    for hrefs in (("bad", "nir"), ("red", "bad")):
+        with pytest.raises(ValueError, match="differ from"):
+            nr.read_dea_window(Reader(), *hrefs, None, (2, 2))
+
+
+# measure wiring, with fakes ------------------------------------------------
+
+SEEN_ITEM = "S2A_T50HLJ_20261029T021516_L2A"
+CONFIRM_ITEM = "S2B_T50HLJ_20260912T022111_L2A"
+RECORDED_RED = "https://dea.invalid/dea-recorded/red.tif"
+
+
+class FakeReader:
+    """Stands in for RasterioReader: records the hrefs it is asked for."""
+
+    def __init__(self, epsg: int = 32750) -> None:
+        self.epsg = epsg
+        self.opened: list[str] = []
+        self.transforms: dict[str, str] = {}
+        self.shapes: dict[str, tuple[int, int]] = {}
+
+    def open_grid(self, href: str) -> Any:
+        self.opened.append(href)
+        return SimpleNamespace(epsg=self.epsg, transform=self.transforms.get(href, "T"))
+
+    def read_text(self, href: str) -> str:
+        return "<xml/>"
+
+    def read(self, href: str, window10: object) -> np.ndarray:
+        return np.zeros(self.shapes.get(href, (2, 2)))
+
+
+def _scene(item_id: str, epsg: int = 32750) -> Any:
+    return SimpleNamespace(
+        item_id=item_id,
+        tile=nr.tile_of(item_id),
+        epsg=epsg,
+        bands={
+            "green": SimpleNamespace(href=f"https://es.invalid/{item_id}/green.tif")
+        },
+        product_metadata_href=f"https://es.invalid/{item_id}/MTD.xml",
+    )
+
+
+def _measures() -> Any:
+    return nr.Measures(
+        n_inside=600,
+        n_clear=550,
+        n_compared=500,
+        n_dea_nodata=0,
+        ndvi_pipeline_same=0.5,
+        ndvi_dea=0.5,
+        red_pipeline=0.1,
+        nir_pipeline=0.4,
+        red_dea=0.1,
+        nir_dea=0.4,
+        d_red=0.0,
+        d_nir=0.0,
+        band_max=0.0,
+        s_pipeline=0.5,
+        s_dea=0.5,
+    )
+
+
+class Wiring:
+    """Fake collaborators for measure on their source modules: no network, no raster.
+
+    A polygon is its id. A window is the polygon id in window10, so a fake read
+    knows which polygon it serves.
+    """
+
+    def __init__(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+        *,
+        polygons: list[str],
+        scenes: list[Any],
+        rejected: list[tuple[str, str]] | None = None,
+    ) -> None:
+        self.polygons = [
+            SimpleNamespace(polygon_id=pid, geometry=pid, geometry_4326=pid)
+            for pid in polygons
+        ]
+        self.scenes = scenes
+        self.rejected = rejected or []
+        self.fail_read: dict[str, BaseException] = {}
+        self.lookup_error: BaseException | None = None
+        self.looked_up: list[str] = []
+        self.read: list[str] = []
+        self.reader = FakeReader()
+        self.dea = FakeReader()
+        self.nbart = SimpleNamespace(
+            collection="ga_s2am_ard_3",
+            item_id="dea-run-day",
+            maturity="final",
+            epsg=32750,
+            red_href="https://dea.invalid/dea-run-day/red.tif",
+            nir_href="https://dea.invalid/dea-run-day/nir.tif",
+        )
+        patches: dict[str, Any] = {
+            "wetland_change.aoi.load_ramsar": lambda *a, **k: self.polygons,
+            "wetland_change.aoi.union_bbox_4326": lambda polygons: (0.0, 0.0, 1.0, 1.0),
+            "wetland_change.catalogue.search.open_client": lambda endpoint: object(),
+            "wetland_change.catalogue.search.discover": self.discover,
+            "wetland_change.raster.read.RasterioReader": lambda: self.reader,
+            "wetland_change.raster.read.read_stack": self.read_stack,
+            "wetland_change.raster.scaling.parse_product_metadata": lambda text: None,
+            "wetland_change.raster.scaling.check_band_scaling": lambda band, esa: None,
+            "wetland_change.stats.rasterise": lambda geometry, transform, shape: (
+                np.ones(shape, dtype=bool)
+            ),
+            "wetland_change.stats.summarise": lambda *a, **k: SimpleNamespace(
+                ndvi_median=0.5
+            ),
+            "wetland_change.verify.ndvi.find_nbart_item": self.find,
+            "wetland_change.verify.ndvi.dea_ndvi_median": lambda red, nir, clear: (
+                0.2,
+                1000,
+                0,
+            ),
+            "wetland_change.verify.wo.dea_reader": lambda: self.dea,
+            "wetland_change.windows.plan_window": lambda geometry, grid: (
+                SimpleNamespace(window10=geometry)
+            ),
+            "wetland_change.mask.clear_mask": lambda *a: np.ones((2, 2), dtype=bool),
+        }
+        for target, fake in patches.items():
+            monkeypatch.setattr(target, fake)
+        monkeypatch.setattr(nr, "compare_pixels", lambda **kwargs: _measures())
+        monkeypatch.setattr(nr, "load_report_values", lambda: {})
+        monkeypatch.setattr(nr, "DEA_LOOKUP_DELAY_S", 0.0)
+
+    def discover(self, client: Any, stac: Any, **kwargs: Any) -> Any:
+        date = kwargs["datetime_range"][0].date().isoformat()
+        return SimpleNamespace(
+            scenes=[s for s in self.scenes if nr.pass_date_of(s.item_id) == date],
+            rejected=[r for r in self.rejected if nr.pass_date_of(r[0]) == date],
+        )
+
+    def read_stack(self, scene: Any, window: Any, reader: Any) -> Any:
+        self.read.append(window.window10)
+        error = self.fail_read.get(window.window10)
+        if error is not None:
+            raise error
+        return SimpleNamespace(
+            transform=None,
+            shape=(2, 2),
+            scl=None,
+            green=None,
+            red=None,
+            nir=None,
+            swir16=None,
+        )
+
+    def find(self, scene: Any, bbox: Any) -> Any:
+        self.looked_up.append(scene.item_id)
+        if self.lookup_error is not None:
+            raise self.lookup_error
+        return self.nbart
+
+
+def _by_polygon(rows: list[Any]) -> dict[str, Any]:
+    return {row.polygon_id: row for row in rows if row.polygon_id}
+
+
+def test_measure_refuses_another_collection(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    monkeypatch.setattr(nr, "COLLECTION", "sentinel-2-l2a")
+    with pytest.raises(ValueError, match="sentinel-2-l2a"):
+        nr.measure("confirm", tmp_path / "ramsar.geojson")
+
+
+def test_measure_reads_the_scene_and_scores_every_polygon(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    wiring = Wiring(
+        monkeypatch, polygons=["ramsar-1", "ramsar-2"], scenes=[_scene(CONFIRM_ITEM)]
+    )
+    rows = nr.measure("confirm", tmp_path / "ramsar.geojson")
+    by_polygon = _by_polygon(rows)
+    assert {row.status for row in by_polygon.values()} == {"scored"}
+    assert wiring.looked_up == [CONFIRM_ITEM]
+    assert by_polygon["ramsar-1"].dea_item == "dea-run-day"
+
+
+@pytest.mark.parametrize(
+    ("sample", "item", "error"),
+    [
+        ("confirm", CONFIRM_ITEM, ValueError("bad window")),
+        ("confirm", CONFIRM_ITEM, OSError("blip")),
+        ("nomination", SEEN_ITEM, OSError("blip")),
+    ],
+    ids=["confirm-value", "confirm-network", "nomination-unseen-network"],
+)
+def test_measure_gives_a_read_error_row_and_reads_the_rest(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    sample: str,
+    item: str,
+    error: BaseException,
+) -> None:
+    wiring = Wiring(
+        monkeypatch,
+        polygons=["ramsar-1", "ramsar-2", "ramsar-3"],
+        scenes=[_scene(item)],
+    )
+    wiring.fail_read["ramsar-2"] = error
+    rows = nr.measure(sample, tmp_path / "ramsar.geojson")
+    by_polygon = _by_polygon(rows)
+    assert by_polygon["ramsar-2"].status == "read_error"
+    assert by_polygon["ramsar-2"].reason == f"{type(error).__name__}: {error}"
+    assert by_polygon["ramsar-1"].status == "scored"
+    assert by_polygon["ramsar-3"].status == "scored"
+    assert wiring.read == ["ramsar-1", "ramsar-2", "ramsar-3"]
+
+
+def test_nomination_network_error_on_a_seen_row_propagates_and_writes_nothing(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    wiring = Wiring(
+        monkeypatch, polygons=["ramsar-1", "ramsar-15"], scenes=[_scene(SEEN_ITEM)]
+    )
+    wiring.fail_read["ramsar-15"] = ConnectionError("down")
+    with pytest.raises(ConnectionError, match="down"):
+        nr.measure("nomination", tmp_path / "ramsar.geojson")
+    out, report = tmp_path / "n.csv", tmp_path / "n.txt"
+    argv = ["nominate", "--ramsar", "x", "--out", str(out), "--report", str(report)]
+    with pytest.raises(ConnectionError, match="down"):
+        nr.main(argv)
+    assert not out.exists() and not report.exists()
+
+
+def test_nomination_value_error_on_a_seen_row_fails_the_gate_with_its_reason(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    wiring = Wiring(
+        monkeypatch, polygons=["ramsar-1", "ramsar-15"], scenes=[_scene(SEEN_ITEM)]
+    )
+    wiring.fail_read["ramsar-15"] = ValueError("bad window")
+    rows = nr.measure("nomination", tmp_path / "ramsar.geojson")
+    seen = _by_polygon(rows)["ramsar-15"]
+    assert seen.status == "read_error" and seen.seen_failing
+    first_key = ("2026-10-29", SEEN_ITEM, "ramsar-15")
+    assert nr.SEEN_FAILING[0] == first_key
+    _, ok, message = nr.reproduction(rows)[0]
+    assert not ok and "ValueError: bad window" in message
+    assert _by_polygon(rows)["ramsar-1"].status == "scored"
+
+
+def test_confirm_scene_lookup_failure_gives_read_error_rows_for_every_polygon(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    wiring = Wiring(
+        monkeypatch,
+        polygons=["ramsar-1", "ramsar-15"],
+        scenes=[_scene(CONFIRM_ITEM)],
+    )
+    wiring.lookup_error = OSError("DEA down")
+    rows = nr.measure("confirm", tmp_path / "ramsar.geojson")
+    by_polygon = _by_polygon(rows)
+    assert set(by_polygon) == {"ramsar-1", "ramsar-15"}
+    for row in by_polygon.values():
+        assert row.status == "read_error" and row.reason == "OSError: DEA down"
+    assert wiring.read == []
+    assert wiring.looked_up == [CONFIRM_ITEM] * nr.DEA_LOOKUP_TRIES
+
+
+def test_nomination_scene_lookup_network_error_propagates_for_a_seen_row(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    wiring = Wiring(
+        monkeypatch, polygons=["ramsar-1", "ramsar-15"], scenes=[_scene(SEEN_ITEM)]
+    )
+    wiring.lookup_error = OSError("DEA down")
+    with pytest.raises(OSError, match="DEA down"):
+        nr.measure("nomination", tmp_path / "ramsar.geojson")
+    assert wiring.looked_up == [SEEN_ITEM] * nr.DEA_LOOKUP_TRIES
+
+
+def test_nomination_scene_lookup_failure_without_a_seen_row_or_network_error(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    wiring = Wiring(monkeypatch, polygons=["ramsar-1"], scenes=[_scene(SEEN_ITEM)])
+    wiring.lookup_error = OSError("DEA down")
+    rows = nr.measure("nomination", tmp_path / "ramsar.geojson")
+    assert _by_polygon(rows)["ramsar-1"].status == "read_error"
+    wiring.polygons += [
+        SimpleNamespace(polygon_id="ramsar-15", geometry="ramsar-15", geometry_4326="")
+    ]
+    wiring.lookup_error = ValueError("odd item")
+    wiring.looked_up.clear()
+    rows = nr.measure("nomination", tmp_path / "ramsar.geojson")
+    by_polygon = _by_polygon(rows)
+    assert by_polygon["ramsar-15"].status == "read_error"
+    assert by_polygon["ramsar-15"].reason == "ValueError: odd item"
+    assert wiring.looked_up == [SEEN_ITEM]  # a ValueError is not retried
+
+
+def test_measure_lists_discovery_outcomes_and_never_reads_an_unlisted_scene(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    extra = "S2B_T50HMJ_20260912T022111_L2A"
+    rejected = "S2B_T50JLL_20260912T022111_L2A"
+    missing = "S2B_T50HLK_20260912T022111_L2A"
+    wiring = Wiring(
+        monkeypatch,
+        polygons=["ramsar-1"],
+        scenes=[_scene(CONFIRM_ITEM), _scene(extra)],
+        rejected=[(rejected, "cloud cover 45")],
+    )
+    rows = nr.measure("confirm", tmp_path / "ramsar.geojson")
+    by_item = {row.item_id: row for row in rows if row.pass_date == "2026-09-12"}
+    assert by_item[CONFIRM_ITEM].status == "scored"
+    assert by_item[extra].status == "not_in_sample"
+    assert by_item[rejected].status == "rejected_by_discover"
+    assert by_item[rejected].reason == "cloud cover 45"
+    assert by_item[missing].status == "not_returned"
+    assert wiring.looked_up == [CONFIRM_ITEM]
+    assert not any(extra in href for href in wiring.reader.opened)
+    assert wiring.read == ["ramsar-1"]
+
+
+@pytest.mark.parametrize(
+    ("grid_epsg", "item_epsg"), [(32749, 32750), (32750, 32749)], ids=["grid", "item"]
+)
+def test_measure_raises_on_a_scene_guard_failure(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, grid_epsg: int, item_epsg: int
+) -> None:
+    from wetland_change.pipeline import SceneGridError
+
+    wiring = Wiring(
+        monkeypatch, polygons=["ramsar-1"], scenes=[_scene(CONFIRM_ITEM, item_epsg)]
+    )
+    wiring.reader.epsg = grid_epsg
+    with pytest.raises(SceneGridError):
+        nr.measure("confirm", tmp_path / "ramsar.geojson")
+    assert wiring.read == []
+
+
+class RecordedWiring(Wiring):
+    """The nomination of one seen row whose report names a different DEA item."""
+
+    def __init__(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        super().__init__(
+            monkeypatch, polygons=["ramsar-15"], scenes=[_scene(SEEN_ITEM)]
+        )
+        value = nr.ReportValue(
+            ndvi_median=0.5,
+            dea_ndvi_median=0.2,
+            n_compared=1000,
+            passed=False,
+            dea_collection="ga_s2am_ard_3",
+            dea_item="dea-recorded",
+            dea_maturity="final",
+        )
+        monkeypatch.setattr(
+            nr, "load_report_values", lambda: {(SEEN_ITEM, "ramsar-15"): value}
+        )
+        self.recorded = SimpleNamespace(
+            epsg=32750,
+            red_href=RECORDED_RED,
+            nir_href=RECORDED_RED.replace("red", "nir"),
+        )
+        self.fetched: list[str] = []
+        self.fetch_failures = 0
+        monkeypatch.setattr(nr, "fetch_recorded_item", self.fetch)
+
+    def fetch(self, collection: str, item_id: str) -> Any:
+        self.fetched.append(item_id)
+        if len(self.fetched) <= self.fetch_failures:
+            raise requests.ConnectionError("blip")
+        return self.recorded
+
+
+def test_recorded_item_fetch_is_retried_and_a_served_item_is_read(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    wiring = RecordedWiring(monkeypatch)
+    wiring.fetch_failures = 2
+    row = _by_polygon(nr.measure("nomination", tmp_path / "r"))["ramsar-15"]
+    assert wiring.fetched == ["dea-recorded"] * 3
+    assert row.recorded_dea_served is True
+    assert row.recorded_ndvi_dea == 0.2 and row.recorded_n_compared == 1000
+    assert row.recorded_reason == ""
+    assert row.matches_report is True
+
+
+def test_recorded_item_fetch_gives_up_after_the_last_try(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    wiring = RecordedWiring(monkeypatch)
+    wiring.fetch_failures = 99
+    with pytest.raises(requests.ConnectionError):
+        nr.measure("nomination", tmp_path / "r")
+    assert wiring.fetched == ["dea-recorded"] * nr.DEA_LOOKUP_TRIES
+
+
+def test_recorded_item_not_served_is_not_retried(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    wiring = RecordedWiring(monkeypatch)
+    monkeypatch.setattr(
+        nr, "fetch_recorded_item", lambda *key: wiring.fetched.append("x")
+    )
+    row = _by_polygon(nr.measure("nomination", tmp_path / "r"))["ramsar-15"]
+    assert wiring.fetched == ["x"]
+    assert row.recorded_dea_served is False
+
+
+@pytest.mark.parametrize(
+    ("epsg", "transform", "expected"),
+    [(32749, "T", "EPSG 32749"), (32750, "OTHER", "transform")],
+    ids=["epsg", "transform"],
+)
+def test_recorded_item_on_another_grid_records_the_cause(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    epsg: int,
+    transform: str,
+    expected: str,
+) -> None:
+    wiring = RecordedWiring(monkeypatch)
+    wiring.recorded.epsg = epsg
+    wiring.dea.transforms[RECORDED_RED] = transform
+    rows = nr.measure("nomination", tmp_path / "r")
+    row = _by_polygon(rows)["ramsar-15"]
+    assert row.recorded_dea_served is True and row.recorded_ndvi_dea is None
+    assert expected in row.recorded_reason
+    ok, message = nr._reproduces(row)
+    assert not ok and "no recorded DEA value" in message and expected in message
+
+
+def test_recorded_item_read_applies_the_window_shape_check(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    wiring = RecordedWiring(monkeypatch)
+    wiring.dea.shapes[RECORDED_RED] = (3, 3)
+    row = _by_polygon(nr.measure("nomination", tmp_path / "r"))["ramsar-15"]
+    assert row.status == "read_error"
+    assert row.reason.startswith("ValueError: DEA window shapes")
