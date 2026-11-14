@@ -674,7 +674,7 @@ def test_adr_0013_outcome_matches_recomputation() -> None:
         assert re.findall(param, adr, re.MULTILINE) == in_txt
 
 
-def test_adr_0013_status_is_pre_registered_rule_not_yet_approved() -> None:
+def test_adr_0013_status_is_pre_registered_rule_approved() -> None:
     status = [
         line
         for line in _adr_0013_path().read_text().splitlines()
@@ -682,7 +682,8 @@ def test_adr_0013_status_is_pre_registered_rule_not_yet_approved() -> None:
     ]
     assert len(status) == 1
     assert "decided by the pre-registered rule" in status[0]
-    assert "not yet approved by Jarrod" in status[0]
+    assert "approved by Jarrod on 2026-11-14" in status[0]
+    assert "not yet approved" not in status[0]
 
 
 def test_learnings_records_issue_2_live_run_finding() -> None:

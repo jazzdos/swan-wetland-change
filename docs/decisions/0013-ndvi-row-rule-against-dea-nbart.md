@@ -1,6 +1,6 @@
 # 0013 NDVI row rule against DEA NBART
 
-Status: decided by the pre-registered rule on 2026-11-14 under Jarrod's request to complete the outstanding work; not yet approved by Jarrod.
+Status: decided by the pre-registered rule on 2026-11-14 under Jarrod's request to complete the outstanding work; approved by Jarrod on 2026-11-14.
 Applies the NDVI row of the design; changes no limit.
 
 ## Context
@@ -163,10 +163,11 @@ pre-registered rule applied to the committed rows.
 
 Nothing changes in `src/`, `config/pipeline.toml` or the README. `verify` keeps
 exiting 3 whenever a ramsar row fails `ndvi_vs_dea_nbart`. On the confirmatory
-sample that is every pass, and it is both reproduced passes. st-da75 is parked with the measured rates, and the
-question for Jarrod is whether to keep the status quo, make
-`ndvi_vs_dea_nbart` advisory pending a new pre-registered spike, or name
-another rule to test. This ADR is not approved until Jarrod approves it.
+sample that is every pass, and it is both reproduced passes. st-da75 was
+parked with the measured rates and a question for Jarrod: keep the status
+quo, make `ndvi_vs_dea_nbart` advisory pending a new pre-registered spike, or
+name another rule to test. Jarrod approved this ADR on 2026-11-14, so the
+status quo stays. No other rule has been named for testing.
 
 ## Disclosure
 

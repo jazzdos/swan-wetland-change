@@ -772,6 +772,8 @@ Context only, not a decision input: the rows TXT also lists the number of confir
 
 Limits. DEA NBART is another processing of the same Sentinel-2 acquisition and is not ground truth, so this measures consistency and not accuracy. The confirmatory sample is final maturity except the 3 nrt scene-tiles (22 scored rows), while daily runs score against nrt, and the nomination 2026-11-11 rows are against nrt items. The confirmatory sample is 8 passes, which is a small number of passes. The tiles of one pass share an acquisition and are not independent, so the 292 rows are fewer independent observations than their count. The 2 nomination passes were seen, and the nomination failing rows and H2 rest on them. The earlier live check of the 0.05 tolerance was read over the live test's Thomsons Lake box (`THOMSONS_32750` in `tests/test_live_verify.py`), not over a ramsar polygon.
 
+Status. Jarrod approved ADR 0013 on 2026-11-14, so the status quo stays. No other rule has been named for testing.
+
 ## Live run findings
 
 ### Issue #2 daily verify exit 3 (2026-11-12)

@@ -411,9 +411,9 @@ As of this commit:
   DEA Waterbodies rows failing limits calibrated on the ramsar layer, fixed by
   st-a32a under ADR 0012, approved 2026-11-14) both read CLOSED on GitHub,
   closed on 2026-11-14 after those merges. Issue #2 had a second cause: ramsar
-  rows failing `ndvi_vs_dea_nbart`. st-da75 measures it; its pre-registered
-  rule keeps the status quo, its ADR 0013 is not approved and its branch is not
-  merged, so on `main` the daily verify can still exit 3 on ramsar NDVI rows.
+  rows failing `ndvi_vs_dea_nbart`. st-da75 measured it: its pre-registered
+  rule keeps the status quo (ADR 0013, approved 2026-11-14), so the daily
+  verify can still exit 3 on ramsar NDVI rows.
   The trial has not passed, and four weeks have not elapsed.
 - Verify findings still open: ramsar-21 failed water agreement on 2026-11-11
   (0.8539 against 0.91; st-b6bf, open), and DEA Waterbodies rows are advisory
