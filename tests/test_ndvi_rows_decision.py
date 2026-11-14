@@ -2037,3 +2037,20 @@ def test_recorded_item_read_applies_the_window_shape_check(
     row = _by_polygon(nr.measure("nomination", tmp_path / "r"))["ramsar-15"]
     assert row.status == "read_error"
     assert row.reason.startswith("ValueError: DEA window shapes")
+
+
+def test_committed_nomination_matches_recomputation() -> None:
+    rows = nr.load_rows(nr.NOMINATION_CSV)
+    text = nr.NOMINATION_TXT.read_text(encoding="utf-8")
+    assert nr.build_nomination_report(rows) == text
+    assert nr.nomination_ready(rows, text) is None
+    assert all(ok for _, ok, _ in nr.reproduction(rows))
+    chosen = nr.nominate(rows).g
+    expected = (
+        f"Nominated g: {nr._g_label(chosen)}"
+        if chosen is not None
+        else "Nominated g: none"
+    )
+    assert [line for line in text.splitlines() if line.startswith("Nominated g:")] == [
+        expected
+    ]
