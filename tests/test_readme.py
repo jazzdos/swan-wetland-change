@@ -147,6 +147,22 @@ def test_readme_s3_query_uses_credential_chain() -> None:
     assert "credential" in prose.lower()
 
 
+@pytest.mark.parametrize(
+    "needle",
+    [
+        "aws login",
+        "aws configure export-credentials",
+        "--format env",
+        "unset AWS_PROFILE",
+    ],
+)
+def test_readme_documents_aws_login_profile_route(needle: str) -> None:
+    section = _section(_readme(), "Querying with DuckDB")
+    prose = re.sub(r"```sql\n.*?```", "", section, flags=re.DOTALL)
+    assert needle in section
+    assert needle in prose
+
+
 def test_readme_describes_a_private_bucket() -> None:
     text = _readme().lower()
     for forbidden in (
