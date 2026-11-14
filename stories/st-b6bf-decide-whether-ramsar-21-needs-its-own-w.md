@@ -9,7 +9,8 @@ discovered_from: st-a32a
 touches: [LEARNINGS.md, config/pipeline.toml, docs/decisions/0014-ramsar-21-water-setting.md, docs/research/2026-11-12-ramsar-21-confirm.py, tests/test_config.py]
 exclusive: false
 created: 2026-11-12
-updated: 2026-11-12
+updated: 2026-11-14
+parked_complexity: hard
 ---
 
 ## Description
@@ -36,3 +37,20 @@ No limit is loosened without the confirmatory sample. The outcome is recorded in
 ## Implementation Notes
 
 ## Questions
+
+- 2026-11-14T11:59:54.874Z: The st-b6bf minimum confirmatory sample does not exist yet, so the story parks under its own rule. Facts checked on 2026-11-14 against Earth Search, the DEA STAC and the AOI file:
+
+- ramsar-21 (Peel-Yalgorup System, 59.9 ha) lies only on tile 50HLJ. That gives one row per acquisition date, so the minimum of 6 rows means 6 dates, not 3.
+- After 2026-11-01 the catalogue holds three 50HLJ items:
+  - 2026-11-01, cloud 42.4 percent, above cloud_cover_max 20, never processed.
+  - 2026-11-06, cloud 34.1 percent, above cloud_cover_max 20, never processed.
+  - 2026-11-11, cloud 12.1 percent. This is the seen row.
+- Eligible confirmatory passes today: 0 rows on 0 dates.
+- The next 50HLJ acquisitions are 11-16, 11-18, 11-21, 11-26, 12-01, 12-06 and so on. Last season, 9 of 16 50HLJ acquisition dates from 2025-11-01 to 2025-12-31 were under 20 percent cloud.
+- If every pass is clear, three eligible dates arrive by 2026-11-21 and six by 2026-12-01.
+- At last season's clear share, three arrive by about 2026-12-06 and six by about 2026-12-26.
+
+In the meantime the daily pipeline scores ramsar-21 against WO on each new pass, commits the verification report (agreement values without polygon ids) and alerts if the pass fails. Which do you want?
+
+(a) Park with nothing committed and re-plan on or after 2026-12-26.
+(b) Commit the LEARNINGS.md pre-registration now, while no confirmatory pass exists. It would hold the candidates, rules R1 to R6 and a forward-looking sample: eligible 50HLJ passes from 2026-11-12 to a fixed end date, such as 2026-12-31. Then park the measurement until six eligible passes exist.
