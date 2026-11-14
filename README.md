@@ -416,7 +416,10 @@ As of this commit:
   verify can still exit 3 on ramsar NDVI rows.
   The trial has not passed, and four weeks have not elapsed.
 - Verify findings still open: ramsar-21 failed water agreement on 2026-11-11
-  (0.8539 against 0.91; st-b6bf, open), and DEA Waterbodies rows are advisory
+  (0.8539 against 0.91; st-b6bf, open: its rule is pre-registered in
+  LEARNINGS.md, and its sample of ramsar-21 passes acquired from 2026-11-12
+  closes once it holds at least 6 rows on at least 3 dates, and no later than
+  2026-12-31), and DEA Waterbodies rows are advisory
   under ADR 0012 with no calibrated limit (st-dd0d, open: its rule is
   pre-registered in LEARNINGS.md, and its sample of scheduled runs closes once
   it holds at least 8 eligible runs on at least 6 acquisition dates, and no
