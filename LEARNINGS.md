@@ -152,6 +152,165 @@ Reported but not decision inputs: gap and agreement at -0.10, 0.00, +0.05, +0.10
 
 Status. The outcome is recorded in ADR 0010 as decided under Jarrod's delegation; Jarrod approved it on 2026-11-06. Changing ramsar-12's setting is an ADR 0005 calibration decision.
 
+## Pre-registered hypotheses (st-da75, 2026-11-14)
+
+Recorded before any measurement for this story and before the research script `docs/research/2026-11-12-ndvi-nbart-rows.py` is written or run.
+
+Context. GitHub issue #2 (CI run 43072355326), second cause.
+
+Since st-a32a (ADR 0012) the per-polygon check `ndvi_vs_dea_nbart` in `src/wetland_change/verify/ndvi.py` blocks on ramsar rows only. The check requires the pipeline NDVI median to be within 0.05 of the DEA NBART NDVI median. It still fails 4 ramsar rows on each of the two passes measured, so `verify` exits 3 on every run with scenes.
+
+The 0.05 tolerance and the 0.95 correlation limit come from the NDVI row of the design matrix (`docs/plans/2026-10-29-swan-wetland-change-design.md`). The 0.05 tolerance was checked live on one area only, the live test's Thomsons Lake box on the 2026-10-29 pass (Live run findings, 'DEA NBART scale (2026-10-30)'). The box is `THOMSONS_32750` in `tests/test_live_verify.py`, 2,400 m by 2,650 m, and is not a ramsar polygon. That check is one row and does not test the 0.95 correlation limit, which needs at least 5 rows. No exit rule has been measured for NDVI the way ADR 0008 measured one for water.
+
+Disclosure.
+
+- (a) The eight seen failing rows come from `docs/research/2026-11-12-issue-2-repro-20261029.json` and `docs/research/2026-11-12-issue-2-repro-20261111.json`. Both were written by `wetland-change verify` at commit ad1fe76, and their sha256 is in ADR 0012. Each row gives the pipeline median against the DEA median, the compared pixels and the DEA item. DEA nodata pixels were 0 on all eight.
+  - 2026-10-29: 31 ramsar rows scored, Pearson 0.9983, DEA maturity final.
+    - ramsar-15 on 50HLJ: 0.1150 against 0.2141 (6,742 px).
+    - ramsar-20 on 50HLJ: -0.6697 against -0.5776 (1,942 px).
+    - ramsar-21 on 50HLJ: -0.8081 against -0.6575 (5,976 px).
+    - These three are against ga_s2am_ard_3 item 15ea7fec-e565-400b-a2c7-051485dab1cd.
+    - ramsar-27 on 50HLK: -0.5448 against -0.4314 (641,110 px), against db9546b0-7a1c-40f0-be5d-bad97788733e.
+  - 2026-11-11: 42 ramsar rows scored, Pearson 0.9921, DEA maturity nrt.
+    - ramsar-13 on 50HLK: 0.4217 against 0.3475 (228 px), against ga_s2bm_ard_3 item e2b6b9df-8064-4729-962f-6ed5193b22ad.
+    - ramsar-13 on 50HLJ: 0.4490 against 0.3483 (228 px), against 0fea38ac-eddc-4852-ba7b-76875fc9f218.
+    - ramsar-20 on 50HLJ: -0.2259 against -0.1561 (1,732 px).
+    - ramsar-21 on 50HLJ: -0.0521 against 0.0066 (3,756 px).
+    - ramsar-20 and ramsar-21 are against 0fea38ac-eddc-4852-ba7b-76875fc9f218.
+  - The pipeline is lower than DEA on 6 of the 8 rows and higher on the two ramsar-13 rows. For ramsar-13, the two tiles' stored medians differ by 0.0273 and the two DEA medians differ by 0.0008.
+- (b) The other 65 scored ramsar rows of those two reports have been seen, and so have the waterbody rows. On the 2026-10-29 waterbody rows the largest polygons fail most: 21 of 31 rows at 10,000 px and over fail, with a median absolute difference of 0.141. Over all 310 failing waterbody rows of that pass, the median pipeline NDVI is +0.021 against +0.134 for DEA. Over the 21 failing rows at 10,000 px and over, it is -0.352 against -0.105. The two passes are the nomination sample and are not used to decide.
+- (c) The Thomsons Lake value on the 2026-10-29 50HLK pass has been seen: 0.4749 against 0.4715 on 63,600 px, against nrt item def48e1d-e43d-4314-a381-fb269120f4a6, which DEA has since replaced with a final item. It was read over the live test's box, not over a ramsar polygon. The box contains ramsar-50, ramsar-51 and 99.9% of ramsar-52 by area. Their rows on that scene-tile in the 2026-10-29 report, ramsar-52 at 0.4600 against 0.4515 on 49,147 px, are among the rows seen under (b). Both are from a nomination pass.
+- (d) The ramsar-12 WO wet-area gap was measured on 2026-09-12, 2026-09-17, 2026-10-02, 2026-10-12 and 2026-10-27 (st-7047, st-2a78). Pipeline `ndvi_median` for ramsar-52 and ramsar-56 on all 8 confirmatory passes (15 rows) is readable in `docs/research/2026-11-03-backfill-scores.csv` (st-b983), and the pipeline's output store holds `ndvi_stored` for the rows of every confirmatory scene-tile the backfill has processed. No DEA NBART value, abs_diff or band value (red or nir) of any confirmatory pass has been seen.
+- (e) On 2026-11-14 the planner ran the pipeline's `discover` over the 27 ramsar polygons to fix the confirmatory item ids below. This was metadata only, with no pixel read. The planner also read DEA STAC item metadata, for maturity only.
+  - DEA held final items for every confirmatory scene-tile except 2026-10-27 on 50HLK, 50JLL and 50JML, which were nrt.
+  - DEA still served the 2026-11-11 nrt items recorded in the report.
+  - The confirmatory sample is therefore final maturity except those three scene-tiles, while daily runs score against nrt.
+- (f) The working explanation tested in H1 (NDVI is ill-conditioned at low reflectance) was formed after the eight rows were seen.
+- (g) DEA NBART is another processing of the same Sentinel-2 acquisition and is not ground truth. The result measures consistency, as ADR 0005 says of WO.
+
+Definitions, shared by every candidate and by the script.
+
+- Row: one ramsar polygon on one Earth Search `sentinel-2-c1-l2a` scene-tile for which `plan_window` (`src/wetland_change/windows.py`) returns a window. Pass: all scene-tiles with the same UTC acquisition date.
+- Reads are those of `_verify_scene` (`src/wetland_change/verify/run.py`) and `ndvi_scene_check`, in this order:
+  - The scene grid is taken from the green asset.
+  - The raising guards of `process_scene` (`src/wetland_change/pipeline.py`) run before any pixel read: grid and item EPSG must equal the operation EPSG 32750, and `check_band_scaling` checks every band's scale and offset against the ESA product XML. `_verify_scene` records the scaling check without raising, so the guards are taken from `process_scene`.
+  - `read_stack` reads the bands; reflectance is DN times scale plus offset from the item's `raster:bands`.
+  - `rasterise` gives the inside mask.
+  - The DEA item is the one `find_nbart_item` selects (final before interim before nrt), checked by `parse_nbart_item`.
+  - DEA `nbart_red` and `nbart_nir_1` are read at the scene's 10 m window, after the DEA CRS and grid transform are found equal to the scene's.
+  - DEA reflectance comes from `nbart_reflectance`.
+- clear is `clear_mask(scl, green, red, nir, swir16)` combined with inside. P, the compared pixels, is the clear pixels where both DEA bands are not -999 and the DEA NDVI is finite. n_compared is the size of P, as in `dea_ndvi_median`.
+- ndvi_stored is the median that `summarise` (`src/wetland_change/stats.py`) stores: pipeline NDVI over clear pixels with a finite value. ndvi_dea is the DEA NDVI median over P. abs_diff = |ndvi_stored - ndvi_dea|, the value `ndvi_median_check` tests. ndvi_pipeline_same is the pipeline NDVI median over P.
+- Over P:
+  - red_pipeline, nir_pipeline, red_dea and nir_dea are the medians of each band's reflectance.
+  - d_red = red_pipeline - red_dea, and d_nir = nir_pipeline - nir_dea.
+  - band_max = max(|d_red|, |d_nir|).
+  - s_pipeline and s_dea are the medians of per-pixel red + nir for each source.
+- A row is scored as in `ndvi_median_check` with min_pixels 100 (`verify.min_clear_pixels`). It is skipped when ndvi_stored is not finite, when n_compared is 0 or when n_compared is below 100. A DEA CRS or grid difference fails the row under every candidate, as in `ndvi_scene_check`. A read error drops the row with its reason.
+- Reflectance and NDVI are unitless. The source CRS and the operation CRS are EPSG:32750 for both sources.
+
+Conditioning. For a per-band reflectance difference e, NDVI moves by at most 2e / (red + nir) to first order. For a limit g, S*(g) = 40 g is the value of red + nir at which a band difference of g moves NDVI by at most 0.05. W(g) is the set of scored rows with s_dea at or above S*(g), the well-conditioned rows. I(g) is the other scored rows.
+
+Candidates.
+
+- K0, status quo. Every scored row blocks on abs_diff at most 0.05. The correlation check is unchanged: Pearson over the scored ramsar rows of the run, at least 5 rows, passing when r is above 0.95.
+- K1(g), conditioning split.
+  - A row in W(g) blocks on abs_diff at most 0.05, unchanged.
+  - A row in I(g) leaves the 0.05 comparison. It blocks instead on |d_red| at most g and |d_nir| at most g, against the same DEA NBART item.
+  - The correlation check is unchanged and still covers every scored ramsar row.
+  - Every row K0 scores stays scored, and 0.05 and 0.95 keep their values.
+- Not candidates:
+  - Widening 0.05, or a tolerance scaled by red + nir, since both widen 0.05.
+  - A minimum pixel count above 100, or one row per polygon and pass across tiles, since both leave ramsar rows unscored.
+  - Band limits on every row, since that drops the design's NDVI comparison on well-conditioned rows.
+
+Parameter rule, nomination sample only.
+
+The nomination sample is every ramsar row of the 8 seen scene-tiles:
+- 2026-10-29: S2A_T50HLJ_20261029T021516_L2A, S2A_T50HLK_20261029T021516_L2A, S2A_T50JLL_20261029T021516_L2A.
+- 2026-11-11: S2B_T50HLJ_20261111T022009_L2A, S2B_T50HLK_20261111T022009_L2A, S2B_T50HMK_20261111T022009_L2A, S2B_T50JLL_20261111T022009_L2A, S2B_T50JML_20261111T022009_L2A.
+
+These rows are re-read and scored against the DEA item `find_nbart_item` selects on the day the script runs, so the 2026-11-11 rows are re-scored against whatever maturity DEA then holds. The nomination is run once. It is rerun only after a network failure before its files are written, or after a fix to the script's reading code, with at most two further attempts. A fix never changes a decision function, a constant or a sample. Every attempt and its date are recorded in the Spike results entry, and the files committed are those of the last attempt.
+
+g is taken from 0.002, 0.003, ..., 0.010, so S* runs from 0.08 to 0.40. A value of g is admissible when, over the scored nomination rows:
+- (N1) at least 0.95 of W(g) rows have abs_diff at most 0.05;
+- (N2) I(g) is not empty and at least 0.95 of its rows have band_max at most g;
+- (N3) W(g) holds at least half of the scored rows.
+
+The nominated g is the smallest admissible value. If none is admissible, K1 is not nominated and the outcome is K0. The nomination is written to `docs/research/2026-11-12-ndvi-nbart-nomination.csv` and `docs/research/2026-11-12-ndvi-nbart-nomination.txt` and committed before the confirmatory sample is read. The confirmatory phase takes g only from these two committed files. Before any network call it exits non-zero when either file is absent, is not committed at HEAD, differs from the committed version or records a reproduction gate failure. The Spike results entry records the nomination commit. When the committed nomination passed the reproduction gate and names no g, the confirmatory phase still reads the sample once and reports the K0 rates and H1 to H4. A0 to A5 are not computed and the outcome is K0.
+
+Reproduction gate. Before the nomination is computed, the script re-reads the eight seen rows against the DEA item recorded in the report, fetched by id from the DEA STAC collection.
+- Each row must give ndvi_stored and ndvi_dea within 1e-6 of the report, and the same n_compared.
+- A recorded item that DEA no longer serves is allowed only when its recorded maturity is not final. That row is then compared on ndvi_stored alone.
+- If any of the eight fails, the script records the reason in the nomination text, exits non-zero and does not read the confirmatory sample. A network error while reading the eight is not a gate failure: the script exits before writing its files and the parameter rule's network rerun applies. A failure caused by the script's reading code may be fixed and the nomination rerun as the parameter rule allows. st-da75 is parked with the gate's message when the cause is outside the script or when the last allowed attempt still fails the gate.
+- The other scored ramsar rows of the two reports are compared the same way. Their match count is reported, not gated.
+
+Confirmatory sample, fixed: 32 scene-tiles on 8 passes. These are the ids that the pipeline's own `discover` (`src/wetland_change/catalogue/search.py`) returned for the 27 ramsar polygons, with cloud cover below `cloud_cover_max` 20.0 as `discover` applies it.
+
+- 2026-09-12: S2B_T50HLJ_20260912T022111_L2A, S2B_T50HLK_20260912T022111_L2A
+- 2026-09-17: S2C_T50HLJ_20260917T022244_L2A, S2C_T50HLK_20260917T022244_L2A, S2C_T50HMK_20260917T022244_L2A, S2C_T50JLL_20260917T022244_L2A, S2C_T50JML_20260917T022244_L2A
+- 2026-10-02: S2B_T50HLJ_20261002T021907_L2A, S2B_T50HLK_20261002T021907_L2A, S2B_T50HMK_20261002T021907_L2A, S2B_T50JLL_20261002T021907_L2A, S2B_T50JML_20261002T021907_L2A
+- 2026-10-12: S2B_T50HLJ_20261012T021555_L2A, S2B_T50HLK_20261012T021555_L2A, S2B_T50HMK_20261012T021555_L2A, S2B_T50JLL_20261012T021555_L2A, S2B_T50JML_20261012T021555_L2A
+- 2026-10-27: S2C_T50HLJ_20261027T022351_L2A, S2C_T50HLK_20261027T022351_L2A, S2C_T50HMK_20261027T022351_L2A, S2C_T50JLL_20261027T022351_L2A, S2C_T50JML_20261027T022351_L2A
+- 2026-01-30, the newest January 2026 pass: S2C_T50HLJ_20260130T022322_L2A, S2C_T50HLK_20260130T022322_L2A, S2C_T50HMK_20260130T022322_L2A, S2C_T50JLL_20260130T022322_L2A, S2C_T50JML_20260130T022322_L2A
+- 2026-04-30, the newest April 2026 pass: S2C_T50HMK_20260430T021807_L2A
+- 2026-07-29, the newest July 2026 pass: S2C_T50HLK_20260729T022253_L2A, S2C_T50HMK_20260729T022253_L2A, S2C_T50JLL_20260729T022253_L2A, S2C_T50JML_20260729T022253_L2A
+
+How the sample is read:
+- Each scene-tile is read once against the DEA item `find_nbart_item` selects on the run day, and its maturity is recorded.
+- These are listed with their reasons: a scene-tile that `discover` no longer returns, a scene-tile DEA holds no item for, and every row with a read error or skipped by the scored-row rule. Nothing is substituted.
+- An item that `discover` returns on these dates but that is not listed above is reported and not read.
+- A guard failure raises and stops the run, as in st-2a78.
+- The script runs once on this sample. If a network failure stops it before it writes its results, it is rerun once and both attempts are recorded.
+- If the rerun also stops before results are written, or the run stops for any other reason before results are written (a guard failure or an error in the script), no decision is computed. The outcome is recorded as 'inconclusive', K0 stays and st-da75 is parked with the reason.
+
+Decision rule, on the scored confirmatory rows at the nominated g. Adopt K1(g) only if A0 to A5 all hold. Otherwise K0 stays and st-da75 is parked with the measured rates.
+
+- A0, sample: at least 100 scored rows on at least 6 passes. Failing A0 is recorded as 'inconclusive' and keeps K0.
+- A1, well-conditioned rows: at least 0.95 of W(g) rows have abs_diff at most 0.05.
+- A2, explained failures: at least 4 rows fail K0, and at least 0.75 of them are in I(g) with band_max at most g. With fewer than 4 K0-failing rows, A2 is untestable and counts as not met.
+- A3, substitute comparison: at least 0.95 of I(g) rows have band_max at most g.
+- A4, gain: K1(g) fails strictly fewer confirmatory passes than K0.
+- A5, coverage: W(g) holds at least half of the scored confirmatory rows.
+
+How shares and comparisons are computed:
+- Shares are exact ratios of counts.
+- Comparisons with g and S* are exact rational comparisons of the float64 values.
+- The 0.05 comparison is the float comparison `ndvi_median_check` makes.
+
+A pass fails a candidate when any of the following holds:
+- any of its scored rows fails the candidate;
+- any of its rows fails on a DEA CRS or grid difference;
+- its correlation check has at least 5 rows and r is 0.95 or less.
+
+A correlation check that `ndvi_correlation_check` skips does not fail a pass. It skips below 5 rows and when the correlation is undefined because the values are constant.
+
+Reported for each candidate:
+- the number and share of confirmatory passes, and of the two nomination passes, on which the NDVI checks alone would make `verify` exit 3;
+- the share of scored rows that fail.
+
+Hypotheses, reported and not decision inputs.
+
+- H1, conditioning: the K0 failures come from ill-conditioning at low red + nir. Supported when A1 and A2 hold. Not supported when K1 is not nominated or either criterion fails.
+- H2, mask (ramsar-13): the stored median and the compared pixels differ for ramsar-13. Supported when, on both seen 2026-11-11 ramsar-13 rows, |ndvi_pipeline_same - ndvi_dea| is at most 0.05 while abs_diff is above 0.05. Both rows are those of the nomination sample, read against the DEA item `find_nbart_item` selects on the run day. H2 is untestable when either row is not scored. Expected not supported, since DEA nodata was 0 on both rows.
+- H3, tile: per-tile Sen2Cor processing makes one polygon's pipeline median differ between overlapping tiles of a pass more than DEA's median does.
+  - It is tested over confirmatory pairs of one polygon and pass on two tiles, both scored with equal n_compared.
+  - Supported when there are at least 10 pairs and the median absolute between-tile difference of ndvi_stored is both at least twice that of ndvi_dea and at least 0.005.
+  - Untestable with fewer than 10 pairs.
+- H4, maturity: nrt references explain the 2026-11-11 failures.
+  - It is tested on the four seen 2026-11-11 failing rows as re-read in the nomination sample, each against the run-day DEA item of its own tile (50HLK or 50HLJ).
+  - Testable only if the run-day items of both tiles are not nrt. It is untestable when either is still nrt, when either tile has no run-day DEA item or when any of the four rows is not scored.
+  - Supported when all four rows then pass K0.
+  - Reported for context: the K0 row failing share by DEA maturity over the confirmatory rows.
+
+Reading rule.
+- The decision depends on A0 to A5 only.
+- The cause recorded in Spike results and ADR 0013 names every supported hypothesis, or 'not identified' when none is supported.
+- No hypothesis result changes the decision.
+- The outcome is written as a line on its own, `NDVI row rule: K0` or `NDVI row rule: K1`. For K1, a second line gives `NDVI row parameters: g = <g>, S* = <S*>`.
+
+Status. The outcome is recorded in ADR 0013 (`docs/decisions/0013-ndvi-row-rule-against-dea-nbart.md`). It is decided by this pre-registered rule under Jarrod's request to complete the outstanding work, and is not yet approved by Jarrod. If K1 is adopted, a follow-up story for the code change is filed depending on st-a32a. If not, st-da75 is parked with the measured rates.
+
 ## Spike results
 
 ### S1 Forrestdale seam (2026-10-29)
