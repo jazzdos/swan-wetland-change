@@ -10,6 +10,13 @@ product name without the `N0xxx` baseline token and the final generation-time
 token. A CDSE listing may also hold the same datatake more than once; each
 side is deduplicated on the key.
 
+AOI membership is decided once per datatake. A datatake that both catalogues
+list under the cloud limit in the window, and whose footprint intersects the AOI
+in only one of them, is a footprint-edge case: it is reported under
+`footprint_edge` in the check detail (CDSE product names) and is not counted as
+a mismatch. A datatake listed by one catalogue only is kept only if its own
+footprint intersects the AOI, and remains a mismatch if it is old enough.
+
 A scene listed by only one catalogue is not a mismatch while it was sensed
 less than `LATENCY` (24 h) before the check time, because the two archives
 ingest at different speeds. Such scenes are reported as `pending_latency`.
@@ -81,6 +88,20 @@ class Scene:
     tile: str
     month: str
     sensed: datetime
+    in_aoi: bool = True
+
+
+@dataclass(frozen=True)
+class Reconciled:
+    """Scenes per catalogue after AOI membership is decided once per datatake.
+
+    `footprint_edge` maps the datatake key to the CDSE scene for datatakes both
+    catalogues list whose footprint intersects the AOI in only one of them.
+    """
+
+    es: dict[str, Scene]
+    cdse: dict[str, Scene]
+    footprint_edge: dict[str, Scene]
 
 
 def _tile(props: dict[str, Any], name: str) -> str:
@@ -100,7 +121,13 @@ def normalise_scenes(
     polygons: list[BaseGeometry],
     es_names: bool,
 ) -> dict[str, Scene]:
-    """Locally filtered scenes keyed by datatake, one per datatake."""
+    """Cloud-filtered scenes keyed by datatake, one per datatake.
+
+    Items without a usable cloud cover or that fail to parse are skipped. An
+    item whose footprint misses every polygon is kept with `in_aoi` False, so
+    the caller can decide AOI membership per datatake. Among duplicates of one
+    datatake, a scene that intersects wins, then the lowest product name.
+    """
     scenes: list[Scene] = []
     for item in items:
         try:
@@ -109,8 +136,7 @@ def normalise_scenes(
             if cloud is None or float(cloud) >= cloud_max:
                 continue
             footprint = shape(item["geometry"])
-            if not any(footprint.intersects(poly) for poly in polygons):
-                continue
+            in_aoi = any(footprint.intersects(poly) for poly in polygons)
             raw = str(props["s2:product_uri"] if es_names else item["id"])
             name = raw.removesuffix(".SAFE") if es_names else raw
             sensed = parse_timestamp(str(props["datetime"])).astimezone(UTC)
@@ -121,6 +147,7 @@ def normalise_scenes(
                     tile=_tile(props, name),
                     month=sensed.strftime("%Y-%m"),
                     sensed=sensed,
+                    in_aoi=in_aoi,
                 )
             )
         except (KeyError, TypeError, ValueError) as exc:
@@ -128,9 +155,37 @@ def normalise_scenes(
                 "skipping %s in Copernicus comparison: %s", item.get("id"), exc
             )
     unique: dict[str, Scene] = {}
-    for scene in sorted(scenes, key=lambda s: s.name):
+    for scene in sorted(scenes, key=lambda s: (not s.in_aoi, s.name)):
         unique.setdefault(scene.key, scene)
     return unique
+
+
+def in_aoi_only(scenes: dict[str, Scene]) -> dict[str, Scene]:
+    """The scenes whose own footprint intersects the AOI."""
+    return {k: s for k, s in scenes.items() if s.in_aoi}
+
+
+def reconcile_footprints(
+    es_all: dict[str, Scene], cdse_all: dict[str, Scene]
+) -> Reconciled:
+    """Decide AOI membership once per datatake across both catalogues."""
+    es: dict[str, Scene] = {}
+    cdse: dict[str, Scene] = {}
+    edge: dict[str, Scene] = {}
+    for key in sorted(es_all.keys() | cdse_all.keys()):
+        es_scene = es_all.get(key)
+        cdse_scene = cdse_all.get(key)
+        if es_scene is not None and cdse_scene is not None:
+            if es_scene.in_aoi and cdse_scene.in_aoi:
+                es[key] = es_scene
+                cdse[key] = cdse_scene
+            elif es_scene.in_aoi != cdse_scene.in_aoi:
+                edge[key] = cdse_scene
+        elif es_scene is not None and es_scene.in_aoi:
+            es[key] = es_scene
+        elif cdse_scene is not None and cdse_scene.in_aoi:
+            cdse[key] = cdse_scene
+    return Reconciled(es=es, cdse=cdse, footprint_edge=edge)
 
 
 def discovery_checks(
@@ -159,17 +214,19 @@ def discovery_checks(
             collections=[CDSE_COLLECTION], bbox=list(bbox), datetime=window
         ).items_as_dicts()
     )
-    es = normalise_scenes(
+    es_all = normalise_scenes(
         es_items, cloud_max=cfg.cloud_cover_max, polygons=polygons_4326, es_names=True
     )
-    cdse = normalise_scenes(
+    cdse_all = normalise_scenes(
         cdse_items,
         cloud_max=cfg.cloud_cover_max,
         polygons=polygons_4326,
         es_names=False,
     )
+    rec = reconcile_footprints(es_all, cdse_all)
+    es, cdse, edge = rec.es, rec.cdse, rec.footprint_edge
     reference = f"{CDSE_STAC} {CDSE_COLLECTION}"
-    if not es and not cdse:
+    if not es and not cdse and not edge:
         return [
             Check(
                 name=CHECK_NAME,
@@ -185,7 +242,11 @@ def discovery_checks(
 
     cutoff = now - LATENCY
     checks: list[Check] = []
-    tiles = sorted({s.tile for s in es.values()} | {s.tile for s in cdse.values()})
+    tiles = sorted(
+        {s.tile for s in es.values()}
+        | {s.tile for s in cdse.values()}
+        | {s.tile for s in edge.values()}
+    )
     for tile in tiles:
         es_t = {k: s for k, s in es.items() if s.tile == tile}
         cdse_t = {k: s for k, s in cdse.items() if s.tile == tile}
@@ -216,6 +277,9 @@ def discovery_checks(
                     "missing_from_earth_search": missing_es,
                     "missing_from_cdse": missing_cdse,
                     "pending_latency": sorted(s.name for s in pending),
+                    "footprint_edge": sorted(
+                        s.name for s in edge.values() if s.tile == tile
+                    ),
                 },
             )
         )

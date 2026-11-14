@@ -1,10 +1,12 @@
 from __future__ import annotations
 
+import json
 from datetime import UTC, datetime
+from pathlib import Path
 from typing import Any
 
 import pytest
-from shapely.geometry import box, mapping
+from shapely.geometry import box, mapping, shape
 from shapely.geometry.base import BaseGeometry
 
 from tests.test_pipeline import FakeSearch
@@ -14,8 +16,12 @@ from wetland_change.verify.copernicus import (
     CDSE_COLLECTION,
     CDSE_STAC,
     CHECK_NAME,
+    Scene,
     datatake_key,
     discovery_checks,
+    in_aoi_only,
+    normalise_scenes,
+    reconcile_footprints,
     run_window,
 )
 
@@ -25,6 +31,10 @@ BBOX = (115.8, -32.2, 115.9, -32.1)
 POLYGONS: list[BaseGeometry] = [box(*BBOX)]
 INSIDE = mapping(box(115.82, -32.18, 115.85, -32.15))
 OUTSIDE = mapping(box(120.0, -20.0, 120.1, -19.9))
+AOI_SMALL: list[BaseGeometry] = [box(115.82, -32.18, 115.83, -32.17)]
+COVERS_SMALL = mapping(box(115.81, -32.19, 115.84, -32.16))
+MISSES_SMALL = mapping(box(115.84, -32.18, 115.85, -32.15))
+FIXTURES = Path(__file__).parent / "fixtures" / "footprint_edge_50hmk_20261014"
 CFG = StacConfig(
     endpoint="https://example.invalid",
     collection="sentinel-2-c1-l2a",
@@ -91,13 +101,17 @@ def cdse_item(
     }
 
 
-def run(es: list[dict[str, Any]], cdse: list[dict[str, Any]]) -> list[Check]:
+def run(
+    es: list[dict[str, Any]],
+    cdse: list[dict[str, Any]],
+    polygons: list[BaseGeometry] | None = None,
+) -> list[Check]:
     return discovery_checks(
         RecordingClient(es),
         RecordingClient(cdse),
         CFG,
         bbox=BBOX,
-        polygons_4326=POLYGONS,
+        polygons_4326=POLYGONS if polygons is None else polygons,
         start=START,
         end=NOW,
         now=NOW,
@@ -276,3 +290,191 @@ def test_run_window() -> None:
     start, end = run_window(scenes, NOW)
     assert start == datetime(2026, 9, 20, tzinfo=UTC)
     assert end == NOW
+
+
+def test_footprint_edge_cdse_only_passes_and_is_reported() -> None:
+    es = [es_item(OLD, geometry=MISSES_SMALL)]
+    cdse = [cdse_item(OLD, geometry=COVERS_SMALL)]
+    (check,) = run(es, cdse, AOI_SMALL)
+    assert check.passed is True
+    assert check.measured == 0.0
+    assert check.detail["footprint_edge"] == [cdse[0]["id"]]
+    assert check.detail["missing_from_earth_search"] == []
+    assert check.detail["missing_from_cdse"] == []
+    assert check.detail["pending_latency"] == []
+    assert check.detail["months"] == {}
+
+
+def test_footprint_edge_earth_search_only_passes_and_is_reported() -> None:
+    es = [es_item(OLD, geometry=COVERS_SMALL)]
+    cdse = [cdse_item(OLD, geometry=MISSES_SMALL)]
+    (check,) = run(es, cdse, AOI_SMALL)
+    assert check.passed is True
+    assert check.measured == 0.0
+    assert check.detail["footprint_edge"] == [cdse[0]["id"]]
+    assert check.detail["missing_from_earth_search"] == []
+    assert check.detail["missing_from_cdse"] == []
+    assert check.detail["months"] == {}
+
+
+def test_footprint_edge_is_empty_when_there_is_none() -> None:
+    (check,) = run([es_item(OLD)], [cdse_item(OLD)])
+    assert check.detail["footprint_edge"] == []
+
+
+def test_cdse_in_aoi_but_not_listed_by_earth_search_still_fails() -> None:
+    es = [es_item(OLD2)]
+    cdse = [cdse_item(OLD), cdse_item(OLD2)]
+    (check,) = run(es, cdse)
+    assert check.passed is False
+    assert check.measured == 1.0
+    assert check.detail["missing_from_earth_search"] == [cdse[0]["id"]]
+    assert check.detail["footprint_edge"] == []
+
+
+def test_datatake_outside_the_aoi_in_both_is_ignored() -> None:
+    es = [es_item(OLD, geometry=COVERS_SMALL), es_item(OLD2, geometry=MISSES_SMALL)]
+    cdse = [
+        cdse_item(OLD, geometry=COVERS_SMALL),
+        cdse_item(OLD2, geometry=MISSES_SMALL),
+    ]
+    (check,) = run(es, cdse, AOI_SMALL)
+    assert check.passed is True
+    assert check.detail["months"] == {"2026-10": {"earth_search": 1, "cdse": 1}}
+    assert check.detail["footprint_edge"] == []
+
+
+def test_tile_with_only_an_edge_scene_still_emits_its_check() -> None:
+    es = [es_item(OLD, tile="T50HMK", geometry=MISSES_SMALL)]
+    cdse = [cdse_item(OLD, tile="T50HMK", geometry=COVERS_SMALL)]
+    (check,) = run(es, cdse, AOI_SMALL)
+    assert check.passed is True
+    assert check.detail["tile"] == "50HMK"
+    assert check.detail["footprint_edge"] == [cdse[0]["id"]]
+
+
+def test_duplicate_where_only_the_later_one_intersects_keeps_the_datatake() -> None:
+    es = [es_item(OLD, geometry=COVERS_SMALL)]
+    cdse = [
+        cdse_item(OLD, baseline="N0511", gen="20261005T090000", geometry=MISSES_SMALL),
+        cdse_item(OLD, baseline="N0512", gen="20261006T090000", geometry=COVERS_SMALL),
+    ]
+    (check,) = run(es, cdse, AOI_SMALL)
+    assert check.passed is True
+    assert check.detail["footprint_edge"] == []
+    assert check.detail["months"] == {"2026-10": {"earth_search": 1, "cdse": 1}}
+
+
+def test_real_footprint_edge_50hmk_20261014() -> None:
+    es_item_json = json.loads((FIXTURES / "es_item.json").read_text())
+    cdse_item_json = json.loads((FIXTURES / "cdse_item.json").read_text())
+    feature = json.loads((FIXTURES / "dea_qd4xhuft4_v3.geojson").read_text())[
+        "features"
+    ][0]
+    polygon = shape(feature["geometry"])
+    assert not shape(es_item_json["geometry"]).intersects(polygon)
+    assert shape(cdse_item_json["geometry"]).intersects(polygon)
+    minx, miny, maxx, maxy = polygon.buffer(0.01).bounds
+    (check,) = discovery_checks(
+        RecordingClient([es_item_json]),
+        RecordingClient([cdse_item_json]),
+        CFG,
+        bbox=(minx, miny, maxx, maxy),
+        polygons_4326=[polygon],
+        start=START,
+        end=NOW,
+        now=NOW,
+    )
+    assert check.detail["tile"] == "50HMK"
+    assert check.passed is True
+    assert check.measured == 0.0
+    assert check.detail["footprint_edge"] == [
+        "S2C_MSIL2A_20261014T020311_N0513_R017_T50HMK_20261014T062152"
+    ]
+
+
+def _scene(sensed: str, *, in_aoi: bool, baseline: str = "N0512") -> Scene:
+    product = name(sensed, baseline=baseline)
+    return Scene(
+        name=product,
+        key=datatake_key(product),
+        tile="50HLK",
+        month=sensed[:7],
+        sensed=datetime.fromisoformat(sensed).replace(tzinfo=UTC),
+        in_aoi=in_aoi,
+    )
+
+
+def test_scene_in_aoi_defaults_to_true() -> None:
+    scene = Scene(name="n", key="k", tile="50HLK", month="2026-10", sensed=NOW)
+    assert scene.in_aoi is True
+
+
+def test_normalise_scenes_sets_in_aoi_without_dropping() -> None:
+    items = [
+        cdse_item(OLD, geometry=COVERS_SMALL),
+        cdse_item(OLD2, geometry=MISSES_SMALL),
+        cdse_item("2026-09-25T02:12:11", cloud=60.0, geometry=COVERS_SMALL),
+    ]
+    scenes = normalise_scenes(items, cloud_max=20.0, polygons=AOI_SMALL, es_names=False)
+    by_name = {s.name: s.in_aoi for s in scenes.values()}
+    assert by_name == {items[0]["id"]: True, items[1]["id"]: False}
+
+
+def test_normalise_scenes_dedup_prefers_an_intersecting_duplicate() -> None:
+    items = [
+        cdse_item(OLD, baseline="N0511", gen="20261005T090000", geometry=MISSES_SMALL),
+        cdse_item(OLD, baseline="N0512", gen="20261006T090000", geometry=COVERS_SMALL),
+    ]
+    (scene,) = normalise_scenes(
+        items, cloud_max=20.0, polygons=AOI_SMALL, es_names=False
+    ).values()
+    assert scene.in_aoi is True
+    assert scene.name == items[1]["id"]
+
+
+def test_reconcile_footprints_each_branch() -> None:
+    both_in = "2026-10-01T02:12:11"
+    both_out = "2026-10-02T02:12:11"
+    edge_cdse = "2026-10-03T02:12:11"
+    edge_es = "2026-10-04T02:12:11"
+    es_only_in = "2026-10-05T02:12:11"
+    es_only_out = "2026-10-06T02:12:11"
+    cdse_only_in = "2026-10-07T02:12:11"
+    cdse_only_out = "2026-10-08T02:12:11"
+    es_all = {
+        s.key: s
+        for s in (
+            _scene(both_in, in_aoi=True, baseline="N0513"),
+            _scene(both_out, in_aoi=False, baseline="N0513"),
+            _scene(edge_cdse, in_aoi=False, baseline="N0513"),
+            _scene(edge_es, in_aoi=True, baseline="N0513"),
+            _scene(es_only_in, in_aoi=True, baseline="N0513"),
+            _scene(es_only_out, in_aoi=False, baseline="N0513"),
+        )
+    }
+    cdse_all = {
+        s.key: s
+        for s in (
+            _scene(both_in, in_aoi=True),
+            _scene(both_out, in_aoi=False),
+            _scene(edge_cdse, in_aoi=True),
+            _scene(edge_es, in_aoi=False),
+            _scene(cdse_only_in, in_aoi=True),
+            _scene(cdse_only_out, in_aoi=False),
+        )
+    }
+    rec = reconcile_footprints(es_all, cdse_all)
+    key = {t: datatake_key(name(t)) for t in (both_in, edge_cdse, edge_es)}
+    assert set(rec.es) == {key[both_in], datatake_key(name(es_only_in))}
+    assert set(rec.cdse) == {key[both_in], datatake_key(name(cdse_only_in))}
+    assert set(rec.footprint_edge) == {key[edge_cdse], key[edge_es]}
+    assert rec.footprint_edge[key[edge_cdse]] is cdse_all[key[edge_cdse]]
+    assert rec.footprint_edge[key[edge_es]] is cdse_all[key[edge_es]]
+
+
+def test_in_aoi_only_filters_scenes() -> None:
+    inside = _scene(OLD, in_aoi=True)
+    outside = _scene(OLD2, in_aoi=False)
+    kept = in_aoi_only({inside.key: inside, outside.key: outside})
+    assert kept == {inside.key: inside}

@@ -498,6 +498,14 @@ Limits. The confirmatory dates are 2026-08-23 to 2026-09-07, the wetter season, 
 
 ## Live run findings
 
+### Catalogue footprint difference failed the Copernicus count check (2026-11-12)
+
+The weekly verify of 2026-11-09 (run 42548248931, GitHub issue #1) failed `freshness_count_vs_copernicus` on tile 50HMK with measured 1.0. The one-sided scene was S2C_MSIL2A_20261014T020311_N0513_R017_T50HMK_20261014T062152 (Earth Search item S2C_T50HMK_20261014T021347_L2A), a swath-edge pass with 34.7 percent nodata and cloud cover 0.299 on Earth Search and 0.3 on CDSE. Both catalogues list the datatake.
+
+`normalise_scenes` filtered each catalogue's listing by that catalogue's own item footprint against the AOI polygons. The CDSE footprint reaches further west than the Earth Search footprint (CDSE minus Earth Search is 68.8 km2) and covers 54 percent of the 0.27 ha DEA Waterbodies polygon dea-qd4xhuft4_v3, while the Earth Search footprint ends 566 m short of it. The scene was kept on the CDSE side only. The ledger rightly had no row: the Earth Search SCL is nodata on all 27 pixels of that polygon, so the pipeline had nothing to read. The check counted a comparison artefact as a missing scene.
+
+Fix (st-9812): AOI membership is decided once per datatake. A datatake both catalogues list (in the bbox, the window and under the cloud limit) whose footprint intersects the AOI in only one of them is a footprint-edge case. It is reported under `footprint_edge` in the detail of `discovery_vs_copernicus` and `freshness_count_vs_copernicus` and is not counted as a mismatch. A datatake only one catalogue lists stays a mismatch. `freshness_count_vs_earth_search` is unchanged. The cloud-cover straddle limit in the `copernicus.py` docstring is a separate known limit. Rule: never decide scope for a cross-catalogue comparison from each catalogue's own footprint; decide it once per datatake.
+
 ### pyarrow S3 delete PUTs a directory marker (2026-11-06)
 
 pyarrow 26.0.0 `S3FileSystem.delete_file` sends HEAD key, DELETE key, then `PUT <parent>/` with Content-Type application/x-directory, which re-creates the parent marker that writes avoid. pyarrow has no `delete_files` and no option to stop it. A botocore `delete_object` sends a single `DELETE /prefix/key`, so `OutputStore.delete` uses botocore on S3 roots (st-c667).
