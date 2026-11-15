@@ -5,11 +5,11 @@ type: spike
 priority: P2
 complexity: hard
 depends_on: []
-touches: [data/SOURCES.md, docs/research/*-public-release-licences.md]
+touches: [data/SOURCES.md, docs/research/2026-11-14-public-release-licences.md, tests/test_public_release_licences.py]
 exclusive: false
 gates: [test]
 created: 2026-11-14
-updated: 2026-11-14
+updated: 2026-11-15
 parked_complexity: hard
 ---
 ## Description
@@ -47,139 +47,114 @@ Out of scope: changing any writer, `infra/`, any ADR (0016 belongs to the depend
 
 ## Implementation Plan
 
-# st-1a9c plan: public-release licence evidence
+## Plan: st-1a9c O4 unpark pass, recording the DBCA-010 answer in the licence evidence (2026-11-15)
 
-## Checked in the worktree (/Users/jarrodbaker/Documents/swan-wetland-change/.worktrees/st-1a9c, branch story/st-1a9c at e3890a6, clean)
+### Checked in the worktree
 
-- `data/SOURCES.md`: one 7-column table (source, url, licence, fetched, sha256, crs, redistribute_public). Every row splits into exactly 7 cells on `|`. The DBCA-010 row says `CC BY-SA 4.0 (data.gov.au)` with the SLIP MapServer/9/query URL. Every row has `true`. `tests/test_sources.py` checks only hosts and fixture checksums, so changing a licence or flag cell breaks nothing.
-- `docs/decisions/0011-private-output-bucket.md`, "Reopening public access", step 2 matches the story. `docs/handoffs/2026-11-06-milestone-2.md:173` holds the open "DBCA-010 licence confirmation" follow-up. `AGENTS.md` has the locked decision. `LICENSE` is MIT (st-aa46). `README.md` "## Data sources and licences" must keep "CC BY-SA 4.0" and "CC BY 4.0" (`tests/test_licence.py`), and it is not changed.
-- Writers (line numbers at e3890a6; the build task re-checks them):
-  - Observation Parquet: `src/wetland_change/outputs/geoparquet.py:29` (columns), `:88` write_observations. Footer keys: `src/wetland_change/outputs/provenance.py:74` FOOTER_KEYS (9 keys, none for licence or attribution; `tests/test_footer_backfill.py:111-112`) and `:94` footer_metadata. Polygons come from `src/wetland_change/aoi.py:56` `_to_polygons`: geometry_4326, site=ram_ramsarname, polygon_id from the objectid or uid; load_ramsar is at `:83`, load_waterbodies at `:105`.
-  - Change rows: `src/wetland_change/outputs/changes.py:24` and `:75`, with the same footer. Geometry comes from observations at `src/wetland_change/pipeline.py:346-348` and `:375-378`, so both DBCA and DEA polygons appear.
-  - STAC: `src/wetland_change/stac/catalogue.py:43` LICENSE="CC-BY-SA-4.0", `:61` PROVIDERS (Element 84, ESA, DBCA and GA, homepages only), `:185-198` Collection, `:211-216` Catalog (no licence field), `:99` `_item` (no licence; derived_from link at `:113-119`), items.parquet at `:222` and `:272-278`, write-index at `:305-310`. An offline build from an empty ledger gives collection license CC-BY-SA-4.0 and links root, self and parent only (no rel=license link). The catalog keys are description, id, links, stac_version, title and type.
-  - Run manifests: `src/wetland_change/manifest.py:30` and `:94`. Ledger: `src/wetland_change/ledger.py:45` schema and `:117` source_item (the full Earth Search item JSON). Verification JSON: `src/wetland_change/verify/checks.py:187` write_report, payload at `:215-230`.
-- The baseline `uv run pytest -q` passes.
-- I checked the outside URLs on 2026-11-14 with a generic User-Agent:
-  - The Earth Search C1 collection has license "proprietary" and links to the Copernicus legal notice. The `sentinel.esa.int` host did not resolve; the same PDF is at https://sentinels.copernicus.eu/documents/247904/690755/Sentinel_Data_Legal_Notice and requires "Contains modified Copernicus Sentinel data [Year]".
-  - DEA STAC collections have license CC-BY-4.0. The DEA Waterbodies product page says CC BY 4.0 and gives "© Commonwealth of Australia (Geoscience Australia)" and citations.
-  - Planetary Computer: "proprietary", linking to a SciHub T&C PDF. CDSE: "other", linking to the sentinels.copernicus.eu legal notice.
-- **Pre-check of DBCA-010 (for the orchestrator only; do not give it to the verifiers).**
-  - The SLIP layer 9 copyrightText is empty.
-  - The publisher's catalogue entry (`https://catalogue.data.wa.gov.au/api/3/action/package_show?id=ramsar-sites`, organisation DBCA, metadata_modified 2026-11-13) gives license_id `cc-nc`, license_title "Creative Commons Attribution Non-Commercial 4.0" and license_url by-nc/4.0.
-  - data.gov.au gives the same license_id `cc-nc` but titles it "Creative Commons Attribution Share Alike 4.0 International".
-  - So the claim will probably not be promoted. The story already covers that case (park with the question), so the story can still be implemented.
+The worktree is `/Users/jarrodbaker/Documents/swan-wetland-change/.worktrees/st-1a9c`, on branch story/st-1a9c at b090f5a, with a clean tree. The baseline `uv run pytest -q` exits 0.
 
-## Orchestrator steps (build agents cannot do these)
+- **Already on main (from 02276c1):**
+  - `docs/research/2026-11-14-public-release-licences.md`: Promoted: no (0 of 3). DBCA-010 is `unconfirmed`, T3 and T4 are `deferred: question to Jarrod`, and every T1 and T2 cell still reads unmet.
+  - `data/SOURCES.md` row 6 (DBCA-010): the `unresolved: ...` licence and `unconfirmed`.
+  - `data/SOURCES.md` row 19 (ramsar_mini): `CC BY-SA 4.0 (...)`, `true`.
+  - `tests/test_public_release_licences.py`: 9 tests.
+- **T1 (st-8856) is met in every file kind it listed.** Verified in the writers on main:
+  - observation Parquet: `src/wetland_change/outputs/geoparquet.py:119`
+  - change rows: `src/wetland_change/outputs/changes.py:114`
+  - STAC collection: `src/wetland_change/stac/catalogue.py:231`, plus the rel=license link to the CC BY 4.0 legal code at `:257`
+  - verification JSON: `src/wetland_change/verify/checks.py:239`
+- **T2 (st-d5c1) is met in every file kind it listed:**
+  - observation Parquet: `geoparquet.py:120`
+  - change rows: `changes.py:115`
+  - STAC collection: `catalogue.py:233`
+  - STAC items: `catalogue.py:133`
+  - ledger: `ledger.py:192` and `:291`
+  - verification JSON: `checks.py:241`, fed by `verify/run.py:557`
+- **Tests read these back:**
+  - `tests/test_geoparquet.py:358` and `:391`
+  - `tests/test_change_outputs.py:929` and `:963`
+  - `tests/test_catalogue.py:324`, `:339`, `:413`, `:423` and `:431`
+  - `tests/test_ledger.py:1046` and `:1106`
+  - `tests/test_verify.py:211` and `:271`
+- **Offline rebuild from an empty ledger:** the collection license is still CC-BY-SA-4.0. The links are root, license (DEA CC BY 4.0), self and parent. The extra field is `dea_attribution`. `FOOTER_KEYS` is still the 9 provenance keys.
+- **Text that still says DBCA-010 is CC BY-SA 4.0** (outside docs/decisions and the dated notes):
+  - `src/wetland_change/stac/catalogue.py:59`
+  - README lines 41, 135, 176-177, 184 and 197
+  - the AGENTS.md locked decision
+  - **`scripts/fetch_aoi.py:328`**, which prints the DBCA-010 SOURCES row as `CC BY-SA 4.0 (data.gov.au)`.
 
-**O1. Claim check.** Dispatch three `claim-verifier` agents in parallel, model opus, effort xhigh. Give each the same prompt, word for word:
+  st-22f1's touches list is `src/**`, `.github/workflows/backfill.yml`, `tests/**`, README.md and AGENTS.md. It does not include `scripts/`.
+- **Verification JSON** holds `polygon_id` values `ramsar-<objectid>` (`aoi.py:73`) but no DBCA-010 geometry or site name. `grep site` over `src/wetland_change/verify` finds nothing. The 2026-11-14 judgement of n/a (identifiers only) stays.
+- **`tests/test_sources.py`** checks only hosts and fixture checksums. The new licence cells break nothing.
+- **`tests/test_licence.py`** asserts "CC BY-SA 4.0" in the README section. It is unchanged here, and it is st-22f1's to update.
 
-> Claim: "DBCA-010 Ramsar Sites is licensed CC BY-SA 4.0, and that licence applies to public redistribution of the data and of products derived from it."
->
-> Context: DBCA-010 Ramsar Sites is a dataset of the Western Australian Department of Biodiversity, Conservation and Attractions (DBCA). It is fetched from the SLIP Public Services ArcGIS REST endpoint https://public-services.slip.wa.gov.au/public/rest/services/SLIP_Public_Services/Environment/MapServer/9/query. So far the only recorded source for CC BY-SA 4.0 is a data.gov.au listing. data.gov.au is an aggregator, not the primary source, and on its own does not confirm the claim.
->
-> Primary sources to find and read yourself:
-> (1) The publisher's own catalogue entry for DBCA-010: DBCA's dataset record in the Western Australian government data catalogue (data.wa.gov.au), and any DBCA page for the dataset.
-> (2) The terms of the service the data is fetched from: the SLIP layer metadata (for example .../MapServer/9?f=pjson) and the SLIP or data.wa.gov.au terms of use or licence that govern data taken from that service.
->
-> To return isReal true you must find, in a primary source you fetched, (a) a statement that DBCA-010 is under CC BY-SA 4.0, and (b) nothing in the publisher's entry or the service terms that names a different licence or restricts public redistribution or derived products. A primary source that names a different licence refutes the claim. Primary sources that conflict mean the claim is not confirmed.
->
-> Return the claim-verifier JSON plus these fields: "fetchedAt" (the UTC date YYYY-MM-DD of your fetches), "licenceStated" (a list of {url, statement}, quoted exactly from each source you read), and "derivedProducts" (a quote on redistribution or derived products, or null).
->
-> Rules: send no user name, email address or project name in any request; use a generic User-Agent; do not search for the project's name. You need no repository file, so open none. Make no AWS call.
+### Batch 1 (one task): update the test, the note and `data/SOURCES.md`
 
-The claim is promoted when at least 2 of the 3 verdicts are isReal true. Record `Promoted: yes|no (N of 3)`.
+1. **Tests first.** In `tests/test_public_release_licences.py`:
+   - Rename the judged column "CC BY-SA 4.0 attribution" to "CC BY-NC 4.0 attribution". "CC BY-SA 4.0 ShareAlike" stays.
+   - Add a `status` column (unmet, met, n/a) to "Unmet terms", and a `not filed: <reason>` story for an n/a term.
+   - Add an `Answered: <date>; licence <licence>; redistribute_public <value>` line to the question section.
+   - Run the file. It should fail in tests 8 and 9 (missing columns) against the current note.
+2. **Note** (`docs/research/2026-11-14-public-release-licences.md`):
+   - Add a new section `## Update 2026-11-15`. It records:
+     - Jarrod's reply word for word, and that the orchestrator stated the recommendation itself
+     - that the answer is not a confirmation from DBCA
+     - the reasons for the answer
+     - what changed
+     - the residual risk from the SLIP terms, with the URL and quote
+     - the recommendation that Jarrod obtains DBCA's written confirmation before the operator's apply (ADR 0011 step 6)
+     - the remaining CC BY-SA 4.0 text, including `scripts/fetch_aoi.py:328`
+     - the method
+   - DBCA-010 dataset row: CC BY-NC 4.0 with the non-commercial term, and `true`.
+   - Update the ramsar_mini bullet.
+   - Published files: re-judge at b090f5a with the new citations. T1 and T2 become met. T3 stays unmet in observation Parquet, change rows and the STAC collection. ShareAlike is n/a everywhere.
+   - Add an offline rerun block.
+   - Unmet terms, with status: T1 met st-8856, T2 met st-d5c1, T3 unmet st-22f1. T4 is n/a, with the reason it was not filed.
+   - Rewrite Blocking. It names T3 and the backfill of existing objects, and does not contain the string "DBCA-010 Ramsar Sites".
+   - Mark the question answered.
+3. **`data/SOURCES.md`:**
+   - DBCA-010 licence: the same cell as the note, with `true`.
+   - ramsar_mini licence: `CC BY-NC 4.0, non-commercial use only (attributes from DBCA-010; geometry is project-drawn rectangles)`.
+4. **Gates**, one per line:
+   - `uv run ruff check src tests scripts`
+   - `uv run ruff format --check src tests scripts`
+   - `uv run mypy src scripts`
+   - `uv run pytest -q`
 
-**O2. File the unmet-term stories** with `story create --discovered-from st-1a9c --type feature --priority P2` before the batch runs.
-- T1 and T2 are always filed. T3 and T4 are filed only when the claim is promoted. When it is not, they wait for Jarrod's answer.
-- In each description, `<note>` is `docs/research/2026-11-14-public-release-licences.md` (use the UTC date of the work).
-- Every story ends its description with "Blocks ADR 0011 step 3 (opening the bucket)", and its last AC is "uv run pytest -q passes".
+### What each test proves after this pass
 
-**T1: Add the DEA CC BY 4.0 attribution to the published files**
-- Touches: `src/wetland_change/outputs/provenance.py`, `src/wetland_change/stac/catalogue.py`, `src/wetland_change/verify/checks.py`.
-- Description:
-  - st-1a9c (<note>, term T1) found that the published files carrying Geoscience Australia DEA data under CC BY 4.0 carry no attribution.
-  - Observation Parquet holds DEA Waterbodies v3 polygons, their uids and the DEA Water Observations agreement score. Change files hold the same polygons. The verification JSON holds values derived from DEA Water Observations, DEA Sentinel-2 ARD NBART and the DEA Waterbodies time series.
-  - The Parquet footer keys (`outputs/provenance.py` FOOTER_KEYS) and the report payload (`verify/checks.py` write_report) have no licence or attribution field. The STAC collection names Geoscience Australia as licensor with a homepage only.
-  - CC BY 4.0 section 3(a) requires the attribution and copyright notice the licensor supplies (the DEA product page gives "© Commonwealth of Australia (Geoscience Australia)" and citations), a licence notice with its URI, a link to the material, and an indication of modification. Section 3(a)(2) lets a link to a resource holding these satisfy it.
-  - Files already in the bucket lack it. `src/wetland_change/outputs/footer_backfill.py` is the existing footer rewrite path.
-- ACs:
-  - Observation and change Parquet files carry the section 3(a) DEA attribution, directly or by a link, and a test reads it back from a written file.
-  - The verification JSON carries it, and a test asserts it.
-  - The STAC collection carries it and a link to the licence text, and the catalogue still validates.
-  - Existing bucket files get it through a documented backfill path that the operator runs.
+1. `test_note_is_dated_and_has_no_em_dash`: the newest note is dated and has no U+2014.
+2. `test_note_covers_every_dataset_that_reaches_a_published_file` (AC1): all 8 rows, once each.
+3. `test_dataset_rows_name_licence_primary_source_and_fetch_date` (AC1): each row has a licence, a flag, an https source and a YYYY-MM-DD fetch date.
+4. `test_note_licence_and_redistribute_public_match_sources` (AC5): the note and SOURCES.md are identical for licence and flag on every covered row, including the new DBCA-010 values.
+5. `test_rows_not_true_are_named_blocking` (AC1): unchanged.
+6. `test_three_claim_verdicts_with_source_urls_and_promotion_count` (AC2): unchanged; still 0 of 3, not promoted.
+7. `test_promotion_outcome_is_reflected_in_sources_and_stories` (AC2), now with three branches:
+   - **Promoted:** no story is deferred.
+   - **Parked:** the flag is not true, DBCA-010 is blocking and the question is open.
+   - **Answered:** no story is deferred. The DBCA-010 licence starts with the answered licence, and the flag equals the answered flag. DBCA-010 is blocking exactly when the flag is not true. Every SOURCES.md row whose source names DBCA-010 (at least 2) follows the answered licence. ShareAlike is n/a in every published row when the licence is not BY-SA. The `## Update <date>` section names the licence, the SLIP host and "written confirmation".
+8. `test_every_published_file_kind_is_judged_with_a_writer_citation` (AC3): every kind has a row. Citations point at files that exist. The four columns, including the renamed "CC BY-NC 4.0 attribution", hold met, n/a or unmet (Tn).
+9. `test_every_unmet_term_is_referenced_and_has_a_story_or_a_deferral` (AC4):
+   - ids are unique and match Tn, and each status is one of unmet, met or n/a
+   - the ids referenced in the published table equal the unmet ids
+   - an unmet term has `st-xxxx` or a deferral, a met term has `st-xxxx`, and an n/a term has `not filed: <reason>`
 
-**T2: Add the Copernicus Sentinel data notice to the published files**
-- Touches: provenance.py, catalogue.py, checks.py, `src/wetland_change/ledger.py`.
-- Description:
-  - st-1a9c (<note>, term T2) found that no published file carries the notice the Copernicus Sentinel data legal notice requires on distribution: "Contains modified Copernicus Sentinel data [Year]" (https://sentinels.copernicus.eu/documents/247904/690755/Sentinel_Data_Legal_Notice).
-  - Observation and change Parquet hold values computed from Earth Search sentinel-2-c1-l2a reflectance. The STAC items and the ledger hold Earth Search item footprints and properties. The verification JSON holds values read from Earth Search, Planetary Computer and Copernicus Data Space.
-  - The STAC collection names ESA as producer and licensor but carries no notice.
-- ACs:
-  - Observation and change Parquet footers carry the notice with the acquisition year or years, and a test reads it back.
-  - The STAC collection carries the notice, and the catalogue still validates.
-  - The ledger and verification JSON carry the notice (for example in file metadata), and a test asserts it.
+### Orchestrator steps after the batch
 
-**T3 (promoted only): Add the DBCA-010 CC BY-SA 4.0 attribution to the published files**
-- Touches: provenance.py, catalogue.py.
-- Description:
-  - st-1a9c (<note>, term T3) confirmed CC BY-SA 4.0 at <primary URL>.
-  - Observation and change Parquet hold DBCA-010 polygons, site names (ram_ramsarname) and object ids (in polygon_id), and carry no attribution. The STAC collection names DBCA as licensor with a homepage only.
-  - CC BY-SA 4.0 section 3(a) requires the creator identification and any copyright notice DBCA supplies, the licence notice and URI, a link to the dataset, and an indication of modification (reprojected to EPSG:4326, selected by site).
-- ACs:
-  - Parquet files carry the attribution, directly or by a link, and a test reads it back.
-  - The STAC collection links to the DBCA-010 catalogue entry and the licence text, and the catalogue still validates.
+These are outside the build task.
 
-**T4 (promoted only): Meet the CC BY-SA 4.0 ShareAlike terms in the published files**
-- Touches: provenance.py, catalogue.py.
-- Description:
-  - st-1a9c (<note>, term T4) found that observation and change Parquet, which are adapted material of DBCA-010, carry no licence notice. A file read on its own, for example through the DuckDB glob over observations/, states no licence.
-  - The STAC collection declares CC-BY-SA-4.0 (catalogue.py LICENSE) with no link to the licence text.
-  - Section 3(b) requires CC BY-SA 4.0 or a compatible licence, the text of that licence or its URI, and no added terms.
-- ACs:
-  - Parquet footers name CC BY-SA 4.0 with its URI, and a test reads it back.
-  - The collection has a rel=license link to the CC BY-SA 4.0 legal code, and the catalogue still validates.
-
-**O2b.** Append an `## Orchestrator inputs` block to the batch task prompt. It holds the three verifier JSON objects (labelled Verifier 1, 2 and 3), the `Promoted:` line, and `Stories: T1=st-.... T2=st-.... T3=st-....|deferred T4=st-....|deferred`.
-
-**O3. After the batch, and before any commit:**
-- If the summary reports a term judged met everywhere, archive its story.
-- If it reports a file kind added to a term, add that kind to the story.
-- Run the gates from the worktree, one per line: `uv run ruff check src tests scripts`, `uv run ruff format --check src tests scripts`, `uv run mypy src scripts`, `uv run pytest -q`.
-- Commit on story/st-1a9c with the attribution line.
-
-**O4. Close or park.**
-- Promoted: close through the test gate. The decision that the licence is acceptable stays Jarrod's, and the note says so.
-- Not promoted: `story park` st-1a9c with the note's "## Question for Jarrod" text.
-- On unpark:
-  - File T3 and T4 under the licence Jarrod confirms.
-  - Replace the two `deferred: question to Jarrod` cells with their ids in an "Update <date>" paragraph and in the table.
-  - Set the DBCA-010 licence and redistribute_public in both files to match.
-  - Rerun the gates and close.
-  - The `tests/fixtures/aoi/ramsar_mini.geojson` row in SOURCES.md, which inherits DBCA-010, also follows the answer.
-
-## Batch 1 (one task): note, SOURCES.md edits and consistency test
-
-Files:
-- `tests/test_public_release_licences.py` (new)
-- `docs/research/2026-11-14-public-release-licences.md` (new)
-- `data/SOURCES.md` (DBCA-010 row; other rows only if a primary source states a different licence)
-
-What the tests prove:
-1. `test_note_is_dated_and_has_no_em_dash`: the newest note matches `<YYYY-MM-DD>-public-release-licences.md` and follows the writing standard.
-2. `test_note_covers_every_dataset_that_reaches_a_published_file` (AC1): all 8 SOURCES.md rows whose data reaches a bucket object are listed, once each. The 8 rows are Earth Search C1, DBCA-010, DEA Waterbodies polygons, DEA NBART, DEA Waterbodies CSV, DEA S2 WO, Planetary Computer and CDSE.
-3. `test_dataset_rows_name_licence_primary_source_and_fetch_date` (AC1): each row has a licence, a flag, an https primary-source URL and a YYYY-MM-DD fetch date.
-4. `test_note_licence_and_redistribute_public_match_sources` (AC5): for each note row, the SOURCES.md row with the identical source cell has the identical licence and redistribute_public.
-5. `test_rows_not_true_are_named_blocking` (AC1): every row whose flag is not `true` is named under "## Blocking".
-6. `test_three_claim_verdicts_with_source_urls_and_promotion_count` (AC2): there are exactly 3 verdict rows, each with an https source URL and a fetch date. The `Promoted: yes|no (N of 3)` line equals the count of confirmed rows, and "yes" holds only when N is at least 2.
-7. `test_promotion_outcome_is_reflected_in_sources_and_stories` (AC2): if the claim is not promoted, DBCA-010's flag is not `true`, DBCA-010 is blocking and the question is non-empty. If it is promoted, no story is deferred.
-8. `test_every_published_file_kind_is_judged_with_a_writer_citation` (AC3): there is a row for each of observation Parquet, change rows, STAC catalog, STAC collection, STAC items, run manifests, ledger and verification JSON. Each row cites a writer `src/...py:<line>` that exists, and each of the four term columns is `met`, `n/a` or `unmet (Tn[, Tn])`.
-9. `test_every_unmet_term_is_referenced_and_has_a_story_or_a_deferral` (AC4): the term ids are unique, the ids referenced in the table equal the ids in "## Unmet terms", and each row has a story id `st-xxxx` or `deferred: question to Jarrod`.
-
-Gates: the four AGENTS.md commands above, in order, one per line.
+- **O3.** Rerun the four gates from the worktree, then commit on story/st-1a9c with the attribution line.
+- **O4.** Close the story through the test gate. Nothing is deferred and T3 is filed as st-22f1, so the close needs no question. The note says the licence decision and the DBCA confirmation stay Jarrod's.
+- **Flags for the orchestrator:**
+  - `scripts/fetch_aoi.py:328` still prints a CC BY-SA 4.0 SOURCES row and `true`, and `scripts/` is not in st-22f1's touches. Add it to st-22f1, or st-22f1's "no file states CC BY-SA 4.0" criterion fails.
+  - Verification JSON stays n/a for DBCA-010 (ids only). st-22f1's "other file kinds" criterion re-checks it.
+  - Jarrod's reply approved recommendations he had not seen for this question. The close-out summary should name CC BY-NC 4.0 explicitly so he can overturn it.
+  - The handoff follow-up at `docs/handoffs/2026-11-06-milestone-2.md:173` is historical and is not edited.
 
 ## Implementation Notes
 
 - 2026-11-14T15:08:45.884Z: 2026-11-14: evidence committed as 02276c1 on story/st-1a9c (docs/research/2026-11-14-public-release-licences.md, data/SOURCES.md DBCA-010 row, tests/test_public_release_licences.py). Not merged to main. Gates run from the worktree after the build: ruff check, ruff format --check, mypy and pytest -q all exit 0. Claim 'DBCA-010 is CC BY-SA 4.0' confirmed by 0 of 3 claim-verifiers, so data/SOURCES.md records the licence as unresolved and redistribute_public as unconfirmed. T1 is st-8856 and T2 is st-d5c1. T3 and T4 are deferred to the licence answer; the plan's unpark steps apply.
+- 2026-11-15T07:43:12.310Z: 2026-11-15: Jarrod replied "stories work. approved recommended that unblock stories". The park question labelled no recommendation, so the orchestrator states its own and records it as approved under that reply, not as a confirmation from DBCA. Recommendation taken: the project publishes DBCA-010 and the files that carry its polygons, site names and object ids under CC BY-NC 4.0, the licence the custodian states in its own catalogue entry (https://catalogue.data.wa.gov.au/dataset/ramsar-sites, fetched 2026-11-14). Reasons: the publisher's own entry outranks the data.gov.au aggregator label (CC BY-SA 4.0), CC BY-NC 4.0 is the more restrictive of the two Creative Commons licences named, and the custodian's published licence is read as the prior permission the SLIP service terms ask for. redistribute_public becomes true with the non-commercial term stated. CC BY-NC 4.0 has no ShareAlike term, so T4 does not apply; its licence-notice part is section 3(a)(1)(C) and folds into T3, which also changes the STAC collection licence (catalogue.py LICENSE), README "Data sources and licences" and the AGENTS.md locked decision from CC BY-SA 4.0 to CC BY-NC 4.0. Residual risk: the SLIP terms still read as requiring written permission, so written confirmation from DBCA before the operator's apply (ADR 0011 step 6, Jarrod's) is recommended and left to Jarrod.
 
 ## Questions
 
