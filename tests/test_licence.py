@@ -39,6 +39,22 @@ def test_readme_states_code_and_data_licences_separately() -> None:
     section = _readme_section("## Data sources and licences")
     assert "MIT" in section
     assert "LICENSE" in section
-    assert "CC BY-SA 4.0" in section
+    assert "CC BY-NC 4.0" in section
     assert "CC BY 4.0" in section
     assert "no licence file" not in readme
+
+
+def test_readme_data_table_row_states_cc_by_nc_for_dbca_010() -> None:
+    section = _readme_section("## Data sources and licences")
+    rows = [
+        line
+        for line in section.splitlines()
+        if line.startswith("| DBCA-010 Ramsar Sites")
+    ]
+    assert len(rows) == 1
+    assert "CC BY-NC 4.0" in rows[0]
+
+
+def test_agents_locked_decision_names_cc_by_nc_for_dbca_010() -> None:
+    text = " ".join((REPO / "AGENTS.md").read_text(encoding="utf-8").split())
+    assert "Ramsar sites (DBCA-010, CC BY-NC 4.0) are the reporting unit" in text

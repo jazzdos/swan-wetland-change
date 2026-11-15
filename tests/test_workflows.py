@@ -786,9 +786,10 @@ BACKFILL_COMMANDS: Final = {
     "footers": "add-observation-footers",
     "dea": "add-dea-attribution",
     "copernicus": "add-copernicus-notice",
+    "dbca": "add-dbca-attribution",
     "catalogue": "build-catalogue",
 }
-BACKFILL_ADD_JOBS: Final = ("footers", "dea", "copernicus")
+BACKFILL_ADD_JOBS: Final = ("footers", "dea", "copernicus", "dbca")
 BACKFILL_SUMMARY: Final = "scanned 3, rewritten 3, skipped 0, failed 1"
 
 
@@ -827,13 +828,14 @@ def test_backfill_is_dispatch_only_with_a_boolean_dry_run_defaulting_to_true() -
     assert "build-catalogue" in dry_run["description"]
 
 
-def test_backfill_jobs_run_footers_dea_copernicus_catalogue_in_order() -> None:
+def test_backfill_jobs_run_footers_dea_copernicus_dbca_catalogue_in_order() -> None:
     jobs = _jobs(_backfill_doc())
-    assert list(jobs) == ["footers", "dea", "copernicus", "catalogue"]
+    assert list(jobs) == ["footers", "dea", "copernicus", "dbca", "catalogue"]
     assert "needs" not in jobs["footers"]
     assert jobs["dea"]["needs"] == "footers"
     assert jobs["copernicus"]["needs"] == "dea"
-    assert jobs["catalogue"]["needs"] == "copernicus"
+    assert jobs["dbca"]["needs"] == "copernicus"
+    assert jobs["catalogue"]["needs"] == "dbca"
     for name in jobs:
         assert jobs[name]["runs-on"] == "ubuntu-24.04"
         _backfill_command_step(name)

@@ -45,7 +45,7 @@ docs/{plans,decisions,handoffs,research}/
 ## Locked decisions
 
 - Sentinel-2 Collection 1 only; Landsat is requester-pays on Earth Search.
-- Ramsar sites (DBCA-010, CC BY-SA 4.0) are the reporting unit; DEA
+- Ramsar sites (DBCA-010, CC BY-NC 4.0) are the reporting unit; DEA
   Waterbodies polygons (CC BY 4.0) are the verification unit.
 - Water area is stored three ways: calibrated index, SCL class 6, and the
   DEA Water Observations agreement score, filled at processing time when DEA

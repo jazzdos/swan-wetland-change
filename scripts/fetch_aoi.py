@@ -45,6 +45,12 @@ RAMSAR_URL = (
     "https://public-services.slip.wa.gov.au/public/rest/services/"
     "SLIP_Public_Services/Environment/MapServer/9/query"
 )
+RAMSAR_LICENCE = (
+    "CC BY-NC 4.0, non-commercial use only (the custodian's catalogue entry, "
+    "catalogue.data.wa.gov.au; adopted 2026-11-15, not confirmed in writing by "
+    "DBCA; the SLIP service terms differ, see "
+    "docs/research/2026-11-14-public-release-licences.md)"
+)
 RAMSAR_PARAMS = {
     "where": "1=1",
     "outFields": "*",
@@ -325,7 +331,7 @@ def main() -> int:
     waterbodies.write_bytes(wb_bytes)
     print("Add or update these rows in data/SOURCES.md:")
     print(
-        f"| DBCA-010 Ramsar Sites | {RAMSAR_URL} | CC BY-SA 4.0 (data.gov.au) | "
+        f"| DBCA-010 Ramsar Sites | {RAMSAR_URL} | {RAMSAR_LICENCE} | "
         f"{today} | {ramsar_sha} | EPSG:4326 (native GDA2020) | true |"
     )
     print(

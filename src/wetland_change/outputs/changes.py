@@ -7,7 +7,10 @@ footer carries the same provenance keys as the observation files
 time, and source_epsg equals operation_epsg because `process_scene` refuses
 any scene whose EPSG differs from the operation EPSG. The footer also carries
 `dea_attribution`, the CC BY 4.0 attribution for the Geoscience Australia DEA
-Waterbodies polygons (`wetland_change.attribution`), and `copernicus_notice`,
+Waterbodies polygons (`wetland_change.attribution`), `dbca_attribution`, the
+CC BY-NC 4.0 attribution for the DBCA-010 Ramsar Sites data (geometry, site and
+polygon_id; `wetland_change.dbca_attribution`, term T3 of
+docs/research/2026-11-14-public-release-licences.md), and `copernicus_notice`,
 the Copernicus Sentinel data notice for the UTC years of the scored rows and of
 the observation rows their baselines come from
 (`wetland_change.sentinel_notice`).
@@ -23,6 +26,7 @@ from shapely.geometry.base import BaseGeometry
 
 from wetland_change.attribution import dea_attribution_footer
 from wetland_change.config import WaterConfig
+from wetland_change.dbca_attribution import dbca_attribution_footer
 from wetland_change.outputs.geoparquet import to_geoparquet_bytes
 from wetland_change.outputs.provenance import footer_metadata
 from wetland_change.sentinel_notice import copernicus_notice_footer, utc_years
@@ -90,7 +94,9 @@ def write_changes(
 ) -> str:
     """Write one item's flagged scores with footer keys; returns the path.
 
-    The `copernicus_notice` years are the UTC years of the scored rows plus
+    The footer carries `dea_attribution`, `dbca_attribution` (CC BY-NC 4.0, the
+    DBCA-010 Ramsar Sites data) and `copernicus_notice` beside the provenance
+    keys. The `copernicus_notice` years are the UTC years of the scored rows plus
     `baseline_years`, the UTC years of the observations the baselines use.
     """
     if scores.empty:
@@ -112,6 +118,7 @@ def write_changes(
             {
                 **footer,
                 **dea_attribution_footer("change"),
+                **dbca_attribution_footer("change"),
                 **copernicus_notice_footer(
                     "change", set(utc_years(frame["datetime"])) | set(baseline_years)
                 ),

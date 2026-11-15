@@ -38,7 +38,7 @@ fractions and z scores are unitless.
 | Sentinel-2 Collection 1 only (`sentinel-2-c1-l2a`) | The older `sentinel-2-l2a` collection mixes items with the -1000 BOA offset already applied and items without it. Collection 1 is raw DN throughout. Landsat on Earth Search is requester-pays. | `docs/decisions/0001-sentinel-2-collection-1-only.md` |
 | Reflectance is DN times scale plus offset from the item's `raster:bands` | No hard-coded constant. Scale and offset are checked against `BOA_QUANTIFICATION_VALUE` and `BOA_ADD_OFFSET` in the ESA product XML for every scene before any pixel is read; a mismatch fails the scene, not the run. | `docs/decisions/0001-sentinel-2-collection-1-only.md` |
 | Vector-first zonal statistics | One row per polygon per scene is kilobytes per scene and keeps runs short and incremental. | Design, "Purpose and scope decisions" |
-| Ramsar sites (DBCA-010) as the reporting unit, DEA Waterbodies polygons as the verification unit | DBCA-010 downloads without login under CC BY-SA 4.0. DEA Waterbodies publishes per-lake wet-fraction history to compare against. | `AGENTS.md`, design |
+| Ramsar sites (DBCA-010) as the reporting unit, DEA Waterbodies polygons as the verification unit | DBCA-010 downloads without login and is CC BY-NC 4.0, non-commercial use only (the custodian's catalogue entry, adopted 2026-11-15). DEA Waterbodies publishes per-lake wet-fraction history to compare against. | `AGENTS.md`, design |
 | Three water columns per row | McFeeters NDWI above 0 found 5,845 water pixels on Thomsons Lake where SCL class 6 found 16,676 and DEA found 16,444. The textbook threshold fails on shallow, vegetated lakes, so the calibrated index, SCL class 6 and the DEA agreement are stored side by side. The agreement is filled at first processing and is null when DEA holds no item then. | `docs/decisions/0002-three-water-columns.md`, `docs/decisions/0009-dea-wo-agreement-populated-at-processing-time.md` |
 | Per-polygon water settings | One global setting (MNDWI above -0.1) failed DEA agreement on three polygons. ramsar-15 uses SCL class 6, ramsar-28 NDWI above -0.15, ramsar-56 MNDWI above 0.05, and every other polygon MNDWI above -0.1, each calibrated against DEA Sentinel-2 Water Observations. ramsar-12 stays on the global setting after a confirmatory test on 7 further scene-tiles. | `docs/decisions/0005-per-polygon-water-settings.md`, `docs/decisions/0010-ramsar-12-water-setting.md` |
 | Ledger is fixed-schema Parquet | stac-geoparquet infers a schema per batch, so ledger files from different days do not union, and failed items have no STAC item. The ledger keeps the full source item as JSON. | `docs/decisions/0003-fixed-schema-ledger.md` |
@@ -113,6 +113,12 @@ S3:
    observations of its polygons in the same calendar month on strictly earlier
    UTC dates. Ledger files carry `copernicus_notice` in their Parquet metadata
    for the acquisition years of their rows, and none when no row has one.
+   Observation and change files also carry `dbca_attribution`, the CC BY-NC 4.0
+   attribution for the DBCA-010 Ramsar Sites data. It holds the creator DBCA, a
+   statement that DBCA supplies no copyright notice, the licence name, URI and
+   legal-code URI, the basis of the licence, a disclaimer notice, the link to
+   the dataset's catalogue entry and the SLIP service, and what the file holds
+   and how it was modified (`src/wetland_change/dbca_attribution.py`).
    A later run finishes any daily run that has ledger rows and no manifest,
    scoring its dates and writing its manifest with `recovered_by` set and its
    skipped tallies, watermarks, `package_version`, `config_sha256`, `runtime`,
@@ -131,11 +137,12 @@ S3:
    The build is incremental: `stac/write-index.json` records the sha256 of
    every object last written and the base URL, and only new or changed
    objects are written, so a build with nothing new writes no catalogue file.
-   The collection carries the same `dea_attribution` block and a `license`
-   link to the CC BY 4.0 legal code; its `license` field stays CC-BY-SA-4.0.
-   The collection also carries the `copernicus_notice` block for the
-   acquisition years of its items, and each item a `copernicus_notice`
-   property. `license` and the licence link are unchanged.
+   The collection's `license` is CC-BY-NC-4.0. It carries `dea_attribution`
+   with a `license` link to the CC BY 4.0 legal code, `dbca_attribution` with a
+   `license` link to the CC BY-NC 4.0 legal code, a `via` link to the DBCA-010
+   catalogue entry, and `copernicus_notice` for the acquisition years of its
+   items. Each item carries `copernicus_notice` and `dbca_attribution`
+   properties.
 9. Verify (`verify/`). Score the verification matrix for a run and write
    `verification/<run_id>.json` and `docs/research/verification-<run_id>.md`.
    The verification JSON carries `dea_attribution`, then `copernicus_notice`
@@ -173,15 +180,17 @@ on later runs; it does not abort the run.
 The code in this repository is released under the MIT licence (see
 `LICENSE`). That licence covers the source code only. Data and outputs carry
 separate terms. Outputs derived from the DBCA-010 Ramsar polygons (the
-observation, change and catalogue files, declared as CC-BY-SA-4.0 in the STAC
-collection) are CC BY-SA 4.0. The DEA inputs and references (Waterbodies,
+observation, change and catalogue files, declared as CC-BY-NC-4.0 in the STAC
+collection) are CC BY-NC 4.0, non-commercial use only. That licence is the
+custodian's catalogue entry, adopted 2026-11-15 and not confirmed in writing by
+DBCA (`docs/research/2026-11-14-public-release-licences.md`). The DEA inputs and references (Waterbodies,
 Water Observations, ARD) are CC BY 4.0. Sentinel-2 data follow the Copernicus
 Sentinel data terms.
 
 | Source | Use | Licence |
 |---|---|---|
 | Earth Search `sentinel-2-c1-l2a` (Element 84, AWS) | Input scenes | Copernicus Sentinel data terms (free and open) |
-| DBCA-010 Ramsar Sites (SLIP ArcGIS REST, layer 9) | Reporting polygons | CC BY-SA 4.0 |
+| DBCA-010 Ramsar Sites (SLIP ArcGIS REST, layer 9) | Reporting polygons | CC BY-NC 4.0 (non-commercial use only) |
 | DEA Waterbodies v3 polygons (Swan subset, WFS) | Verification polygons | CC BY 4.0 |
 | DEA Waterbodies v3 per-lake CSV time series | Water history reference | CC BY 4.0 |
 | DEA Sentinel-2 Water Observations `ga_s2_wo_provisional_3` | Live water extent reference | CC BY 4.0 |
@@ -191,10 +200,11 @@ Sentinel data terms.
 
 The published files carry the DEA attribution described under Run stages,
 term T1 of `docs/research/2026-11-14-public-release-licences.md`. They also
-carry the Copernicus Sentinel data notice, term T2 of the same document.
+carry the Copernicus Sentinel data notice, term T2 of the same document. They
+also carry the DBCA-010 attribution, term T3 of the same document.
 
 URLs, fetch dates, checksums, CRS and redistribution flags are in
-`data/SOURCES.md`. Rows derived from the Ramsar polygons inherit CC BY-SA
+`data/SOURCES.md`. Rows derived from the Ramsar polygons inherit CC BY-NC
 4.0.
 
 ## Verification matrix
@@ -260,6 +270,7 @@ uv run wetland-change compact-ledger
 uv run wetland-change add-observation-footers --dry-run
 uv run wetland-change add-dea-attribution --dry-run
 uv run wetland-change add-copernicus-notice --dry-run
+uv run wetland-change add-dbca-attribution --dry-run
 uv run wetland-change freshness
 ```
 
@@ -342,6 +353,15 @@ uv run wetland-change freshness
   Every existing column, row, footer key and JSON field is unchanged.
   `--dry-run` lists the files it would rewrite and writes nothing. It prints
   `scanned N, rewritten M, skipped K, failed F` and exits 1 if any file fails.
+- `add-dbca-attribution` adds `dbca_attribution` and
+  `dbca_attribution_added_after_the_fact` (the git commit that ran the command
+  and the date) to each observation file and change file that lacks
+  `dbca_attribution`. Files that already hold `dbca_attribution` are skipped, so
+  a second run rewrites nothing. Verification reports, ledger files and the
+  catalogue hold no DBCA-010 material and are not scanned. Every existing
+  column, row and footer key is unchanged. `--dry-run` lists the files it would
+  rewrite and writes nothing. It prints `scanned N, rewritten M, skipped K,
+  failed F` and exits 1 if any file fails.
 - `freshness` checks that the newest processed item is under 7 days old and
   that ledger counts match Earth Search and Copernicus per tile over 30 days.
   It also fails (`freshness_exhausted_items`) while any item has exhausted its
@@ -473,11 +493,12 @@ output root was seeded from the 2026-11-02 backfill copy.
 
 ### Attribution backfill
 
-Files written before st-8856 lack the DEA attribution, and files written
-before st-d5c1 lack the Copernicus notice. The backfill runs before ADR 0011
+Files written before st-8856 lack the DEA attribution, files written before
+st-d5c1 lack the Copernicus notice, and files written before st-22f1 lack the
+DBCA-010 CC BY-NC 4.0 attribution. The backfill runs before ADR 0011
 step 3 (`docs/decisions/0011-private-output-bucket.md`), by one of two routes.
-The operator can run it from a local checkout of main that includes both
-st-8856 and st-d5c1, with AWS credentials, when no workflow is running. Or it
+The operator can run it from a local checkout of main that includes st-8856,
+st-d5c1 and st-22f1, with AWS credentials, when no workflow is running. Or it
 can run through `.github/workflows/backfill.yml`, dispatched from main, a dry
 run first and then the real run:
 
@@ -507,6 +528,8 @@ uv run wetland-change add-dea-attribution --output-root s3://<bucket>/ --dry-run
 uv run wetland-change add-dea-attribution --output-root s3://<bucket>/
 uv run wetland-change add-copernicus-notice --output-root s3://<bucket>/ --dry-run
 uv run wetland-change add-copernicus-notice --output-root s3://<bucket>/
+uv run wetland-change add-dbca-attribution --output-root s3://<bucket>/ --dry-run
+uv run wetland-change add-dbca-attribution --output-root s3://<bucket>/
 uv run wetland-change build-catalogue --output-root s3://<bucket>/
 ```
 
@@ -527,13 +550,21 @@ uv run wetland-change build-catalogue --output-root s3://<bucket>/
   acquisition year are skipped. Every existing column, row, footer key and JSON
   field is unchanged, including `generated_at`. It prints only paths and
   counts, and a second run rewrites nothing.
-- The three rewrite commands are independent: each adds only its own keys,
+- `add-dbca-attribution` adds `dbca_attribution` and
+  `dbca_attribution_added_after_the_fact` (commit and date) to every
+  observation file and change file that lacks `dbca_attribution`. Verification
+  reports, ledger files and the catalogue hold no DBCA-010 material and are not
+  scanned. Every existing column, row and footer key is unchanged, including
+  `generated_at`. It prints only paths and counts, and a second run rewrites
+  nothing.
+- The four rewrite commands are independent: each adds only its own keys,
   skips a file that already holds its own block and keeps every other key. They
   can therefore run in any order, and a file that already has the DEA
   attribution, for example from an earlier run of `add-dea-attribution`, gains
-  only the Copernicus notice. The listed order is recommended.
+  only the keys it lacks. The listed order is recommended.
 - `build-catalogue` rewrites the collection and every item, which carry the
-  Copernicus notice from then on. The scheduled pipeline does the same on its
+  Copernicus notice and the DBCA-010 attribution from then on, with the
+  collection `license` CC-BY-NC-4.0. The scheduled pipeline does the same on its
   next run once main is pushed, and files written after that carry the
   attribution and the notice from the start.
 - A failed file exits 1 and is left unchanged; rerun after fixing the cause.
