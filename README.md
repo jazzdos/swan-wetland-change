@@ -95,6 +95,13 @@ S3:
    polygons in that file). `source_epsg` equals `operation_epsg` because
    `process_scene` refuses any scene whose EPSG differs from the operation
    EPSG. Files written before these keys existed still read.
+   Observation and change files also carry `dea_attribution`, the CC BY 4.0
+   attribution for the Geoscience Australia (DEA) data. It holds the copyright
+   notice "© Commonwealth of Australia (Geoscience Australia)", the licence
+   name, URI and legal-code URI, a disclaimer notice, and the source links and
+   modifications of each DEA dataset the file carries. The DEA Waterbodies
+   entries also carry the data citation and the paper citation that the DEA
+   product page asks for (`src/wetland_change/attribution.py`).
    A later run finishes any daily run that has ledger rows and no manifest,
    scoring its dates and writing its manifest with `recovered_by` set and its
    skipped tallies, watermarks, `package_version`, `config_sha256`, `runtime`,
@@ -113,8 +120,12 @@ S3:
    The build is incremental: `stac/write-index.json` records the sha256 of
    every object last written and the base URL, and only new or changed
    objects are written, so a build with nothing new writes no catalogue file.
+   The collection carries the same `dea_attribution` block and a `license`
+   link to the CC BY 4.0 legal code; its `license` field stays CC-BY-SA-4.0.
 9. Verify (`verify/`). Score the verification matrix for a run and write
    `verification/<run_id>.json` and `docs/research/verification-<run_id>.md`.
+   The verification JSON carries `dea_attribution`; the Markdown report does
+   not.
 
 A failing scene is recorded in the ledger with an attempt count and retried
 on later runs; it does not abort the run.
@@ -161,6 +172,9 @@ Sentinel data terms.
 | DEA Sentinel-2 ARD NBART `ga_s2am_ard_3`, `ga_s2bm_ard_3`, `ga_s2cm_ard_3` | NDVI reference | CC BY 4.0 |
 | Microsoft Planetary Computer `sentinel-2-l2a` | Pixel identity reference | Copernicus Sentinel data terms |
 | Copernicus Data Space STAC `sentinel-2-l2a` | Discovery and freshness counts | Copernicus Sentinel data terms |
+
+The published files carry the DEA attribution described under Run stages,
+term T1 of `docs/research/2026-11-14-public-release-licences.md`.
 
 URLs, fetch dates, checksums, CRS and redistribution flags are in
 `data/SOURCES.md`. Rows derived from the Ramsar polygons inherit CC BY-SA
@@ -227,6 +241,7 @@ uv run wetland-change verify
 uv run wetland-change build-catalogue
 uv run wetland-change compact-ledger
 uv run wetland-change add-observation-footers --dry-run
+uv run wetland-change add-dea-attribution --dry-run
 uv run wetland-change freshness
 ```
 
@@ -289,8 +304,17 @@ uv run wetland-change freshness
   `footer_added_after_the_fact`, a JSON value holding the git commit that ran
   the command and the date. Files that already hold all nine keys are skipped,
   so a second run rewrites nothing. `--dry-run` lists the files it would
-  rewrite and writes nothing. It prints `scanned N, rewritten M, skipped K,
+  rewrite and writes nothing. It keeps any other footer key, such as
+  `dea_attribution`, unchanged. It prints `scanned N, rewritten M, skipped K,
   failed F` and exits 1 if any file fails.
+- `add-dea-attribution` adds `dea_attribution` and
+  `dea_attribution_added_after_the_fact` (the git commit that ran the command
+  and the date) to each observation file, change file and
+  `verification/<run_id>.json` that lacks `dea_attribution`. Files that already
+  hold `dea_attribution` are skipped, so a second run rewrites nothing. Every
+  existing column, row, footer key and JSON field is unchanged. `--dry-run`
+  lists the files it would rewrite and writes nothing. It prints `scanned N,
+  rewritten M, skipped K, failed F` and exits 1 if any file fails.
 - `freshness` checks that the newest processed item is under 7 days old and
   that ledger counts match Earth Search and Copernicus per tile over 30 days.
   It also fails (`freshness_exhausted_items`) while any item has exhausted its
@@ -391,6 +415,38 @@ empty root leaves the first daily run bounded only by
 `stac.initial_lookback_days`. This deployment did both on 2026-11-06:
 `catalogue.base_url` was set to the bucket URL in commit 2b8d582, and the
 output root was seeded from the 2026-11-02 backfill copy.
+
+### Attribution backfill (operator only)
+
+Files written before st-8856 lack the DEA attribution. The operator, never an
+agent, runs the backfill before ADR 0011 step 3
+(`docs/decisions/0011-private-output-bucket.md`). Agents do not run it,
+because the st-b6bf and st-dd0d pre-registrations in `LEARNINGS.md` bar agents
+from reading output-store objects. Run it from a checkout of main that
+includes st-8856, with AWS credentials, when no workflow is running, in this
+order with a dry run before each real run:
+
+```sh
+uv run wetland-change add-observation-footers --output-root s3://<bucket>/ --dry-run
+uv run wetland-change add-observation-footers --output-root s3://<bucket>/
+uv run wetland-change add-dea-attribution --output-root s3://<bucket>/ --dry-run
+uv run wetland-change add-dea-attribution --output-root s3://<bucket>/
+uv run wetland-change build-catalogue --output-root s3://<bucket>/
+```
+
+- `add-observation-footers` comes first, because the 2026-11-02 backfill
+  files may lack the nine provenance keys. It keeps `dea_attribution` if
+  present.
+- `add-dea-attribution` adds `dea_attribution` and
+  `dea_attribution_added_after_the_fact` (commit and date) to every
+  observation file, change file and `verification/<run_id>.json` that lacks
+  `dea_attribution`. Every existing column, row, footer key and JSON field is
+  unchanged, including `generated_at`. It prints only paths and counts, and a
+  second run rewrites nothing.
+- `build-catalogue` rewrites the STAC collection. The scheduled pipeline does
+  the same on its next run once main is pushed, and files written after that
+  carry the attribution from the start.
+- A failed file exits 1 and is left unchanged; rerun after fixing the cause.
 
 ## Limitations
 

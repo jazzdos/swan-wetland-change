@@ -8,8 +8,10 @@ The footer carries the `geo` key plus the keys of `outputs.provenance`:
 source_epsg, operation_epsg, geometry_epsg, units, scl_classes_dropped,
 scl_classes_clear, clear_pixel_rule, water_settings and water_units_note.
 source_epsg equals operation_epsg because `process_scene` refuses any scene
-whose EPSG differs from the operation EPSG. Files written before these keys
-existed still read, because readers use only the `geo` key.
+whose EPSG differs from the operation EPSG. The footer also carries
+`dea_attribution`, the CC BY 4.0 attribution for the Geoscience Australia DEA
+data (`wetland_change.attribution`). Files written before these keys existed
+still read, because readers use only the `geo` key.
 """
 
 from __future__ import annotations
@@ -21,6 +23,7 @@ import geopandas as gpd
 import pandas as pd
 import pyarrow.parquet as pq
 
+from wetland_change.attribution import dea_attribution_footer
 from wetland_change.config import WaterConfig
 from wetland_change.outputs.provenance import footer_metadata
 from wetland_change.stats import ObservationRow
@@ -104,7 +107,10 @@ def write_observations(
     footer = footer_metadata(
         frame, kind="observation", water=water, operation_epsg=operation_epsg
     )
-    store.write_bytes(relpath, to_geoparquet_bytes(frame, footer))
+    store.write_bytes(
+        relpath,
+        to_geoparquet_bytes(frame, {**footer, **dea_attribution_footer("observation")}),
+    )
     return relpath
 
 

@@ -21,6 +21,7 @@ from typer.testing import CliRunner
 
 from tests.test_pipeline import _config
 from wetland_change import cli
+from wetland_change.attribution import dea_attribution
 from wetland_change.change import SCORE_COLUMNS
 from wetland_change.config import WaterConfig, WaterSetting
 from wetland_change.ledger import LedgerEntry, entries_to_table
@@ -35,7 +36,7 @@ from wetland_change.outputs.geoparquet import (
     read_observations,
     write_observations,
 )
-from wetland_change.outputs.provenance import footer_metadata
+from wetland_change.outputs.provenance import FOOTER_KEYS, footer_metadata
 from wetland_change.pipeline import score_changes
 from wetland_change.stats import ObservationRow
 from wetland_change.store import OutputStore
@@ -922,3 +923,37 @@ def test_score_cli_day_range_is_inclusive(
     assert not list((override / "changes").rglob("*.parquet"))
     payload = json.loads(next((override / "runs").glob("*.json")).read_text())
     assert payload["change_rows"] == 0
+
+
+def test_change_footer_carries_the_dea_attribution(tmp_path: Path) -> None:
+    store = OutputStore(str(tmp_path))
+    relpath = write_changes(
+        _scores(), GEOMETRIES, store, water=WATER, operation_epsg=OPERATION_EPSG
+    )
+    expected = footer_metadata(
+        changes_to_frame(_scores(), GEOMETRIES),
+        kind="change",
+        water=WATER,
+        operation_epsg=OPERATION_EPSG,
+    )
+    for footer in _change_footers(tmp_path / relpath):
+        parsed = json.loads(footer[b"dea_attribution"])
+        assert parsed == dea_attribution("change")
+        assert (
+            parsed["copyright"] == "© Commonwealth of Australia (Geoscience Australia)"
+        )
+        assert parsed["licence_uri"] == "https://creativecommons.org/licenses/by/4.0/"
+        assert len(parsed["datasets"]) == 1
+        dataset = parsed["datasets"][0]
+        assert "Waterbodies" in dataset["name"]
+        assert "https://dx.doi.org/10.26186/148920" in dataset["citation"]
+        assert "https://doi.org/10.3390/rs13081437" in dataset["paper_citation"]
+        assert (
+            "https://knowledge.dea.ga.gov.au/data/product/dea-waterbodies-landsat/"
+            in dataset["sources"]
+        )
+        assert dataset["modification"]
+        for key in FOOTER_KEYS:
+            assert footer[key.encode()] == expected[key].encode()
+        keys = {k.decode() for k in footer} - {"geo", "pandas", "ARROW:schema"}
+        assert keys == {*FOOTER_KEYS, "dea_attribution"}

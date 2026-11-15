@@ -5,7 +5,9 @@ observation files so a rerun overwrites with byte-identical content. The
 footer carries the same provenance keys as the observation files
 (`outputs.provenance`); its water settings are those of the config at scoring
 time, and source_epsg equals operation_epsg because `process_scene` refuses
-any scene whose EPSG differs from the operation EPSG.
+any scene whose EPSG differs from the operation EPSG. The footer also carries
+`dea_attribution`, the CC BY 4.0 attribution for the Geoscience Australia DEA
+Waterbodies polygons (`wetland_change.attribution`).
 """
 
 from __future__ import annotations
@@ -16,6 +18,7 @@ import geopandas as gpd
 import pandas as pd
 from shapely.geometry.base import BaseGeometry
 
+from wetland_change.attribution import dea_attribution_footer
 from wetland_change.config import WaterConfig
 from wetland_change.outputs.geoparquet import to_geoparquet_bytes
 from wetland_change.outputs.provenance import footer_metadata
@@ -93,5 +96,8 @@ def write_changes(
     footer = footer_metadata(
         frame, kind="change", water=water, operation_epsg=operation_epsg
     )
-    store.write_bytes(relpath, to_geoparquet_bytes(frame, footer))
+    store.write_bytes(
+        relpath,
+        to_geoparquet_bytes(frame, {**footer, **dea_attribution_footer("change")}),
+    )
     return relpath

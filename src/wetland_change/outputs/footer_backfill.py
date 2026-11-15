@@ -6,9 +6,11 @@ store with the nine keys added, plus `footer_added_after_the_fact` naming the
 commit and date of the backfill. A file that already carries all nine keys is
 skipped, so a second run writes nothing.
 
-Rows and the `geo` and `pandas` metadata are unchanged. Each rewrite is checked
-against the original table before it is written; a mismatch fails that file and
-leaves it as it was. One failing file does not stop the others.
+Rows and the `geo` and `pandas` metadata are unchanged. Other footer keys, such
+as `dea_attribution`, are kept unchanged; this backfill does not add them. Each
+rewrite is checked against the original table and the kept keys before it is
+written; a mismatch fails that file and leaves it as it was. One failing file
+does not stop the others.
 """
 
 from __future__ import annotations
@@ -50,7 +52,25 @@ def _has_all_keys(data: bytes) -> bool:
     return all(key.encode() in metadata for key in FOOTER_KEYS)
 
 
-def _verify(old: bytes, new: bytes, footer: dict[str, str]) -> None:
+_RESERVED_KEYS = frozenset(
+    {b"geo", b"pandas", b"ARROW:schema", *(k.encode() for k in FOOTER_KEYS)}
+    | {ADDED_KEY.encode()}
+)
+
+
+def _kept_metadata(data: bytes) -> dict[str, str]:
+    """Footer entries of `data` other than the ones the rewrite sets itself."""
+    metadata = pq.read_schema(BytesIO(data)).metadata or {}
+    return {
+        key.decode(): value.decode()
+        for key, value in metadata.items()
+        if key not in _RESERVED_KEYS
+    }
+
+
+def _verify(
+    old: bytes, new: bytes, footer: dict[str, str], kept: dict[str, str]
+) -> None:
     old_table = pq.read_table(BytesIO(old))
     new_table = pq.read_table(BytesIO(new))
     if not old_table.schema.equals(new_table.schema, check_metadata=False):
@@ -65,6 +85,9 @@ def _verify(old: bytes, new: bytes, footer: dict[str, str]) -> None:
     for key in FOOTER_KEYS:
         if new_meta.get(key.encode()) != footer[key].encode():
             raise ValueError(f"footer key {key} does not match footer_metadata")
+    for key, value in kept.items():
+        if new_meta.get(key.encode()) != value.encode():
+            raise ValueError(f"footer key {key} changed")
 
 
 def _backfill_one(
@@ -84,8 +107,9 @@ def _backfill_one(
     footer = footer_metadata(
         frame, kind="observation", water=water, operation_epsg=operation_epsg
     )
-    new = to_geoparquet_bytes(frame, {**footer, ADDED_KEY: added})
-    _verify(data, new, footer)
+    kept = _kept_metadata(data)
+    new = to_geoparquet_bytes(frame, {**kept, **footer, ADDED_KEY: added})
+    _verify(data, new, footer, kept)
     if not dry_run:
         store.write_bytes(path, new, content_type=CONTENT_TYPES[".parquet"])
     return True

@@ -23,6 +23,7 @@ from tests.test_verify_copernicus import BBOX, cdse_item, es_item
 from tests.test_verify_freshness import row
 from wetland_change import cli
 from wetland_change.aoi import AoiPolygon
+from wetland_change.attribution import DEA_ATTRIBUTION_ADDED_KEY, DEA_ATTRIBUTION_KEY
 from wetland_change.cli import app
 from wetland_change.ledger import (
     MAX_ATTEMPTS,
@@ -77,6 +78,7 @@ def test_help_lists_commands() -> None:
         "build-catalogue",
         "compact-ledger",
         "add-observation-footers",
+        "add-dea-attribution",
     ):
         assert command in click.unstyle(result.output)
 
@@ -125,6 +127,7 @@ def test_backfill_help_lists_range_and_output_root() -> None:
         "build-catalogue",
         "compact-ledger",
         "add-observation-footers",
+        "add-dea-attribution",
     ],
 )
 def test_output_root_listed_on_every_command(command: str) -> None:
@@ -1298,3 +1301,105 @@ def test_add_observation_footers_output_root_overrides_config(
         "scanned 2, rewritten 2, skipped 0, failed 0"
     )
     assert _bytes_by_path(configured, configured_paths) == configured_before
+
+
+def _attribution_args(cfgfile: Path, root: Path, *extra: str) -> list[str]:
+    return [
+        "add-dea-attribution",
+        "--config",
+        str(cfgfile),
+        "--output-root",
+        str(root),
+        "--now",
+        "2026-11-15T12:00:00",
+        *extra,
+    ]
+
+
+def test_add_dea_attribution_help_lists_dry_run_and_output_root() -> None:
+    result = runner.invoke(app, ["add-dea-attribution", "--help"])
+    assert result.exit_code == 0
+    text = click.unstyle(result.output)
+    assert "--dry-run" in text
+    assert "--output-root" in text
+
+
+def test_add_dea_attribution_rewrites_old_files(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    cfgfile = _footer_setup(monkeypatch, tmp_path)
+    root = tmp_path / "root"
+    paths = _put_unfooted(root, ["S2A_A", "S2A_B"])
+    result = runner.invoke(app, _attribution_args(cfgfile, root))
+    assert result.exit_code == 0, (result.output, result.exception)
+    lines = result.stdout.splitlines()
+    assert sorted(lines[:2]) == sorted(paths)
+    assert lines[-1] == "scanned 2, rewritten 2, skipped 0, failed 0"
+    for data in _bytes_by_path(root, paths).values():
+        meta = pq.read_schema(BytesIO(data)).metadata
+        assert DEA_ATTRIBUTION_KEY.encode() in meta
+        assert json.loads(meta[DEA_ATTRIBUTION_ADDED_KEY.encode()]) == {
+            "commit": "c0ffee",
+            "date": "2026-11-15",
+        }
+
+
+def test_add_dea_attribution_second_run_skips_and_keeps_bytes(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    cfgfile = _footer_setup(monkeypatch, tmp_path)
+    root = tmp_path / "root"
+    paths = _put_unfooted(root, ["S2A_A", "S2A_B"])
+    first = runner.invoke(app, _attribution_args(cfgfile, root))
+    assert first.exit_code == 0, (first.output, first.exception)
+    before = _bytes_by_path(root, paths)
+    again = runner.invoke(app, _attribution_args(cfgfile, root))
+    assert again.exit_code == 0, (again.output, again.exception)
+    assert again.stdout.strip() == "scanned 2, rewritten 0, skipped 2, failed 0"
+    assert _bytes_by_path(root, paths) == before
+
+
+def test_add_dea_attribution_dry_run_writes_nothing(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    cfgfile = _footer_setup(monkeypatch, tmp_path)
+    root = tmp_path / "root"
+    paths = _put_unfooted(root, ["S2A_A", "S2A_B"])
+    before = _bytes_by_path(root, paths)
+    result = runner.invoke(app, _attribution_args(cfgfile, root, "--dry-run"))
+    assert result.exit_code == 0, (result.output, result.exception)
+    lines = result.stdout.splitlines()
+    assert sorted(lines[:2]) == sorted(paths)
+    assert lines[-1] == "scanned 2, would rewrite 2, skipped 0, failed 0"
+    assert _bytes_by_path(root, paths) == before
+
+
+def test_add_dea_attribution_exits_1_when_a_file_fails(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    cfgfile = _footer_setup(monkeypatch, tmp_path)
+    root = tmp_path / "root"
+    [good] = _put_unfooted(root, ["S2A_A"])
+    bad = "observations/year=2026/tile=50HLK/obs_bad.parquet"
+    OutputStore(str(root)).write_bytes(bad, b"junk")
+    result = runner.invoke(app, _attribution_args(cfgfile, root))
+    assert result.exit_code == 1, (result.output, result.exception)
+    assert result.stdout.splitlines() == [
+        good,
+        "scanned 2, rewritten 1, skipped 0, failed 1",
+    ]
+    [failure] = result.stderr.splitlines()
+    assert failure.startswith(f"{bad}\t")
+
+
+def test_add_dea_attribution_without_a_commit_writes_nothing(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    cfgfile = _footer_setup(monkeypatch, tmp_path, commit=None)
+    root = tmp_path / "root"
+    paths = _put_unfooted(root, ["S2A_A", "S2A_B"])
+    before = _bytes_by_path(root, paths)
+    result = runner.invoke(app, _attribution_args(cfgfile, root))
+    assert result.exit_code == 2
+    assert "no git commit found" in click.unstyle(result.output)
+    assert _bytes_by_path(root, paths) == before

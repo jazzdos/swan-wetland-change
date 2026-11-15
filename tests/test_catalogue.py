@@ -21,6 +21,11 @@ import stac_validator.utilities
 from stac_check.lint import Linter
 
 from tests.conftest import REQUIRED_ASSETS
+from wetland_change.attribution import (
+    CC_BY_4_LEGALCODE_URI,
+    DEA_ATTRIBUTION_KEY,
+    dea_attribution,
+)
 from wetland_change.catalogue.item import SceneItem, parse_item
 from wetland_change.ledger import (
     LedgerEntry,
@@ -39,6 +44,8 @@ from wetland_change.stac import (
     write_catalogue,
 )
 from wetland_change.stac.catalogue import (
+    DEA_LICENCE_LINK_TITLE,
+    PROVIDERS,
     ensure_publishable_base_url,
     processed_entries,
 )
@@ -303,6 +310,86 @@ def test_collection_license_and_providers(store: OutputStore) -> None:
     interval = collection["extent"]["temporal"]["interval"][0]
     assert interval[0].startswith("2026-10-01")
     assert interval[1].startswith("2026-10-26")
+
+
+def _licence_links(collection: dict[str, Any]) -> list[dict[str, Any]]:
+    return [link for link in collection["links"] if link["rel"] == "license"]
+
+
+def test_collection_carries_dea_attribution(store: OutputStore) -> None:
+    build_and_write(store, base_url=BASE_URL)
+    collection = _json(store, COLLECTION_KEY)
+    assert collection[DEA_ATTRIBUTION_KEY] == dea_attribution("collection")
+    block = collection[DEA_ATTRIBUTION_KEY]
+    assert (
+        block["copyright"] == "\u00a9 Commonwealth of Australia (Geoscience Australia)"
+    )
+    assert block["licence_uri"] == "https://creativecommons.org/licenses/by/4.0/"
+    waterbodies = [d for d in block["datasets"] if "Waterbodies" in d["name"]]
+    assert len(waterbodies) == 2
+    for dataset in waterbodies:
+        assert "https://doi.org/10.3390/rs13081437" in dataset["paper_citation"]
+
+
+def test_collection_has_one_dea_licence_link_and_keeps_core_links(
+    store: OutputStore,
+) -> None:
+    build_and_write(store, base_url=BASE_URL)
+    collection = _json(store, COLLECTION_KEY)
+    (link,) = _licence_links(collection)
+    assert link["href"] == "https://creativecommons.org/licenses/by/4.0/legalcode.en"
+    assert link["href"] == CC_BY_4_LEGALCODE_URI
+    assert link["type"] == "text/html"
+    assert link["title"] == DEA_LICENCE_LINK_TITLE
+    rels = {link["rel"] for link in collection["links"]}
+    assert {"root", "self", "parent"} <= rels
+
+
+def test_collection_license_and_providers_are_unchanged(store: OutputStore) -> None:
+    build_and_write(store, base_url=BASE_URL)
+    collection = _json(store, COLLECTION_KEY)
+    assert collection["license"] == "CC-BY-SA-4.0"
+    assert collection["providers"] == [
+        {"name": name, "roles": [str(role) for role in roles], "url": url}
+        for name, roles, url in PROVIDERS
+    ]
+    assert len(collection["providers"]) == 4
+
+
+def test_catalogue_with_attribution_validates(store: OutputStore) -> None:
+    build_and_write(store, base_url=BASE_URL)
+    _load_and_validate(store)
+
+
+def test_empty_ledger_collection_carries_attribution_and_licence_link(
+    tmp_path: Path,
+) -> None:
+    store = OutputStore(str(tmp_path))
+    build_and_write(store, base_url=BASE_URL)
+    collection = _json(store, COLLECTION_KEY)
+    assert collection[DEA_ATTRIBUTION_KEY] == dea_attribution("collection")
+    (link,) = _licence_links(collection)
+    assert link["href"] == CC_BY_4_LEGALCODE_URI
+
+
+def test_existing_collection_is_updated_on_next_build(store: OutputStore) -> None:
+    build_and_write(store, base_url=BASE_URL)
+    old = _json(store, COLLECTION_KEY)
+    del old[DEA_ATTRIBUTION_KEY]
+    old["links"] = [link for link in old["links"] if link["rel"] != "license"]
+    old_bytes = (json.dumps(old, indent=2, sort_keys=True) + "\n").encode()
+    store.write_bytes(COLLECTION_KEY, old_bytes)
+    # Model a store last written by the earlier build: the index digest for the
+    # collection is that of the old bytes, every other entry is untouched.
+    index = _json(store, INDEX_KEY)
+    index["objects"][COLLECTION_KEY] = hashlib.sha256(old_bytes).hexdigest()
+    store.write_bytes(INDEX_KEY, (json.dumps(index, indent=2) + "\n").encode())
+    assert DEA_ATTRIBUTION_KEY not in _json(store, COLLECTION_KEY)
+
+    assert build_and_write(store, base_url=BASE_URL) == [COLLECTION_KEY]
+    collection = _json(store, COLLECTION_KEY)
+    assert collection[DEA_ATTRIBUTION_KEY] == dea_attribution("collection")
+    assert len(_licence_links(collection)) == 1
 
 
 def test_rebuild_writes_nothing_and_changes_no_bytes(

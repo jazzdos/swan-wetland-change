@@ -15,6 +15,7 @@ from geopandas.testing import assert_geodataframe_equal
 
 from tests.test_geoparquet import ROWS, WATER, _row
 from tests.test_store import _s3_store, _StubS3, stub_s3  # noqa: F401
+from wetland_change.attribution import DEA_ATTRIBUTION_ADDED_KEY, DEA_ATTRIBUTION_KEY
 from wetland_change.config import WaterConfig, WaterSetting
 from wetland_change.outputs import footer_backfill
 from wetland_change.outputs.footer_backfill import (
@@ -231,6 +232,51 @@ def test_mismatch_is_refused(
     result = _run(store)
     assert result.rewritten == ()
     assert [p for p, _ in result.failed] == [path]
+    assert store.read_bytes(path) == before
+
+
+def _put_old_with_extra_keys(store: OutputStore) -> tuple[str, dict[bytes, bytes]]:
+    extras = {
+        DEA_ATTRIBUTION_KEY.encode(): b'{"licence_uri": "x", "z": 1}',
+        DEA_ATTRIBUTION_ADDED_KEY.encode(): (
+            b'{"commit": "def5678", "date": "2026-11-14"}'
+        ),
+    }
+    table = pq.read_table(BytesIO(_old_bytes(_rows(ITEM_A))))
+    table = table.replace_schema_metadata({**(table.schema.metadata or {}), **extras})
+    buf = BytesIO()
+    pq.write_table(table, buf, compression="snappy")
+    return _put_old(store, ITEM_A, buf.getvalue()), extras
+
+
+def test_other_footer_keys_are_kept_unchanged(store: OutputStore) -> None:
+    path, extras = _put_old_with_extra_keys(store)
+    result = _run(store)
+    assert result.rewritten == (path,)
+    assert result.failed == ()
+    meta = _meta(store.read_bytes(path))
+    assert all(key.encode() in meta for key in FOOTER_KEYS)
+    assert ADDED_KEY.encode() in meta
+    for key, value in extras.items():
+        assert meta[key] == value
+
+
+def test_a_dropped_other_footer_key_is_refused(
+    store: OutputStore, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    path, extras = _put_old_with_extra_keys(store)
+    before = store.read_bytes(path)
+    real: Callable[..., bytes] = footer_backfill.to_geoparquet_bytes
+    dropped = {key.decode() for key in extras}
+
+    def drop_kept(frame: gpd.GeoDataFrame, metadata: Any) -> bytes:
+        return real(frame, {k: v for k, v in metadata.items() if k not in dropped})
+
+    monkeypatch.setattr(footer_backfill, "to_geoparquet_bytes", drop_kept)
+    result = _run(store)
+    assert result.rewritten == ()
+    assert [p for p, _ in result.failed] == [path]
+    assert "footer key" in result.failed[0][1]
     assert store.read_bytes(path) == before
 
 
