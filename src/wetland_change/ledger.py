@@ -17,6 +17,13 @@ any part is deleted, because the bucket is unversioned and a delete is
 permanent. A crash between the write and the deletes therefore leaves
 duplicates, never losses, and `read_ledger` drops whole-row duplicates
 whenever a compacted file is listed beside other parts.
+
+Every ledger file with at least one acquisition time carries `copernicus_notice`
+(`wetland_change.sentinel_notice`) in its Parquet metadata, for the UTC years of
+its rows' `datetime`. A file whose rows all lack `datetime` (rejected items)
+carries none. A compacted file's notice is built fresh from its rows, never
+copied from a part. Readers ignore the metadata: `_conform` casts to
+LEDGER_SCHEMA, which drops file metadata, so `read_ledger` is unchanged.
 """
 
 from __future__ import annotations
@@ -34,6 +41,7 @@ import pyarrow.compute as pc
 import pyarrow.parquet as pq
 
 from wetland_change.catalogue.item import SceneItem
+from wetland_change.sentinel_notice import copernicus_notice_footer, utc_years
 from wetland_change.store import OutputStore
 
 MAX_ATTEMPTS = 3
@@ -181,7 +189,10 @@ def write_ledger(
         return []
     year = entries[0].processed_at.year
     buffer = BytesIO()
-    pq.write_table(entries_to_table(entries), buffer)
+    meta = copernicus_notice_footer("ledger", utc_years(e.datetime for e in entries))
+    pq.write_table(
+        entries_to_table(entries).replace_schema_metadata(meta or None), buffer
+    )
     return [store.write_bytes(ledger_path(run_id, year, part), buffer.getvalue())]
 
 
@@ -277,7 +288,8 @@ def compact_ledger(
         return []
     new_path = f"{COMPACTED_PREFIX}ledger_compact_{run_id}.parquet"
     buffer = BytesIO()
-    pq.write_table(ledger, buffer)
+    meta = copernicus_notice_footer("ledger", utc_years(ledger["datetime"].to_pylist()))
+    pq.write_table(ledger.replace_schema_metadata(meta or None), buffer)
     store.write_bytes(new_path, buffer.getvalue())
     try:
         written = pq.read_metadata(BytesIO(store.read_bytes(new_path))).num_rows

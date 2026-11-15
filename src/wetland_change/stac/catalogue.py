@@ -14,6 +14,11 @@ index is written last, so a crash leaves a stale index that causes a rewrite,
 never a skip. A missing, unreadable or malformed index counts as empty. The
 index is not linked from the catalogue, so `validate_all` never sees it, and
 its key is never in the returned list.
+
+The collection carries `copernicus_notice` for the UTC years of its items
+(term T2, docs/research/2026-11-14-public-release-licences.md), and each item
+carries the notice text for its own acquisition year, so items.parquet gains a
+`copernicus_notice` string column.
 """
 
 from __future__ import annotations
@@ -40,6 +45,12 @@ from wetland_change.attribution import (
 from wetland_change.catalogue.item import parse_timestamp
 from wetland_change.ledger import read_ledger
 from wetland_change.outputs.changes import change_path
+from wetland_change.sentinel_notice import (
+    COPERNICUS_NOTICE_KEY,
+    copernicus_notice,
+    notice_text,
+    utc_years,
+)
 from wetland_change.store import CONTENT_TYPES, OutputStore
 from wetland_change.verify.checks import report_path
 
@@ -111,12 +122,16 @@ def _item(
     geometry = source["geometry"]
     bbox = source.get("bbox") or list(shape(geometry).bounds)
     props = source["properties"]
+    when = parse_timestamp(props["datetime"])
     item = pystac.Item(
         id=source["id"],
         geometry=geometry,
         bbox=bbox,
-        datetime=parse_timestamp(props["datetime"]),
-        properties={k: props[k] for k in KEPT_PROPERTIES if k in props},
+        datetime=when,
+        properties={
+            **{k: props[k] for k in KEPT_PROPERTIES if k in props},
+            COPERNICUS_NOTICE_KEY: notice_text(utc_years([when])),
+        },
     )
     for link in source.get("links", []):
         if link.get("rel") == "self" and str(link.get("href", "")).startswith(
@@ -135,9 +150,9 @@ def _item(
                 roles=["data"],
             ),
         )
-    when, tile = entry["datetime"], entry["tile"]
-    if when is not None and tile is not None:
-        changes = change_path(when.astimezone(dt.UTC).year, tile, entry["item_id"])
+    acquired, tile = entry["datetime"], entry["tile"]
+    if acquired is not None and tile is not None:
+        changes = change_path(acquired.astimezone(dt.UTC).year, tile, entry["item_id"])
         if changes in available:
             item.add_asset(
                 "changes",
@@ -192,10 +207,13 @@ def build_catalogue(
     The collection carries `dea_attribution` and a `license` link for the CC BY
     4.0 DEA content of its assets (term T1,
     docs/research/2026-11-14-public-release-licences.md). `license` stays the
-    recorded CC-BY-SA-4.0.
+    recorded CC-BY-SA-4.0. It also carries `copernicus_notice` for the UTC years
+    of its items (term T2), absent when there are no items, and each item
+    carries the notice text for its year.
     """
     base_url = base_url.rstrip("/")
     items = [_item(entry, base_url, available) for entry in processed_entries(ledger)]
+    years = utc_years(item.datetime for item in items)
     collection = pystac.Collection(
         id=COLLECTION_ID,
         title="Swan Coastal Plain wetland change",
@@ -209,7 +227,14 @@ def build_catalogue(
             pystac.Provider(name=name, roles=roles, url=url)
             for name, roles, url in PROVIDERS
         ],
-        extra_fields={DEA_ATTRIBUTION_KEY: dea_attribution("collection")},
+        extra_fields={
+            DEA_ATTRIBUTION_KEY: dea_attribution("collection"),
+            **(
+                {COPERNICUS_NOTICE_KEY: copernicus_notice("collection", years)}
+                if years
+                else {}
+            ),
+        },
     )
     for item in items:
         collection.add_item(item)

@@ -16,7 +16,11 @@ from wetland_change import __version__
 from wetland_change.aoi import AoiPolygon, union_bbox_4326
 from wetland_change.catalogue.item import SceneItem
 from wetland_change.catalogue.search import Discovery, StacClient, discover
-from wetland_change.change import build_baseline, score_observations
+from wetland_change.change import (
+    baseline_source_years,
+    build_baseline,
+    score_observations,
+)
 from wetland_change.config import PipelineConfig, StacConfig, WaterConfig
 from wetland_change.ledger import (
     COMPACT_MIN_PARTS,
@@ -333,7 +337,10 @@ def score_changes(
     `dates=None` reads every file, and `date_range` alone excludes nothing.
 
     `water` and `operation_epsg` go into each change file's footer, so the
-    water settings recorded are those of the config at scoring time.
+    water settings recorded are those of the config at scoring time. Each file's
+    `copernicus_notice` years also take in the UTC years of the history rows its
+    baselines come from (`baseline_source_years`); scores, rows and paths do
+    not depend on them.
     """
     exclude: set[str] = set()
     if ledger is not None and dates is not None:
@@ -385,6 +392,9 @@ def score_changes(
                     store,
                     water=water,
                     operation_epsg=operation_epsg,
+                    baseline_years=baseline_source_years(
+                        history, polygon_ids=set(group["polygon_id"]), day=day
+                    ),
                 )
             )
             rows += len(group)

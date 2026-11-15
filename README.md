@@ -102,6 +102,17 @@ S3:
    modifications of each DEA dataset the file carries. The DEA Waterbodies
    entries also carry the data citation and the paper citation that the DEA
    product page asks for (`src/wetland_change/attribution.py`).
+   Observation and change files also carry `copernicus_notice`, the Copernicus
+   Sentinel data notice for modified data. It holds the notice "Contains
+   modified Copernicus Sentinel data <years>" and the years as a list, the rule
+   the years follow, the Sentinel-2 sources and the link to the legal notice
+   (`src/wetland_change/sentinel_notice.py`). The years are the UTC years of the
+   acquisition times of the file's rows, consecutive years written as a run.
+   The legal notice does not define the year, so this is the project's reading.
+   A change file's years also include those of its baseline history: the stored
+   observations of its polygons in the same calendar month on strictly earlier
+   UTC dates. Ledger files carry `copernicus_notice` in their Parquet metadata
+   for the acquisition years of their rows, and none when no row has one.
    A later run finishes any daily run that has ledger rows and no manifest,
    scoring its dates and writing its manifest with `recovered_by` set and its
    skipped tallies, watermarks, `package_version`, `config_sha256`, `runtime`,
@@ -122,10 +133,15 @@ S3:
    objects are written, so a build with nothing new writes no catalogue file.
    The collection carries the same `dea_attribution` block and a `license`
    link to the CC BY 4.0 legal code; its `license` field stays CC-BY-SA-4.0.
+   The collection also carries the `copernicus_notice` block for the
+   acquisition years of its items, and each item a `copernicus_notice`
+   property. `license` and the licence link are unchanged.
 9. Verify (`verify/`). Score the verification matrix for a run and write
    `verification/<run_id>.json` and `docs/research/verification-<run_id>.md`.
-   The verification JSON carries `dea_attribution`; the Markdown report does
-   not.
+   The verification JSON carries `dea_attribution`, then `copernicus_notice`
+   for the UTC years of the run's scenes and of the stored history up to the
+   newest of them. A run with no scene has no `copernicus_notice`. The
+   Markdown report carries neither.
 
 A failing scene is recorded in the ledger with an attempt count and retried
 on later runs; it does not abort the run.
@@ -174,7 +190,8 @@ Sentinel data terms.
 | Copernicus Data Space STAC `sentinel-2-l2a` | Discovery and freshness counts | Copernicus Sentinel data terms |
 
 The published files carry the DEA attribution described under Run stages,
-term T1 of `docs/research/2026-11-14-public-release-licences.md`.
+term T1 of `docs/research/2026-11-14-public-release-licences.md`. They also
+carry the Copernicus Sentinel data notice, term T2 of the same document.
 
 URLs, fetch dates, checksums, CRS and redistribution flags are in
 `data/SOURCES.md`. Rows derived from the Ramsar polygons inherit CC BY-SA
@@ -242,6 +259,7 @@ uv run wetland-change build-catalogue
 uv run wetland-change compact-ledger
 uv run wetland-change add-observation-footers --dry-run
 uv run wetland-change add-dea-attribution --dry-run
+uv run wetland-change add-copernicus-notice --dry-run
 uv run wetland-change freshness
 ```
 
@@ -315,6 +333,15 @@ uv run wetland-change freshness
   existing column, row, footer key and JSON field is unchanged. `--dry-run`
   lists the files it would rewrite and writes nothing. It prints `scanned N,
   rewritten M, skipped K, failed F` and exits 1 if any file fails.
+- `add-copernicus-notice` adds `copernicus_notice` and
+  `copernicus_notice_added_after_the_fact` (the git commit that ran the command
+  and the date) to each observation file, change file, ledger file and
+  `verification/<run_id>.json` that lacks `copernicus_notice`. Files that
+  already hold `copernicus_notice` are skipped, so a second run rewrites
+  nothing. Ledger files and reports with no acquisition year are skipped too.
+  Every existing column, row, footer key and JSON field is unchanged.
+  `--dry-run` lists the files it would rewrite and writes nothing. It prints
+  `scanned N, rewritten M, skipped K, failed F` and exits 1 if any file fails.
 - `freshness` checks that the newest processed item is under 7 days old and
   that ledger counts match Earth Search and Copernicus per tile over 30 days.
   It also fails (`freshness_exhausted_items`) while any item has exhausted its
@@ -418,19 +445,22 @@ output root was seeded from the 2026-11-02 backfill copy.
 
 ### Attribution backfill (operator only)
 
-Files written before st-8856 lack the DEA attribution. The operator, never an
-agent, runs the backfill before ADR 0011 step 3
+Files written before st-8856 lack the DEA attribution, and files written
+before st-d5c1 lack the Copernicus notice. The operator, never an agent, runs
+the backfill before ADR 0011 step 3
 (`docs/decisions/0011-private-output-bucket.md`). Agents do not run it,
 because the st-b6bf and st-dd0d pre-registrations in `LEARNINGS.md` bar agents
 from reading output-store objects. Run it from a checkout of main that
-includes st-8856, with AWS credentials, when no workflow is running, in this
-order with a dry run before each real run:
+includes both st-8856 and st-d5c1, with AWS credentials, when no workflow is
+running, in this order with a dry run before each real run:
 
 ```sh
 uv run wetland-change add-observation-footers --output-root s3://<bucket>/ --dry-run
 uv run wetland-change add-observation-footers --output-root s3://<bucket>/
 uv run wetland-change add-dea-attribution --output-root s3://<bucket>/ --dry-run
 uv run wetland-change add-dea-attribution --output-root s3://<bucket>/
+uv run wetland-change add-copernicus-notice --output-root s3://<bucket>/ --dry-run
+uv run wetland-change add-copernicus-notice --output-root s3://<bucket>/
 uv run wetland-change build-catalogue --output-root s3://<bucket>/
 ```
 
@@ -443,9 +473,23 @@ uv run wetland-change build-catalogue --output-root s3://<bucket>/
   `dea_attribution`. Every existing column, row, footer key and JSON field is
   unchanged, including `generated_at`. It prints only paths and counts, and a
   second run rewrites nothing.
-- `build-catalogue` rewrites the STAC collection. The scheduled pipeline does
-  the same on its next run once main is pushed, and files written after that
-  carry the attribution from the start.
+- `add-copernicus-notice` adds `copernicus_notice` and
+  `copernicus_notice_added_after_the_fact` (commit and date) to every
+  observation file, change file, ledger file and `verification/<run_id>.json`
+  that lacks `copernicus_notice`. A change file's years include its baseline
+  history, read from the observation files. Ledger files and reports with no
+  acquisition year are skipped. Every existing column, row, footer key and JSON
+  field is unchanged, including `generated_at`. It prints only paths and
+  counts, and a second run rewrites nothing.
+- The three rewrite commands are independent: each adds only its own keys,
+  skips a file that already holds its own block and keeps every other key. They
+  can therefore run in any order, and a file that already has the DEA
+  attribution, for example from an earlier run of `add-dea-attribution`, gains
+  only the Copernicus notice. The listed order is recommended.
+- `build-catalogue` rewrites the collection and every item, which carry the
+  Copernicus notice from then on. The scheduled pipeline does the same on its
+  next run once main is pushed, and files written after that carry the
+  attribution and the notice from the start.
 - A failed file exits 1 and is left unchanged; rerun after fixing the cause.
 
 ## Limitations

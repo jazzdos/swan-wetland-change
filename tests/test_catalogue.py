@@ -13,6 +13,7 @@ from typing import Any
 from urllib.parse import urlparse
 
 import duckdb
+import pyarrow.parquet as pq
 import pystac
 import pystac.validation
 import pystac.validation.local_validator
@@ -36,6 +37,10 @@ from wetland_change.ledger import (
 )
 from wetland_change.outputs.changes import change_path
 from wetland_change.outputs.geoparquet import observation_path
+from wetland_change.sentinel_notice import (
+    COPERNICUS_NOTICE_KEY,
+    copernicus_notice,
+)
 from wetland_change.stac import (
     StoreStacIO,
     build_and_write,
@@ -390,6 +395,84 @@ def test_existing_collection_is_updated_on_next_build(store: OutputStore) -> Non
     collection = _json(store, COLLECTION_KEY)
     assert collection[DEA_ATTRIBUTION_KEY] == dea_attribution("collection")
     assert len(_licence_links(collection)) == 1
+
+
+NOTICE_2026 = "Contains modified Copernicus Sentinel data 2026"
+
+
+def _scene_in_year(base: dict[str, Any], item_id: str, year: int) -> SceneItem:
+    item = copy.deepcopy(base)
+    item["id"] = item_id
+    when = datetime(year, 10, 5, 2, 26, 39, tzinfo=UTC)
+    item["properties"]["datetime"] = when.strftime("%Y-%m-%dT%H:%M:%S.000000Z")
+    return parse_item(
+        item, collection="sentinel-2-c1-l2a", required_assets=REQUIRED_ASSETS
+    )
+
+
+def test_collection_carries_copernicus_notice(store: OutputStore) -> None:
+    build_and_write(store, base_url=BASE_URL)
+    collection = _json(store, COLLECTION_KEY)
+    assert collection[COPERNICUS_NOTICE_KEY] == copernicus_notice("collection", [2026])
+    assert collection[COPERNICUS_NOTICE_KEY]["notice"] == NOTICE_2026
+    assert collection[DEA_ATTRIBUTION_KEY] == dea_attribution("collection")
+    assert collection["license"] == "CC-BY-SA-4.0"
+    assert len(_licence_links(collection)) == 1
+
+
+def test_each_item_carries_the_notice_text(store: OutputStore) -> None:
+    build_and_write(store, base_url=BASE_URL)
+    for item_id in SUCCEEDED_IDS:
+        props = _item_json(store, item_id)["properties"]
+        assert props[COPERNICUS_NOTICE_KEY] == NOTICE_2026
+        assert props["grid:code"] == "MGRS-50HLK"
+
+
+def test_items_parquet_has_the_notice_column(
+    store: OutputStore, tmp_path: Path
+) -> None:
+    build_and_write(store, base_url=BASE_URL)
+    local = tmp_path / "items.parquet"
+    local.write_bytes(store.read_bytes(PARQUET_KEY))
+    table = pq.read_table(local)
+    assert table.column(COPERNICUS_NOTICE_KEY).to_pylist() == [NOTICE_2026] * len(
+        SUCCEEDED_IDS
+    )
+
+
+def test_notice_years_follow_the_items(
+    store: OutputStore, fixture_item: dict[str, Any]
+) -> None:
+    old_id = "S2C_T50HLK_20251005T022351_L2A"
+    scene = _scene_in_year(fixture_item, old_id, 2025)
+    write_ledger([_succeeded(scene, "r3", T0 + timedelta(hours=2))], store, run_id="r3")
+    build_and_write(store, base_url=BASE_URL)
+    block = _json(store, COLLECTION_KEY)[COPERNICUS_NOTICE_KEY]
+    assert block == copernicus_notice("collection", [2025, 2026])
+    assert block["notice"] == "Contains modified Copernicus Sentinel data 2025-2026"
+    assert (
+        _item_json(store, old_id)["properties"][COPERNICUS_NOTICE_KEY]
+        == "Contains modified Copernicus Sentinel data 2025"
+    )
+    assert (
+        _item_json(store, SUCCEEDED_IDS[0])["properties"][COPERNICUS_NOTICE_KEY]
+        == NOTICE_2026
+    )
+
+
+def test_empty_ledger_collection_has_no_copernicus_notice(tmp_path: Path) -> None:
+    store = OutputStore(str(tmp_path))
+    build_and_write(store, base_url=BASE_URL)
+    collection = _json(store, COLLECTION_KEY)
+    assert COPERNICUS_NOTICE_KEY not in collection
+    assert collection[DEA_ATTRIBUTION_KEY] == dea_attribution("collection")
+    assert len(_licence_links(collection)) == 1
+
+
+def test_catalogue_with_copernicus_notice_validates(store: OutputStore) -> None:
+    build_and_write(store, base_url=BASE_URL)
+    assert COPERNICUS_NOTICE_KEY in _json(store, COLLECTION_KEY)
+    _load_and_validate(store)
 
 
 def test_rebuild_writes_nothing_and_changes_no_bytes(

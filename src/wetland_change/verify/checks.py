@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import json
 import math
-from collections.abc import Iterable
+from collections.abc import Collection, Iterable
 from dataclasses import asdict, dataclass, field
 from datetime import UTC, datetime
 from pathlib import Path
@@ -12,6 +12,7 @@ from typing import Any
 
 from wetland_change.attribution import DEA_ATTRIBUTION_KEY, dea_attribution
 from wetland_change.runtime import Environment, capture_environment
+from wetland_change.sentinel_notice import COPERNICUS_NOTICE_KEY, copernicus_notice
 from wetland_change.store import OutputStore
 
 
@@ -193,6 +194,7 @@ def write_report(
     docs_dir: Path | None,
     generated_at: datetime | None = None,
     environment: Environment | None = None,
+    copernicus_years: Collection[int] = (),
 ) -> tuple[str, Path | None]:
     """JSON beside the outputs; Markdown under docs/research when given.
 
@@ -205,7 +207,9 @@ def write_report(
 
     The JSON carries `dea_attribution`, the CC BY 4.0 attribution for the
     Geoscience Australia DEA data its values derive from
-    (src/wetland_change/attribution.py). The Markdown report does not.
+    (src/wetland_change/attribution.py). It also carries `copernicus_notice`
+    for `copernicus_years` (src/wetland_change/sentinel_notice.py), absent when
+    there are none. The Markdown report carries neither block.
     """
     from wetland_change.verify.layers import advisory_summaries  # layers imports Check
     from wetland_change.verify.matrix import matrix_status  # matrix imports Check
@@ -234,6 +238,10 @@ def write_report(
         "checks": [_finite(asdict(c)) for c in checks],
         DEA_ATTRIBUTION_KEY: dea_attribution("verification"),
     }
+    if copernicus_years:
+        payload[COPERNICUS_NOTICE_KEY] = copernicus_notice(
+            "verification", copernicus_years
+        )
     json_path = store.write_bytes(
         report_path(run_id),
         json.dumps(payload, indent=2, default=str, allow_nan=False).encode(),
