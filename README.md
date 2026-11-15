@@ -375,12 +375,15 @@ WHERE valid_fraction > 0.8
 ORDER BY polygon_id, datetime
 ```
 
-The S3 bucket is private, so DuckDB needs AWS credentials. The
+The S3 bucket holds the same layout. Public read of the bucket is decided in
+`docs/decisions/0016-public-read-output-bucket.md`, which supersedes ADR 0011,
+and takes effect at the operator's apply of `infra/` (`infra/README.md`,
+"Applying public read"). Until that apply the bucket is private, so DuckDB
+needs AWS credentials and a request without them is denied. The
 `credential_chain` secret below uses the standard AWS chain: environment
 variables, a shared profile that holds keys, SSO, or an assumed role. The
 identity needs `s3:ListBucket` on the bucket and `s3:GetObject` on its
-objects, granted in IAM outside this repository's module. A request without
-credentials is denied.
+objects, granted in IAM outside this repository's module.
 
 A profile created by `aws login` (it holds `login_session` in `~/.aws/config`,
 and `aws configure list` shows its key type as `login`) is not read by the
@@ -410,16 +413,41 @@ WHERE valid_fraction > 0.8
 ORDER BY polygon_id, datetime
 ```
 
-Change rows use the same layout under `changes/` and are read the same way
-with a `changes/` glob.
+After the operator's apply, a reader with no AWS credentials can run the same
+query with an anonymous secret, which names the region and nothing else. The
+bucket policy allows anonymous listing only under `observations/`, so an
+anonymous glob rooted anywhere else is denied. Before the apply this query is
+denied.
+
+```sql
+INSTALL httpfs;
+LOAD httpfs;
+CREATE OR REPLACE SECRET anonymous_outputs (TYPE s3, PROVIDER config, REGION '<aws_region>');
+
+SELECT year, tile, site, polygon_id, datetime, water_ha_index, water_ha_scl, ndvi_median
+FROM read_parquet('s3://<bucket>/observations/*/*/*.parquet', hive_partitioning = true)
+WHERE valid_fraction > 0.8
+ORDER BY polygon_id, datetime
+```
+
+Change rows use the same layout under `changes/`. With credentials they are
+read the same way with a `changes/` glob. After the operator's apply an
+anonymous reader can read a change file by its exact object key but cannot
+glob `changes/`.
 
 ## Deployment
 
-The AWS resources (a private S3 bucket, the GitHub OIDC provider and a
-pipeline role) are an OpenTofu/Terraform module in `infra/`. The bucket is
-private until the owner has reviewed the outputs
-(`docs/decisions/0011-private-output-bucket.md`). `infra/README.md` gives the
-apply steps and the role's trust conditions.
+The AWS resources (an S3 bucket, the GitHub OIDC provider and a pipeline
+role) are an OpenTofu/Terraform module in `infra/`. The bucket has been
+private since it was applied on 2026-11-06
+(`docs/decisions/0011-private-output-bucket.md`). Jarrod approved public
+access on 2026-11-14, recorded in
+`docs/decisions/0016-public-read-output-bucket.md`, which supersedes 0011:
+the module grants anonymous `s3:GetObject` on objects, anonymous
+`s3:ListBucket` under `observations/` only, and CORS for GET and HEAD.
+Public read takes effect at the operator's apply, after the preconditions
+that ADR 0016 lists; until then readers need AWS credentials.
+`infra/README.md` gives the apply steps and the role's trust conditions.
 
 After applying, set these repository variables (Settings, Secrets and
 variables, Actions, Variables). `.github/workflows/pipeline.yml` and
@@ -553,15 +581,24 @@ As of this commit:
 - No live STAC check is implemented: `verify` reports the STAC row as not-run
   with the standing test `tests/test_catalogue.py` (`src/wetland_change/verify/matrix.py`).
   The pipeline builds the catalogue each run and that step succeeded. The
-  design's stac-browser on GitHub Pages is not used while the bucket is
-  private, so design success criteria 2 and 3 apply to credentialed readers
-  (ADR 0011).
+  design's stac-browser is not used yet: anonymous read and CORS for GET and
+  HEAD take effect at the operator's apply (ADR 0016), and until then design
+  success criteria 2 and 3 apply to credentialed readers.
+- Public read is configured but not applied. ADR 0016 takes effect at the
+  operator's apply, after st-22f1 and its backfill job; until then the bucket
+  is private and readers need AWS credentials. After the apply every object
+  is readable by key, anonymous listing is limited to `observations/`, and
+  anonymous requests are billed to the bucket owner.
 - The credentialed S3 query in "Querying with DuckDB" was run against the
   project bucket on 2026-11-14 on merged `main` (a0693ba): both tests in
   `tests/test_live_private_outputs.py` passed with credentials exported to the
-  environment. A profile created by `aws login` is not read by DuckDB's
-  credential chain; the route (export the credentials to the environment) is
-  given under "Querying with DuckDB", and the two live tests name the
+  environment. st-1a5f replaced that module: its credentialed test is now
+  `tests/test_live_credentialed_read.py`, unchanged, and the anonymous checks
+  are `tests/test_live_anonymous_read.py`, which is marked
+  `xfail(strict=True)` until the operator's apply and has not been run. A
+  profile created by `aws login` is not read by DuckDB's credential chain;
+  the route (export the credentials to the environment) is given under
+  "Querying with DuckDB", and the credentialed live test names the
   credential source and that route when DuckDB cannot build the secret
   (st-b49e).
 - Water thresholds are calibrated against DEA Sentinel-2 Water Observations
@@ -603,14 +640,15 @@ As of this commit:
   failed verify. The local figure was 139 to 152 s per scene
   (`docs/research/2026-11-03-backfill-hypotheses.md`). Spike 6 (catalogue in
   stac-browser) and the anonymous half of spike 7 (DuckDB over S3 with no
-  credentials) stay blocked while the bucket is private (ADR 0011). Not
-  measured: per-request S3 latency and peak memory on the runner.
+  credentials) stay blocked until the operator's apply (ADR 0016), and agents
+  do not read observations until the st-b6bf and st-dd0d decision files are
+  committed (`LEARNINGS.md`). Not measured: per-request S3 latency and peak memory on the runner.
 - Not exercised on the applied bucket or in the logs read: the OIDC session
   length (st-a919, 10800 s), which has only carried a 26 minute job; the
   bucket lifecycle rule and object content types (st-4fa1), which no recorded
   check has read back from the bucket; and ledger compaction (st-b101), which
   the logs of run 43072355326 do not mention. Compaction deletes ledger parts
-  from an unversioned private bucket. These were tested on local stores and
+  from an unversioned bucket. These were tested on local stores and
   stub servers only.
 - S3 deletes use a botocore `DeleteObject`, so they no longer re-create the
   parent directory marker that pyarrow's `delete_file` wrote (st-c667, merged;

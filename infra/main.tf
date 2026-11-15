@@ -2,15 +2,18 @@ resource "aws_s3_bucket" "outputs" {
   bucket = var.bucket_name
 }
 
-# The bucket is private: all four public access blocks are on. Reopening
-# public access is documented in docs/decisions/0011-private-output-bucket.md.
+# Anonymous GetObject needs a bucket policy that is allowed to be public, so
+# only the two policy-related blocks are off. The ACL blocks stay on: no object
+# or bucket ACL can make anything public. The decision is ADR 0016
+# (docs/decisions/0016-public-read-output-bucket.md, which supersedes 0011).
+# Public read takes effect when the operator applies this module.
 resource "aws_s3_bucket_public_access_block" "outputs" {
   bucket = aws_s3_bucket.outputs.id
 
   block_public_acls       = true
   ignore_public_acls      = true
-  block_public_policy     = true
-  restrict_public_buckets = true
+  block_public_policy     = false
+  restrict_public_buckets = false
 }
 
 resource "aws_s3_bucket_ownership_controls" "outputs" {
@@ -18,6 +21,65 @@ resource "aws_s3_bucket_ownership_controls" "outputs" {
 
   rule {
     object_ownership = "BucketOwnerEnforced"
+  }
+}
+
+# DuckDB cannot expand an s3:// glob without listing the bucket, so anonymous
+# callers also get s3:ListBucket, limited by the s3:prefix condition to the
+# observations/ prefix. The bucket root and every other prefix (changes/,
+# ledger/, runs/, stac/, verification/) stay unlistable. Objects remain
+# readable by key through the GetObject statement. There is no public put or
+# delete. Anonymous requests are billed to the bucket owner.
+data "aws_iam_policy_document" "public_read" {
+  statement {
+    sid       = "PublicReadObjects"
+    effect    = "Allow"
+    actions   = ["s3:GetObject"]
+    resources = ["${aws_s3_bucket.outputs.arn}/*"]
+
+    principals {
+      type        = "*"
+      identifiers = ["*"]
+    }
+  }
+
+  statement {
+    sid       = "PublicListObservationPrefix"
+    effect    = "Allow"
+    actions   = ["s3:ListBucket"]
+    resources = [aws_s3_bucket.outputs.arn]
+
+    principals {
+      type        = "*"
+      identifiers = ["*"]
+    }
+
+    condition {
+      test     = "StringLike"
+      variable = "s3:prefix"
+      values   = ["observations/*"]
+    }
+  }
+}
+
+resource "aws_s3_bucket_policy" "public_read" {
+  bucket = aws_s3_bucket.outputs.id
+  policy = data.aws_iam_policy_document.public_read.json
+
+  depends_on = [aws_s3_bucket_public_access_block.outputs]
+}
+
+# GET and HEAD from any origin, so a browser viewer such as stac-browser can
+# read the STAC catalogue.
+resource "aws_s3_bucket_cors_configuration" "outputs" {
+  bucket = aws_s3_bucket.outputs.id
+
+  cors_rule {
+    allowed_methods = ["GET", "HEAD"]
+    allowed_origins = ["*"]
+    allowed_headers = ["*"]
+    expose_headers  = ["ETag", "Content-Length", "Content-Range", "Accept-Ranges"]
+    max_age_seconds = 3600
   }
 }
 

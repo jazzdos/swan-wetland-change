@@ -1,5 +1,5 @@
 variable "bucket_name" {
-  description = "Globally unique name of the private S3 bucket that holds pipeline outputs and the STAC catalogue."
+  description = "Globally unique name of the S3 bucket that holds pipeline outputs and the STAC catalogue. Anonymous read of its objects, and anonymous listing under observations/, take effect when the operator applies this module (ADR 0016); until then reads need AWS credentials."
   type        = string
 }
 

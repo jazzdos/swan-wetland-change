@@ -1,7 +1,7 @@
 # 0011 Private output bucket
 
-Status: accepted, 2026-11-06, on Jarrod's direction; reversible by a
-superseding ADR.
+Status: accepted, 2026-11-06, on Jarrod's direction; superseded by 0016
+(`docs/decisions/0016-public-read-output-bucket.md`) on 2026-11-15.
 Supersedes: the design's public-read bucket and stac-browser on GitHub Pages
 (`docs/plans/2026-10-29-swan-wetland-change-design.md`), and the anonymous
 listing of `observations/` added by st-58e9.

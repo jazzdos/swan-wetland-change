@@ -128,23 +128,79 @@ def test_readme_duckdb_query_returns_rows(
     assert len(rows) >= 1
 
 
-def test_readme_s3_query_uses_credential_chain() -> None:
+def _query_blocks() -> list[str]:
     section = _section(_readme(), "Querying with DuckDB")
-    blocks = re.findall(r"```sql\n(.*?)```", section, flags=re.DOTALL)
-    assert len(blocks) >= 2, "expected a local and a credentialed S3 sql block"
-    block = blocks[1]
+    return re.findall(r"```sql\n(.*?)```", section, flags=re.DOTALL)
+
+
+def _s3_block(provider: str) -> str:
+    blocks = [
+        block
+        for block in _query_blocks()
+        if re.search(rf"provider\s+{provider}\b", block.lower())
+    ]
+    assert len(blocks) == 1, f"expected one S3 sql block with PROVIDER {provider}"
+    return blocks[0]
+
+
+def _assert_observations_query(block: str) -> None:
     assert "LOAD httpfs" in block
     assert "hive_partitioning = true" in block
-    lowered = block.lower()
-    assert re.search(r"provider\s+credential_chain", lowered)
-    assert "type s3" in lowered
-    for forbidden in ("key_id", "secret_key", "session_token", "provider config"):
-        assert forbidden not in lowered, forbidden
+    assert "type s3" in block.lower()
     glob = re.search(r"s3://[^/'\s]+/([^/'\s*]+)/", block)
     assert glob, "no s3://<bucket>/<first-segment>/ glob in the S3 sql block"
     assert glob.group(1) == "observations"
-    prose = re.sub(r"```sql\n.*?```", "", section, flags=re.DOTALL)
-    assert "credential" in prose.lower()
+
+
+def test_readme_credentialed_s3_query_uses_credential_chain() -> None:
+    block = _s3_block("credential_chain")
+    _assert_observations_query(block)
+    lowered = block.lower()
+    for forbidden in ("key_id", "secret_key", "session_token", "provider config"):
+        assert forbidden not in lowered, forbidden
+
+
+def test_readme_anonymous_s3_query_names_only_the_region() -> None:
+    block = _s3_block("config")
+    _assert_observations_query(block)
+    lowered = block.lower()
+    assert "region '<aws_region>'" in lowered
+    for forbidden in (
+        "key_id",
+        "secret_key",
+        "session_token",
+        "credential_chain",
+        "load aws",
+    ):
+        assert forbidden not in lowered, forbidden
+
+
+def test_readme_ties_anonymous_read_to_the_operator_apply() -> None:
+    blocks = _query_blocks()
+    credentialed = blocks.index(_s3_block("credential_chain"))
+    assert credentialed < blocks.index(_s3_block("config"))
+    section = _section(_readme(), "Querying with DuckDB")
+    prose = re.sub(r"```sql\n.*?```", "", section, flags=re.DOTALL).lower()
+    for needed in ("operator's apply", "credential", "0016-public-read-output-bucket"):
+        assert needed in prose, needed
+    deployment = _section(_readme(), "Deployment").lower()
+    assert "0016-public-read-output-bucket" in deployment
+    assert "operator's apply" in deployment
+    assert "operator's apply" in _section(_readme(), "Limitations").lower()
+
+
+def test_readme_does_not_call_the_bucket_public_before_the_apply() -> None:
+    text = _readme().lower()
+    for forbidden in (
+        "bucket is public",
+        "public bucket",
+        "public-read bucket",
+        "public s3",
+        "intentionally public",
+        "is publicly readable",
+        "public_outputs",
+    ):
+        assert forbidden not in text, forbidden
 
 
 @pytest.mark.parametrize(
@@ -161,20 +217,6 @@ def test_readme_documents_aws_login_profile_route(needle: str) -> None:
     prose = re.sub(r"```sql\n.*?```", "", section, flags=re.DOTALL)
     assert needle in section
     assert needle in prose
-
-
-def test_readme_describes_a_private_bucket() -> None:
-    text = _readme().lower()
-    for forbidden in (
-        "public-read",
-        "public bucket",
-        "public s3",
-        "cors",
-        "intentionally public",
-        "public_outputs",
-    ):
-        assert forbidden not in text, forbidden
-    assert "0011-private-output-bucket" in text
 
 
 def _running_locally_subcommands() -> list[str]:
