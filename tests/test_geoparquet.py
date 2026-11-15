@@ -29,6 +29,7 @@ from wetland_change.outputs.geoparquet import (
     write_observations,
 )
 from wetland_change.outputs.provenance import FOOTER_KEYS, footer_metadata
+from wetland_change.sentinel_notice import copernicus_notice
 from wetland_change.stats import ObservationRow
 from wetland_change.store import OutputStore
 
@@ -384,4 +385,13 @@ def test_footer_carries_the_dea_attribution_for_observations(
         for key in FOOTER_KEYS:
             assert footer[key.encode()] == expected[key].encode()
         keys = {k.decode() for k in footer} - {"geo", "pandas", "ARROW:schema"}
-        assert keys == {*FOOTER_KEYS, "dea_attribution"}
+        assert keys == {*FOOTER_KEYS, "dea_attribution", "copernicus_notice"}
+
+
+def test_footer_carries_the_copernicus_notice_for_observations(
+    tmp_path: Path,
+) -> None:
+    for footer in _footers(_written(tmp_path, ROWS)):
+        parsed = json.loads(footer[b"copernicus_notice"])
+        assert parsed == copernicus_notice("observation", [2026])
+        assert parsed["notice"] == "Contains modified Copernicus Sentinel data 2026"

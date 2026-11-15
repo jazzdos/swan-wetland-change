@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import dataclasses
 import io
+import json
 import math
 from datetime import UTC, date, datetime, timedelta, timezone
 from pathlib import Path
@@ -41,6 +42,7 @@ from wetland_change.ledger import (
     watermark,
     write_ledger,
 )
+from wetland_change.sentinel_notice import COPERNICUS_NOTICE_KEY, copernicus_notice
 from wetland_change.store import OutputStore
 
 T0 = datetime(2026, 10, 28, 10, 0, tzinfo=UTC)
@@ -1023,3 +1025,104 @@ def test_rejected_keys_excludes_null_updated_rows(tmp_path: Path) -> None:
     store = OutputStore(str(tmp_path))
     write_ledger([_rejected("x", "r1", 0, updated=None)], store, run_id="r1")
     assert rejected_keys(read_ledger(store)) == set()
+
+
+_NOTICE_KEY = COPERNICUS_NOTICE_KEY.encode()
+
+
+def _file_notice(store: OutputStore, path: str) -> dict[str, Any] | None:
+    metadata = pq.read_schema(io.BytesIO(store.read_bytes(path))).metadata or {}
+    raw = metadata.get(_NOTICE_KEY)
+    return None if raw is None else json.loads(raw)
+
+
+def _two_year_entries(scene: SceneItem) -> list[LedgerEntry]:
+    return [
+        _one(scene, "in-2026"),
+        _one(scene, "in-2025", datetime=datetime(2025, 12, 31, 23, tzinfo=UTC)),
+    ]
+
+
+def test_part_carries_the_copernicus_notice_for_its_acquisition_years(
+    fixture_scene: SceneItem, tmp_path: Path
+) -> None:
+    store = OutputStore(str(tmp_path))
+    (path,) = write_ledger(_two_year_entries(fixture_scene), store, run_id="r1")
+    notice = _file_notice(store, path)
+    assert notice == copernicus_notice("ledger", [2025, 2026])
+    assert notice is not None
+    assert notice["notice"] == "Contains modified Copernicus Sentinel data 2025-2026"
+
+
+def test_part_of_rejected_entries_has_no_notice(tmp_path: Path) -> None:
+    store = OutputStore(str(tmp_path))
+    entries = [_rejected("x", "r1", 0), _rejected("y", "r1", 1)]
+    (path,) = write_ledger(entries, store, run_id="r1")
+    metadata = pq.read_schema(io.BytesIO(store.read_bytes(path))).metadata or {}
+    assert _NOTICE_KEY not in metadata
+
+
+def test_read_ledger_ignores_the_notice(
+    fixture_scene: SceneItem, tmp_path: Path
+) -> None:
+    store = OutputStore(str(tmp_path))
+    entries = _two_year_entries(fixture_scene)
+    write_ledger(entries, store, run_id="r1")
+    table = read_ledger(store)
+    assert table.schema.equals(LEDGER_SCHEMA)
+    assert table.equals(entries_to_table(entries))
+
+
+def test_same_entries_write_identical_bytes(
+    fixture_scene: SceneItem, tmp_path: Path
+) -> None:
+    entries = _two_year_entries(fixture_scene)
+    a, b = OutputStore(str(tmp_path / "a")), OutputStore(str(tmp_path / "b"))
+    (path_a,) = write_ledger(entries, a, run_id="r1")
+    (path_b,) = write_ledger(entries, b, run_id="r1")
+    assert a.read_bytes(path_a) == b.read_bytes(path_b)
+
+
+def test_compacted_file_carries_the_union_of_part_years(
+    fixture_scene: SceneItem, tmp_path: Path
+) -> None:
+    store = OutputStore(str(tmp_path))
+    write_ledger(
+        [_one(fixture_scene, "a", datetime=datetime(2024, 5, 1, tzinfo=UTC))],
+        store,
+        run_id="ra",
+    )
+    write_ledger([_one(fixture_scene, "b", hours=1)], store, run_id="rb")
+    write_ledger([_rejected("c", "rc", 2)], store, run_id="rc")
+    ledger, paths = read_ledger_parts(store)
+    assert _file_notice(store, paths[0]) is not None
+    (new,) = compact_ledger(store, ledger, paths, run_id="c1", min_parts=1)
+    assert _file_notice(store, new) == copernicus_notice("ledger", [2024, 2026])
+    after = read_ledger(store)
+    assert after.schema.equals(LEDGER_SCHEMA)
+    assert after.equals(ledger)
+
+
+def test_compaction_sets_the_notice_fresh_from_the_rows(
+    fixture_scene: SceneItem, tmp_path: Path
+) -> None:
+    """A stale notice on a part never leaks into the compacted file."""
+    store = OutputStore(str(tmp_path))
+    entry = _one(fixture_scene, "a")
+    buffer = io.BytesIO()
+    stale = entries_to_table([entry]).replace_schema_metadata(
+        {COPERNICUS_NOTICE_KEY: json.dumps({"notice": "stale", "years": [1999]})}
+    )
+    pq.write_table(stale, buffer)
+    store.write_bytes("ledger/year=2026/ledger_old.parquet", buffer.getvalue())
+    ledger, paths = read_ledger_parts(store)
+    (new,) = compact_ledger(store, ledger, paths, run_id="c1", min_parts=1)
+    assert _file_notice(store, new) == copernicus_notice("ledger", [2026])
+
+
+def test_compacted_file_of_rejected_rows_has_no_notice(tmp_path: Path) -> None:
+    store = OutputStore(str(tmp_path))
+    write_ledger([_rejected("x", "r1", 0)], store, run_id="r1")
+    ledger, paths = read_ledger_parts(store)
+    (new,) = compact_ledger(store, ledger, paths, run_id="c1", min_parts=1)
+    assert _file_notice(store, new) is None

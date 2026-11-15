@@ -10,8 +10,10 @@ import numpy as np
 from tests.conftest import FIXTURE_DIR
 from wetland_change.attribution import dea_attribution
 from wetland_change.catalogue.item import SceneItem
+from wetland_change.ledger import LedgerEntry, entries_to_table
 from wetland_change.manifest import manifest_path
 from wetland_change.runtime import Environment, capture_environment
+from wetland_change.sentinel_notice import copernicus_notice
 from wetland_change.store import OutputStore
 from wetland_change.verify.checks import Check, write_report
 from wetland_change.verify.pixels import pc_item_id
@@ -247,6 +249,86 @@ def test_write_report_carries_the_dea_attribution_last(tmp_path: Path) -> None:
     assert "dea_attribution" not in md_path.read_text()
 
 
+_REPORT_KEYS = [
+    "run_id",
+    "generated_at",
+    "n_scored",
+    "n_skipped",
+    "n_errored",
+    "n_warned",
+    "n_advisory",
+    "all_passed",
+    "matrix",
+    "advisory",
+    "runtime",
+    "uv_lock_sha256",
+    "git_commit",
+    "checks",
+    "dea_attribution",
+]
+
+
+def test_write_report_carries_the_copernicus_notice_last(tmp_path: Path) -> None:
+    store = OutputStore(str(tmp_path / "out"))
+    json_path, md_path = write_report(
+        [Check("a", True, 1.0, 1.0, "r")],
+        store=store,
+        run_id="notice",
+        docs_dir=tmp_path / "docs",
+        environment=_runtime(),
+        copernicus_years=(2026, 2025),
+    )
+    payload = json.loads(store.read_bytes(json_path))
+    assert payload["copernicus_notice"] == copernicus_notice(
+        "verification", [2025, 2026]
+    )
+    assert (
+        payload["copernicus_notice"]["notice"]
+        == "Contains modified Copernicus Sentinel data 2025-2026"
+    )
+    assert list(payload) == [*_REPORT_KEYS, "copernicus_notice"]
+    assert md_path is not None
+    assert "copernicus_notice" not in md_path.read_text()
+
+
+def test_write_report_without_years_carries_no_copernicus_notice(
+    tmp_path: Path,
+) -> None:
+    store = OutputStore(str(tmp_path / "out"))
+    json_path, _ = write_report(
+        [Check("a", True, 1.0, 1.0, "r")],
+        store=store,
+        run_id="no-notice",
+        docs_dir=None,
+        environment=_runtime(),
+    )
+    payload = json.loads(store.read_bytes(json_path))
+    assert list(payload) == _REPORT_KEYS
+
+
+def test_the_markdown_report_is_identical_with_and_without_the_notice(
+    tmp_path: Path,
+) -> None:
+    checks = [Check("a", True, 1.0, 1.0, "r")]
+    when = datetime(2026, 11, 1, tzinfo=UTC)
+    env = _runtime()
+    texts = []
+    for name, years in (("plain", ()), ("noticed", (2025, 2026))):
+        _, md_path = write_report(
+            checks,
+            store=OutputStore(str(tmp_path / name / "out")),
+            run_id="same",
+            docs_dir=tmp_path / name / "docs",
+            generated_at=when,
+            environment=env,
+            copernicus_years=years,
+        )
+        assert md_path is not None
+        texts.append(md_path.read_text())
+    assert texts[0] == texts[1]
+    assert "copernicus_notice" not in texts[1]
+
+
 def test_write_report_with_no_checks_still_carries_the_dea_attribution(
     tmp_path: Path,
 ) -> None:
@@ -348,6 +430,7 @@ from wetland_change.verify.run import (  # noqa: E402
     latest_run_id,
     scenes_for_run,
     stored_ndvi,
+    verification_years,
     verify_run,
 )
 from wetland_change.verify.scl import scl_checks  # noqa: E402
@@ -1025,8 +1108,92 @@ def test_verify_run_with_injected_dependencies(
     assert lookups == [fixture_item["id"]]
     report = json.loads(store.read_bytes(f"verification/{run_id}.json"))
     assert report["n_scored"] > 0
+    assert report["copernicus_notice"]["years"] == [2026]
     wo = next(c for c in checks if c.name == "water_vs_dea_s2_wo")
     assert wo.passed is not None and wo.detail["polygon_id"] == "ramsar-52"
+
+
+def _ledger_entry(
+    item_id: str,
+    *,
+    when: datetime | None,
+    status: str = "succeeded",
+    run_id: str = "r1",
+    path: str | None = "observations/x.parquet",
+    processed_at: datetime = datetime(2026, 11, 1, tzinfo=UTC),
+) -> LedgerEntry:
+    return LedgerEntry(
+        item_id=item_id,
+        collection="sentinel-2-c1-l2a",
+        datetime=when,
+        created=None,
+        updated=None,
+        tile=None,
+        cloud_cover=None,
+        product_uri=None,
+        status=status,
+        attempts=1,
+        error=None,
+        run_id=run_id,
+        processed_at=processed_at,
+        n_rows=0,
+        observation_path=path if status == "succeeded" else None,
+        source_item=None,
+    )
+
+
+def test_verification_years_cover_the_run_and_the_history_it_reads() -> None:
+    ledger = entries_to_table(
+        [
+            _ledger_entry("now", when=datetime(2026, 10, 27, 2, tzinfo=UTC)),
+            _ledger_entry(
+                "older",
+                when=datetime(2025, 6, 1, tzinfo=UTC),
+                run_id="r0",
+                processed_at=datetime(2026, 10, 1, tzinfo=UTC),
+            ),
+        ]
+    )
+    assert verification_years(ledger, "r1") == (2025, 2026)
+
+
+def test_verification_years_ignore_later_failed_and_rejected_items() -> None:
+    ledger = entries_to_table(
+        [
+            _ledger_entry("now", when=datetime(2026, 10, 27, tzinfo=UTC)),
+            _ledger_entry(
+                "after",
+                when=datetime(2027, 2, 1, tzinfo=UTC),
+                run_id="r2",
+            ),
+            _ledger_entry(
+                "failed",
+                when=datetime(2024, 3, 1, tzinfo=UTC),
+                status="failed",
+                run_id="r0",
+            ),
+            _ledger_entry(
+                "rejected",
+                when=datetime(2023, 3, 1, tzinfo=UTC),
+                status="rejected",
+                run_id="r0",
+            ),
+        ]
+    )
+    assert verification_years(ledger, "r1") == (2026,)
+
+
+def test_verification_years_are_empty_without_a_succeeded_run_or_ledger() -> None:
+    ledger = entries_to_table(
+        [
+            _ledger_entry(
+                "failed", when=datetime(2026, 1, 1, tzinfo=UTC), status="failed"
+            ),
+            _ledger_entry("other", when=datetime(2025, 1, 1, tzinfo=UTC), run_id="r9"),
+        ]
+    )
+    assert verification_years(ledger, "r1") == ()
+    assert verification_years(entries_to_table([]), "r1") == ()
 
 
 def test_verify_run_appends_the_pooled_wet_area_check(

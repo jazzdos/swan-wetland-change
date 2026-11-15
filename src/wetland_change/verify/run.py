@@ -27,6 +27,7 @@ from wetland_change.raster.read import (
     RasterReader,
     read_stack,
 )
+from wetland_change.sentinel_notice import utc_years
 from wetland_change.stats import rasterise
 from wetland_change.store import OutputStore
 from wetland_change.verify.checks import Check, write_report
@@ -87,6 +88,34 @@ def _history_paths(ledger: pa.Table, *, newest: datetime) -> set[str]:
         & (latest["datetime"] <= stamp)
     ]
     return {str(p) for p in stored["observation_path"]}
+
+
+def verification_years(ledger: pa.Table, run_id: str) -> tuple[int, ...]:
+    """UTC acquisition years behind a verification report, ascending.
+
+    Covers the succeeded scenes of `run_id` with an acquisition time and the
+    stored history the waterbody checks read: every latest-entry row that
+    succeeded, has an observation file and was acquired up to the newest of
+    those scenes (the rule of `_history_paths`). Empty when the run has no such
+    scene.
+    """
+    frame = ledger.to_pandas()
+    scenes = frame[
+        (frame["run_id"] == run_id)
+        & (frame["status"] == "succeeded")
+        & frame["datetime"].notna()
+    ]
+    if scenes.empty:
+        return ()
+    newest = scenes["datetime"].max()
+    latest = latest_entries(ledger)
+    history = latest[
+        (latest["status"] == "succeeded")
+        & latest["observation_path"].notna()
+        & latest["datetime"].notna()
+        & (latest["datetime"] <= newest)
+    ]
+    return utc_years([*scenes["datetime"], *history["datetime"]])
 
 
 def scenes_for_run(
@@ -525,5 +554,6 @@ def verify_run(
         run_id=run_id,
         docs_dir=docs_dir,
         generated_at=listed_at,
+        copernicus_years=verification_years(ledger, run_id),
     )
     return checks

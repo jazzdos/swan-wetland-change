@@ -25,6 +25,11 @@ _ATTRIBUTION_LINK: Final = (
     "licence or attribution link carried in published metadata (st-8856), no data read"
 )
 
+_SENTINEL_NOTICE_LINK: Final = (
+    "Copernicus Sentinel data legal notice link carried in published metadata "
+    "(st-d5c1), no data read"
+)
+
 NOT_A_DATASET: Final[dict[str, str]] = {
     "example.invalid": "reserved placeholder base URL, never resolved",
     "bucket": "placeholder bucket name in the store.py docstring",
@@ -34,6 +39,7 @@ NOT_A_DATASET: Final[dict[str, str]] = {
     "www.dea.ga.gov.au": _PROVIDER_LINK,
     "creativecommons.org": _ATTRIBUTION_LINK,
     "knowledge.dea.ga.gov.au": _ATTRIBUTION_LINK,
+    "sentinels.copernicus.eu": _SENTINEL_NOTICE_LINK,
     "dx.doi.org": _ATTRIBUTION_LINK,
     "doi.org": _ATTRIBUTION_LINK,
     "files.pythonhosted.org": (

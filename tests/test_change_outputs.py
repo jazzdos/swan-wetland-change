@@ -38,6 +38,7 @@ from wetland_change.outputs.geoparquet import (
 )
 from wetland_change.outputs.provenance import FOOTER_KEYS, footer_metadata
 from wetland_change.pipeline import score_changes
+from wetland_change.sentinel_notice import copernicus_notice
 from wetland_change.stats import ObservationRow
 from wetland_change.store import OutputStore
 
@@ -956,4 +957,89 @@ def test_change_footer_carries_the_dea_attribution(tmp_path: Path) -> None:
         for key in FOOTER_KEYS:
             assert footer[key.encode()] == expected[key].encode()
         keys = {k.decode() for k in footer} - {"geo", "pandas", "ARROW:schema"}
-        assert keys == {*FOOTER_KEYS, "dea_attribution"}
+        assert keys == {*FOOTER_KEYS, "dea_attribution", "copernicus_notice"}
+
+
+def test_write_changes_notice_years_default_to_the_scored_rows(
+    tmp_path: Path,
+) -> None:
+    store = OutputStore(str(tmp_path))
+    relpath = write_changes(
+        _scores(), GEOMETRIES, store, water=WATER, operation_epsg=OPERATION_EPSG
+    )
+    for footer in _change_footers(tmp_path / relpath):
+        parsed = json.loads(footer[b"copernicus_notice"])
+        assert parsed == copernicus_notice("change", [2026])
+        assert parsed["notice"] == "Contains modified Copernicus Sentinel data 2026"
+
+
+def test_write_changes_notice_years_include_the_baseline_years(
+    tmp_path: Path,
+) -> None:
+    store = OutputStore(str(tmp_path))
+    relpath = write_changes(
+        _scores(),
+        GEOMETRIES,
+        store,
+        water=WATER,
+        operation_epsg=OPERATION_EPSG,
+        baseline_years={2024, 2025},
+    )
+    for footer in _change_footers(tmp_path / relpath):
+        parsed = json.loads(footer[b"copernicus_notice"])
+        assert parsed == copernicus_notice("change", [2024, 2025, 2026])
+        assert parsed["years"] == [2024, 2025, 2026]
+        assert (
+            parsed["notice"] == "Contains modified Copernicus Sentinel data 2024-2026"
+        )
+
+
+def test_score_changes_notice_years_cover_the_baseline_observations(
+    tmp_path: Path,
+) -> None:
+    store = OutputStore(str(tmp_path))
+    _seed(store)
+    _score_day(store, OUTLIER_WATER)
+    score_changes(
+        store,
+        min_valid_fraction=MIN_VALID,
+        water=WATER,
+        operation_epsg=OPERATION_EPSG,
+    )
+    for footer in _change_footers(tmp_path / CHANGE_FILE):
+        parsed = json.loads(footer[b"copernicus_notice"])
+        assert parsed["years"] == [2020, 2021, 2022, 2023, 2024, 2025, 2026]
+        assert (
+            parsed["notice"] == "Contains modified Copernicus Sentinel data 2020-2026"
+        )
+    row = gpd.read_parquet(tmp_path / CHANGE_FILE).iloc[0]
+    assert row["z"] == pytest.approx(_expected_z(OUTLIER_WATER, PRIOR_WATER))
+    assert row["value"] == OUTLIER_WATER
+    assert row["baseline_median"] == pytest.approx(float(np.median(PRIOR_WATER)))
+
+
+def test_score_changes_notice_ignores_observations_from_other_months(
+    tmp_path: Path,
+) -> None:
+    store = OutputStore(str(tmp_path))
+    _seed(store)
+    other_month = datetime(2019, 3, 27, 2, 26, 46, tzinfo=UTC)
+    write_observations(
+        [_row("item-2019", other_month, 90.0, 0.9)],
+        store,
+        water=WATER,
+        operation_epsg=OPERATION_EPSG,
+    )
+    _score_day(store, OUTLIER_WATER)
+    score_changes(
+        store,
+        min_valid_fraction=MIN_VALID,
+        water=WATER,
+        operation_epsg=OPERATION_EPSG,
+    )
+    for footer in _change_footers(tmp_path / CHANGE_FILE):
+        parsed = json.loads(footer[b"copernicus_notice"])
+        assert 2019 not in parsed["years"]
+        assert (
+            parsed["notice"] == "Contains modified Copernicus Sentinel data 2020-2026"
+        )

@@ -16,6 +16,8 @@ detection).
 
 from __future__ import annotations
 
+from collections.abc import Collection
+from datetime import date
 from enum import StrEnum
 from typing import Final
 
@@ -213,6 +215,26 @@ def _melt_metrics(daily: pd.DataFrame) -> pd.DataFrame:
     )
     long["value"] = long["value"].astype("float64")
     return long
+
+
+def baseline_source_years(
+    observations: pd.DataFrame, *, polygon_ids: Collection[str], day: date
+) -> set[int]:
+    """UTC years of the observation rows a baseline for `day` is built from.
+
+    The rows are those of `polygon_ids` whose UTC calendar month equals
+    `day.month` and whose UTC date is strictly before `day`, the same filter
+    `pipeline.score_changes` applies to form the history behind each baseline.
+    The years feed the Copernicus notice of the change files. An empty frame
+    gives an empty set.
+    """
+    stamps = pd.to_datetime(observations["datetime"], utc=True)
+    keep = (
+        observations["polygon_id"].isin(list(polygon_ids))
+        & (stamps.dt.month == day.month)
+        & (stamps.dt.date < day)
+    )
+    return {int(year) for year in stamps[keep].dt.year}
 
 
 def build_baseline(history: pd.DataFrame, *, min_valid_fraction: float) -> pd.DataFrame:

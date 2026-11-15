@@ -10,7 +10,9 @@ scl_classes_clear, clear_pixel_rule, water_settings and water_units_note.
 source_epsg equals operation_epsg because `process_scene` refuses any scene
 whose EPSG differs from the operation EPSG. The footer also carries
 `dea_attribution`, the CC BY 4.0 attribution for the Geoscience Australia DEA
-data (`wetland_change.attribution`). Files written before these keys existed
+data (`wetland_change.attribution`), and `copernicus_notice`, the Copernicus
+Sentinel data notice for the UTC years of the rows
+(`wetland_change.sentinel_notice`). Files written before these keys existed
 still read, because readers use only the `geo` key.
 """
 
@@ -26,6 +28,7 @@ import pyarrow.parquet as pq
 from wetland_change.attribution import dea_attribution_footer
 from wetland_change.config import WaterConfig
 from wetland_change.outputs.provenance import footer_metadata
+from wetland_change.sentinel_notice import copernicus_notice_footer, utc_years
 from wetland_change.stats import ObservationRow
 from wetland_change.store import OutputStore
 
@@ -109,7 +112,14 @@ def write_observations(
     )
     store.write_bytes(
         relpath,
-        to_geoparquet_bytes(frame, {**footer, **dea_attribution_footer("observation")}),
+        to_geoparquet_bytes(
+            frame,
+            {
+                **footer,
+                **dea_attribution_footer("observation"),
+                **copernicus_notice_footer("observation", utc_years(frame["datetime"])),
+            },
+        ),
     )
     return relpath
 

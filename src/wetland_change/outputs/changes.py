@@ -7,12 +7,15 @@ footer carries the same provenance keys as the observation files
 time, and source_epsg equals operation_epsg because `process_scene` refuses
 any scene whose EPSG differs from the operation EPSG. The footer also carries
 `dea_attribution`, the CC BY 4.0 attribution for the Geoscience Australia DEA
-Waterbodies polygons (`wetland_change.attribution`).
+Waterbodies polygons (`wetland_change.attribution`), and `copernicus_notice`,
+the Copernicus Sentinel data notice for the UTC years of the scored rows and of
+the observation rows their baselines come from
+(`wetland_change.sentinel_notice`).
 """
 
 from __future__ import annotations
 
-from collections.abc import Mapping
+from collections.abc import Collection, Mapping
 
 import geopandas as gpd
 import pandas as pd
@@ -22,6 +25,7 @@ from wetland_change.attribution import dea_attribution_footer
 from wetland_change.config import WaterConfig
 from wetland_change.outputs.geoparquet import to_geoparquet_bytes
 from wetland_change.outputs.provenance import footer_metadata
+from wetland_change.sentinel_notice import copernicus_notice_footer, utc_years
 from wetland_change.store import OutputStore
 
 CHANGE_COLUMNS: tuple[str, ...] = (
@@ -82,8 +86,13 @@ def write_changes(
     *,
     water: WaterConfig,
     operation_epsg: int,
+    baseline_years: Collection[int] = (),
 ) -> str:
-    """Write one item's flagged scores with footer keys; returns the path."""
+    """Write one item's flagged scores with footer keys; returns the path.
+
+    The `copernicus_notice` years are the UTC years of the scored rows plus
+    `baseline_years`, the UTC years of the observations the baselines use.
+    """
     if scores.empty:
         raise ValueError("no scores to write")
     items = sorted(set(scores["item_id"]))
@@ -98,6 +107,15 @@ def write_changes(
     )
     store.write_bytes(
         relpath,
-        to_geoparquet_bytes(frame, {**footer, **dea_attribution_footer("change")}),
+        to_geoparquet_bytes(
+            frame,
+            {
+                **footer,
+                **dea_attribution_footer("change"),
+                **copernicus_notice_footer(
+                    "change", set(utc_years(frame["datetime"])) | set(baseline_years)
+                ),
+            },
+        ),
     )
     return relpath

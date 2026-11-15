@@ -210,3 +210,20 @@ def test_readme_live_rows_state_the_layer_rule() -> None:
         text = " ".join(by_name[name])
         assert "0012" in text, name
         assert "ramsar" in text, name
+
+
+BACKFILL_LINES = [
+    f"uv run wetland-change {name} --output-root s3://<bucket>/{flag}"
+    for name in (
+        "add-observation-footers",
+        "add-dea-attribution",
+        "add-copernicus-notice",
+    )
+    for flag in (" --dry-run", "")
+] + ["uv run wetland-change build-catalogue --output-root s3://<bucket>/"]
+
+
+@pytest.mark.parametrize("line", BACKFILL_LINES)
+def test_backfill_section_lists_every_rewrite_command(line: str) -> None:
+    section = _section(_readme(), "Attribution backfill (operator only)", level=3)
+    assert line in section.splitlines()

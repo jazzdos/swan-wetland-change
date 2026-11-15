@@ -14,6 +14,7 @@ from wetland_change.change import (
     SCORE_COLUMNS,
     ObservationFrameError,
     UnscoredReason,
+    baseline_source_years,
     build_baseline,
     daily_aggregate,
     score_observations,
@@ -428,3 +429,58 @@ def test_daily_aggregate_rejects_frame_without_required_columns() -> None:
         daily_aggregate(
             _frame([_observation("2026-01-14T02:26:00")]).drop(columns=["n_clear"])
         )
+
+
+def _years_frame(*stamps: tuple[str, str]) -> pd.DataFrame:
+    return _frame([_observation(when, polygon_id=polygon) for polygon, when in stamps])
+
+
+def test_baseline_source_years_includes_earlier_dates_of_the_same_month() -> None:
+    frame = _years_frame(
+        (POLYGON, "2023-01-05T02:26:00"),
+        (POLYGON, "2025-01-03T02:26:00"),
+    )
+    years = baseline_source_years(frame, polygon_ids={POLYGON}, day=date(2026, 1, 20))
+    assert years == {2023, 2025}
+
+
+def test_baseline_source_years_excludes_the_same_and_later_dates() -> None:
+    frame = _years_frame(
+        (POLYGON, "2026-01-20T02:26:00"),
+        (POLYGON, "2027-01-20T02:26:00"),
+    )
+    assert (
+        baseline_source_years(frame, polygon_ids={POLYGON}, day=date(2026, 1, 20))
+        == set()
+    )
+
+
+def test_baseline_source_years_excludes_other_polygons_and_months() -> None:
+    frame = _years_frame(
+        ("ramsar-99", "2023-01-05T02:26:00"),
+        (POLYGON, "2024-02-05T02:26:00"),
+        (POLYGON, "2025-01-05T02:26:00"),
+    )
+    years = baseline_source_years(frame, polygon_ids={POLYGON}, day=date(2026, 1, 20))
+    assert years == {2025}
+
+
+def test_baseline_source_years_uses_utc_dates_and_months() -> None:
+    frame = _frame(
+        [
+            _observation("2024-01-31T23:30:00"),
+            _observation("2025-02-01T00:30:00"),
+        ]
+    )
+    frame["datetime"] = pd.to_datetime(frame["datetime"], utc=True).dt.tz_convert(
+        "Australia/Perth"
+    )
+    years = baseline_source_years(frame, polygon_ids={POLYGON}, day=date(2026, 2, 10))
+    assert years == {2025}
+
+
+def test_baseline_source_years_of_an_empty_frame_is_empty() -> None:
+    assert (
+        baseline_source_years(_frame([]), polygon_ids={POLYGON}, day=date(2026, 1, 20))
+        == set()
+    )
