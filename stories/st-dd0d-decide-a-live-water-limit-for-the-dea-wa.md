@@ -9,7 +9,7 @@ discovered_from: st-a32a
 touches: [LEARNINGS.md, docs/decisions/0015-waterbody-layer-live-water-limit.md, docs/research/2026-12-05-waterbody-layer-agreement.py]
 exclusive: false
 created: 2026-11-12
-updated: 2026-11-14
+updated: 2026-11-15
 parked_complexity: hard
 ---
 
@@ -95,6 +95,7 @@ The story is then parked.
 - 2026-11-14T12:09:55.157Z: 2026-11-14: Jarrod replied 'push & approved recommended' to the park question. The question did not label a recommendation. The orchestrator's recommendation, taken as approved, is option (b): commit the LEARNINGS.md pre-registration now with the story's minimum (8 scheduled runs on at least 6 acquisition dates); the sample closes at the 8th eligible run and no later than 2027-01-31; weekly verify.yml runs are excluded; a run counts only if it scores at least 30 waterbody rows. The story is then parked until the sample closes.
 - 2026-11-14T13:30:43.834Z: 2026-11-14: after the report that said option (b) and the terms of this pre-registration were the orchestrator's picks, and that listed keeping the 30-row minimum as its recommendation, Jarrod replied 'push approve recommended'. The orchestrator's reading: the terms stand as committed in f33e562 (30-row minimum kept, no amendment to LEARNINGS.md) and main is to be pushed. This is the orchestrator's reading of a three-word reply, not a term-by-term approval. Pre-push metadata check at 2026-11-14 13:30 UTC: the newest pipeline run is still 43475454140 (started 2026-11-13 17:42 UTC), and origin/main was at 4f8573f with no 'Verification report for <id>' commit after 2db25a1, so no sample run existed when the rule reached GitHub.
 - 2026-11-14T13:38:27.325Z: 2026-11-14 13:40 UTC: after the push, the orchestrator told Jarrod its reading in words (both pre-registrations approved as committed, the st-dd0d 30-row minimum kept, no amendment) and that a change to the 30-row minimum had to be said before the scheduled run of 2026-11-14 at about 17:40 UTC. Jarrod replied 'go'. The orchestrator's reading: no change. No pipeline run had started since 43475454140 when he replied.
+- 2026-11-15T06:52:58.748Z: 2026-11-15: the attribution backfill read and rewrote output-store objects on Jarrod's instruction ("you do bucket back fill", then "approved 1"). It ran through .github/workflows/backfill.yml on main at 4f68d2e: dry run 43673543667, then write run 43677125903 (04:31 to 06:51 UTC, all four jobs succeeded). The commands rewrite only the attribution blocks (observation footers, dea_attribution, copernicus_notice) and rebuild the STAC catalogue; they change no data values. The orchestrator read only each command's summary count line: footers scanned 1156, rewritten 0, skipped 1156, failed 0; DEA attribution scanned 1947, rewritten 1947, failed 0; Copernicus notice scanned 1953, rewritten 1953, failed 0; build-catalogue 1158 files written. No object content, path list or verification record was read.
 
 ## Questions
 
