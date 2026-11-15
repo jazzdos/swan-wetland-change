@@ -225,5 +225,13 @@ BACKFILL_LINES = [
 
 @pytest.mark.parametrize("line", BACKFILL_LINES)
 def test_backfill_section_lists_every_rewrite_command(line: str) -> None:
-    section = _section(_readme(), "Attribution backfill (operator only)", level=3)
+    section = _section(_readme(), "Attribution backfill", level=3)
     assert line in section.splitlines()
+
+
+def test_backfill_section_names_the_workflow_and_both_dispatch_lines() -> None:
+    section = _section(_readme(), "Attribution backfill", level=3)
+    assert ".github/workflows/backfill.yml" in section
+    lines = section.splitlines()
+    assert "gh workflow run backfill.yml -f dry_run=true" in lines
+    assert "gh workflow run backfill.yml -f dry_run=false" in lines

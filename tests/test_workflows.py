@@ -26,6 +26,7 @@ REPO = Path(__file__).resolve().parents[1]
 WORKFLOW: Final = REPO / ".github" / "workflows" / "pipeline.yml"
 VERIFY_WORKFLOW: Final = REPO / ".github" / "workflows" / "verify.yml"
 ALERT_WORKFLOW: Final = REPO / ".github" / "workflows" / "alert.yml"
+BACKFILL_WORKFLOW: Final = REPO / ".github" / "workflows" / "backfill.yml"
 
 BUCKET_URI: Final = "s3://${{ vars.OUTPUT_BUCKET }}"
 PINNED_USES: Final = re.compile(r"^[\w.-]+/[\w./-]+@[0-9a-f]{40}$")
@@ -775,5 +776,268 @@ def test_actionlint_accepts_the_alert_workflow() -> None:
         pytest.skip("actionlint not installed")
     result = subprocess.run(
         [executable, str(ALERT_WORKFLOW)], capture_output=True, text=True, check=False
+    )
+    assert result.returncode == 0, result.stdout + result.stderr
+
+
+# --- backfill workflow ------------------------------------------------------
+
+BACKFILL_COMMANDS: Final = {
+    "footers": "add-observation-footers",
+    "dea": "add-dea-attribution",
+    "copernicus": "add-copernicus-notice",
+    "catalogue": "build-catalogue",
+}
+BACKFILL_ADD_JOBS: Final = ("footers", "dea", "copernicus")
+BACKFILL_SUMMARY: Final = "scanned 3, rewritten 3, skipped 0, failed 1"
+
+
+def _backfill_doc() -> dict[Any, Any]:
+    return _workflow(BACKFILL_WORKFLOW)
+
+
+def _backfill_command_step(job_name: str) -> dict[str, Any]:
+    command = BACKFILL_COMMANDS[job_name]
+    steps = [
+        step
+        for step in _jobs(_backfill_doc())[job_name]["steps"]
+        if f"wetland-change {command}" in str(step.get("run", ""))
+    ]
+    assert len(steps) == 1, job_name
+    return steps[0]
+
+
+def _uses_pin(doc: dict[Any, Any]) -> dict[str, set[str]]:
+    pins: dict[str, set[str]] = {}
+    for job in _jobs(doc).values():
+        for step in job["steps"]:
+            if "uses" in step:
+                name, _, sha = str(step["uses"]).partition("@")
+                pins.setdefault(name, set()).add(sha)
+    return pins
+
+
+def test_backfill_is_dispatch_only_with_a_boolean_dry_run_defaulting_to_true() -> None:
+    triggers = _backfill_doc().get("on", _backfill_doc().get(True))
+    assert set(triggers) == {"workflow_dispatch"}
+    dry_run = triggers["workflow_dispatch"]["inputs"]["dry_run"]
+    assert dry_run["type"] == "boolean"
+    assert dry_run["default"] is True
+    assert "--dry-run" in dry_run["description"]
+    assert "build-catalogue" in dry_run["description"]
+
+
+def test_backfill_jobs_run_footers_dea_copernicus_catalogue_in_order() -> None:
+    jobs = _jobs(_backfill_doc())
+    assert list(jobs) == ["footers", "dea", "copernicus", "catalogue"]
+    assert "needs" not in jobs["footers"]
+    assert jobs["dea"]["needs"] == "footers"
+    assert jobs["copernicus"]["needs"] == "dea"
+    assert jobs["catalogue"]["needs"] == "copernicus"
+    for name in jobs:
+        assert jobs[name]["runs-on"] == "ubuntu-24.04"
+        _backfill_command_step(name)
+
+
+def test_backfill_catalogue_is_skipped_on_a_dry_run() -> None:
+    jobs = _jobs(_backfill_doc())
+    assert _normalised_condition(jobs["catalogue"]) == "!inputs.dry_run"
+    for name in BACKFILL_ADD_JOBS:
+        assert "if" not in jobs[name]
+
+
+def test_backfill_permissions_are_least_privilege() -> None:
+    doc = _backfill_doc()
+    assert doc["permissions"] == {"contents": "read"}
+    for name, job in _jobs(doc).items():
+        assert job["permissions"] == {"contents": "read", "id-token": "write"}, name
+
+
+def test_backfill_shares_the_pipeline_concurrency_group() -> None:
+    concurrency = _backfill_doc()["concurrency"]
+    assert concurrency["group"] == _workflow()["concurrency"]["group"] == "pipeline"
+    assert concurrency["cancel-in-progress"] is False
+
+
+def test_backfill_actions_are_pinned_to_the_pipeline_shas() -> None:
+    pipeline = _uses_pin(_workflow())
+    backfill = _uses_pin(_backfill_doc())
+    assert set(backfill) == {
+        "actions/checkout",
+        "astral-sh/setup-uv",
+        "aws-actions/configure-aws-credentials",
+    }
+    for name, shas in backfill.items():
+        assert shas == pipeline[name], name
+    for job in _jobs(_backfill_doc()).values():
+        for step in job["steps"]:
+            if "uses" in step:
+                assert PINNED_USES.match(step["uses"]), step["uses"]
+    pipeline_uv = [
+        step["with"]
+        for step in _steps(_workflow())
+        if str(step.get("uses", "")).startswith("astral-sh/setup-uv@")
+    ][0]
+    for job in _jobs(_backfill_doc()).values():
+        uv = [
+            step["with"]
+            for step in job["steps"]
+            if str(step.get("uses", "")).startswith("astral-sh/setup-uv@")
+        ][0]
+        assert uv == pipeline_uv
+        assert any(step.get("run") == "uv sync --locked" for step in job["steps"])
+
+
+def test_backfill_credentials_come_from_variables_and_last_three_hours() -> None:
+    for name, job in _jobs(_backfill_doc()).items():
+        aws = [
+            step
+            for step in job["steps"]
+            if str(step.get("uses", "")).startswith(
+                "aws-actions/configure-aws-credentials@"
+            )
+        ]
+        assert len(aws) == 1, name
+        assert aws[0]["with"]["role-to-assume"] == "${{ vars.AWS_ROLE_ARN }}"
+        assert aws[0]["with"]["aws-region"] == "${{ vars.AWS_REGION }}"
+        assert int(aws[0]["with"]["role-duration-seconds"]) == 10800
+
+
+def test_backfill_command_steps_time_out_inside_the_job_limit() -> None:
+    for name, job in _jobs(_backfill_doc()).items():
+        job_limit = job["timeout-minutes"]
+        step_limit = _backfill_command_step(name)["timeout-minutes"]
+        assert isinstance(job_limit, int)
+        assert isinstance(step_limit, int)
+        assert job_limit < 180, name
+        assert step_limit < job_limit, name
+
+
+def test_backfill_command_steps_log_only_the_summary_line() -> None:
+    for name, command in BACKFILL_COMMANDS.items():
+        script = str(_backfill_command_step(name)["run"])
+        assert f'> "$RUNNER_TEMP/{command}.out"' in script, name
+        assert f'2> "$RUNNER_TEMP/{command}.err"' in script, name
+        assert f'tail -n 1 "$RUNNER_TEMP/{command}.out"' in script, name
+        assert "|| status=$?" in script, name
+        assert 'exit "$status"' in script, name
+        assert f'cat "$RUNNER_TEMP/{command}.out"' not in script, name
+        assert '--output-root "s3://${OUTPUT_BUCKET}/"' in script, name
+        has_flag = "--dry-run" in script
+        assert has_flag == (name in BACKFILL_ADD_JOBS), name
+
+
+def test_backfill_command_steps_pass_inputs_through_env() -> None:
+    for name in BACKFILL_COMMANDS:
+        step = _backfill_command_step(name)
+        assert step["env"]["OUTPUT_BUCKET"] == "${{ vars.OUTPUT_BUCKET }}"
+        if name in BACKFILL_ADD_JOBS:
+            assert step["env"]["DRY_RUN"] == "${{ inputs.dry_run }}"
+
+
+def test_backfill_run_bodies_contain_no_expressions() -> None:
+    for job in _jobs(_backfill_doc()).values():
+        for step in job["steps"]:
+            assert "${{" not in str(step.get("run", "")), step
+
+
+def test_backfill_workflow_text_contains_no_secret_literals() -> None:
+    text = BACKFILL_WORKFLOW.read_text(encoding="utf-8")
+    assert not re.search(r"AKIA[0-9A-Z]{16}", text)
+    assert not re.search(r"ASIA[0-9A-Z]{16}", text)
+    lowered = text.lower()
+    for needle in SECRET_NEEDLES:
+        assert needle not in lowered, needle
+
+
+def _run_backfill_step(
+    tmp_path: Path, job_name: str, dry_run: str
+) -> tuple[subprocess.CompletedProcess[str], list[str]]:
+    """Run a command step against a fake `uv` that lists paths and fails."""
+    bash = shutil.which("bash")
+    if bash is None:
+        pytest.skip("bash is required")
+    script = str(_backfill_command_step(job_name)["run"])
+    assert "${{" not in script
+    bindir = tmp_path / "bin"
+    bindir.mkdir()
+    runner_temp = tmp_path / "runner"
+    runner_temp.mkdir()
+    log = tmp_path / "uv.log"
+    fake = bindir / "uv"
+    fake.write_text(
+        "#!/usr/bin/env bash\n"
+        'printf \'%s\\n\' "$*" >> "$UV_LOG"\n'
+        "printf 'observations/a.parquet\\n'\n"
+        "printf 'observations/b.parquet\\n'\n"
+        "printf 'observations/c.parquet\\n'\n"
+        f"printf '%s\\n' '{BACKFILL_SUMMARY}'\n"
+        "printf 'observations/d.parquet\\tboom\\n' >&2\n"
+        "exit 1\n",
+        encoding="utf-8",
+    )
+    fake.chmod(0o755)
+    env = {
+        "PATH": f"{bindir}:{os.environ['PATH']}",
+        "UV_LOG": str(log),
+        "RUNNER_TEMP": str(runner_temp),
+        "OUTPUT_BUCKET": "bucket",
+        "DRY_RUN": dry_run,
+    }
+    result = subprocess.run(
+        [bash, "-e", "-c", script],
+        env=env,
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    calls = [line for line in log.read_text(encoding="utf-8").splitlines() if line]
+    return result, calls
+
+
+@pytest.mark.parametrize("job_name", BACKFILL_ADD_JOBS)
+def test_backfill_step_script_prints_the_summary_not_the_paths(
+    tmp_path: Path, job_name: str
+) -> None:
+    result, calls = _run_backfill_step(tmp_path, job_name, "false")
+    assert result.returncode == 1
+    assert result.stdout.splitlines() == [BACKFILL_SUMMARY]
+    assert "boom" in result.stderr
+    assert "observations/a.parquet" not in result.stdout + result.stderr
+    assert calls == [
+        f"run --no-sync wetland-change {BACKFILL_COMMANDS[job_name]}"
+        " --output-root s3://bucket/"
+    ]
+
+
+@pytest.mark.parametrize("job_name", BACKFILL_ADD_JOBS)
+def test_backfill_step_script_passes_dry_run_only_when_asked(
+    tmp_path: Path, job_name: str
+) -> None:
+    _, calls = _run_backfill_step(tmp_path, job_name, "true")
+    assert calls == [
+        f"run --no-sync wetland-change {BACKFILL_COMMANDS[job_name]}"
+        " --output-root s3://bucket/ --dry-run"
+    ]
+
+
+def test_backfill_catalogue_script_keeps_the_exit_code(tmp_path: Path) -> None:
+    result, calls = _run_backfill_step(tmp_path, "catalogue", "false")
+    assert result.returncode == 1
+    assert result.stdout.splitlines() == [BACKFILL_SUMMARY]
+    assert calls == [
+        "run --no-sync wetland-change build-catalogue --output-root s3://bucket/"
+    ]
+
+
+def test_actionlint_accepts_the_backfill_workflow() -> None:
+    executable = shutil.which("actionlint")
+    if executable is None:
+        pytest.skip("actionlint not installed")
+    result = subprocess.run(
+        [executable, str(BACKFILL_WORKFLOW)],
+        capture_output=True,
+        text=True,
+        check=False,
     )
     assert result.returncode == 0, result.stdout + result.stderr
