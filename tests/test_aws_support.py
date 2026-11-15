@@ -1,13 +1,21 @@
-"""Unit tests for the credentialed-live-test helpers in tests/aws_support.py."""
+"""Unit tests for the live-test helpers in tests/aws_support.py."""
 
 from __future__ import annotations
 
 from pathlib import Path
+from types import SimpleNamespace
 
 import duckdb
 import pytest
 
-from tests.aws_support import create_credential_chain_secret, credential_source
+from tests import aws_support
+from tests.aws_support import (
+    bucket_from_base_url,
+    configured_bucket,
+    create_credential_chain_secret,
+    credential_source,
+)
+from wetland_change.config import DEFAULT_CATALOGUE_BASE_URL
 
 SENTINEL_KEY = "sentinel-key-id-0001"
 SENTINEL_SECRET = "sentinel-secret-0002"
@@ -165,3 +173,41 @@ def test_secret_success_issues_credential_chain_statement(clean_env: Path) -> No
     assert "PROVIDER credential_chain" in statement
     assert "REGION 'ap-southeast-2'" in statement
     assert "outputs_s3" in statement
+
+
+def test_bucket_from_base_url_parses_a_virtual_hosted_url() -> None:
+    assert bucket_from_base_url(
+        "https://example-bucket.s3.ap-southeast-2.amazonaws.com"
+    ) == (
+        "example-bucket.s3.ap-southeast-2.amazonaws.com",
+        "example-bucket",
+        "ap-southeast-2",
+    )
+
+
+def test_bucket_from_base_url_keeps_dots_in_the_bucket_name() -> None:
+    assert bucket_from_base_url("https://a.b.s3.us-east-1.amazonaws.com") == (
+        "a.b.s3.us-east-1.amazonaws.com",
+        "a.b",
+        "us-east-1",
+    )
+
+
+def test_bucket_from_base_url_is_none_for_the_placeholder() -> None:
+    assert bucket_from_base_url(DEFAULT_CATALOGUE_BASE_URL) is None
+
+
+def test_bucket_from_base_url_rejects_another_host() -> None:
+    with pytest.raises(ValueError, match="cannot parse"):
+        bucket_from_base_url("https://example.org/outputs")
+
+
+def test_configured_bucket_skips_on_the_placeholder(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    config = SimpleNamespace(
+        catalogue=SimpleNamespace(base_url=DEFAULT_CATALOGUE_BASE_URL)
+    )
+    monkeypatch.setattr(aws_support, "load_config", lambda path: config)
+    with pytest.raises(pytest.skip.Exception):
+        configured_bucket()

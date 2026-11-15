@@ -4,7 +4,7 @@ OpenTofu/Terraform module for the AWS resources the swan-wetland-change pipeline
 
 ## What the module creates
 
-- A private S3 bucket with all four public access block settings on, no bucket policy and no cross-origin rules, so every read needs AWS credentials: the pipeline role, or a human or reader identity that is granted access in IAM separately. Readers use credentials, for example DuckDB through a `credential_chain` secret (see README.md "Querying with DuckDB"). The decision is recorded in `docs/decisions/0011-private-output-bucket.md`. A lifecycle rule aborts incomplete multipart uploads one day after initiation, and the pipeline role needs no `s3:AbortMultipartUpload` because S3 applies the rule itself.
+- An S3 bucket for the outputs and the STAC catalogue, with public read decided in `docs/decisions/0016-public-read-output-bucket.md` (which supersedes ADR 0011). `block_public_acls` and `ignore_public_acls` stay on, so no object or bucket ACL can make anything public. `block_public_policy` and `restrict_public_buckets` are off, so the bucket policy `public_read` can grant anonymous callers `s3:GetObject` on every object and `s3:ListBucket` only for prefixes under `observations/` (an `s3:prefix` StringLike `observations/*` condition), so a DuckDB glob over the observation files works without credentials. The bucket root and the other prefixes (`changes/`, `ledger/`, `runs/`, `stac/`, `verification/`) cannot be listed anonymously, their objects stay readable by key, and there is no public put or delete. A CORS rule allows GET and HEAD from any origin, so a browser viewer such as stac-browser can read the catalogue. Public read takes effect at the operator's apply (see "Applying public read"); until then the applied bucket is private and every read needs AWS credentials, for example DuckDB through a `credential_chain` secret (see README.md "Querying with DuckDB"). Anonymous requests are billed to the bucket owner. A lifecycle rule aborts incomplete multipart uploads one day after initiation, and the pipeline role needs no `s3:AbortMultipartUpload` because S3 applies the rule itself.
 - The GitHub OIDC provider `token.actions.githubusercontent.com` with audience `sts.amazonaws.com`, when `create_oidc_provider` is true (the default). An AWS account can hold only one such provider, and other repositories usually share it. If the account already has one, pass `-var create_oidc_provider=false`, as the commands below do. The module then looks the provider up with a data source and leaves it unmanaged. Do not import an existing provider into this state: a later `destroy` would delete it and break GitHub-to-AWS authentication for every other repository in the account.
 - An IAM role `swan-wetland-change-pipeline`, assumable only from the repository's `main` branch. The trust policy requires `token.actions.githubusercontent.com:aud` = `sts.amazonaws.com` and `token.actions.githubusercontent.com:sub` = `repo:<owner>@<owner_id>/<name>@<repo_id>:ref:refs/heads/main`. The role has `s3:ListBucket` on the bucket and `s3:GetObject`, `s3:PutObject` and `s3:DeleteObject` on its objects, and nothing else. The role's maximum session duration is 3 hours (10800 s), and the workflow requests all of it so credentials outlast the 120 minute job.
 
@@ -43,6 +43,39 @@ terraform -chdir=infra output -raw bucket_url
 Drop `-var create_oidc_provider=false` for an AWS account that has no GitHub OIDC provider yet, so the module creates it.
 
 Review the plan output before applying. The story that created this module only validated it offline; nobody ran plan or apply there. The operator runs them.
+
+## Applying public read
+
+ADR 0016 changes the module of the existing deployment: the access block's two policy settings go from true to false, and the bucket policy and the CORS rule are added. The apply is run by the operator, never by an agent, after the plan is reviewed. Until it runs, the bucket stays private.
+
+Preconditions, in order (ADR 0016, "Preconditions of the apply"):
+
+1. st-22f1 is merged to `main`, so new files carry term T3 of `docs/research/2026-11-14-public-release-licences.md` (the DBCA-010 attribution and licence notice, and the STAC collection licence field).
+2. st-22f1's backfill job has run against the output store, so files written before st-22f1 carry T3 too.
+3. Recommended, and Jarrod's decision: DBCA's written confirmation of the licence for public redistribution (the note's "Residual risk").
+
+Plan with the same variables as the deployment and review the output:
+
+```sh
+terraform -chdir=infra init
+terraform -chdir=infra plan -var bucket_name=<bucket> -var github_repository=jazzdos@33918812/swan-wetland-change@1438569874 -var create_oidc_provider=false -var aws_region=<region>
+```
+
+The plan should update `aws_s3_bucket_public_access_block.outputs` in place (`block_public_policy` and `restrict_public_buckets` from true to false) and add `aws_s3_bucket_policy.public_read` and `aws_s3_bucket_cors_configuration.outputs`. Do not apply if it destroys or replaces any resource, or changes the role, its policy or the OIDC provider. Otherwise apply with the same variables:
+
+```sh
+terraform -chdir=infra apply -var bucket_name=<bucket> -var github_repository=jazzdos@33918812/swan-wetland-change@1438569874 -var create_oidc_provider=false -var aws_region=<region>
+```
+
+Then check with headers only. curl sends the request unsigned, so it is an anonymous request whatever AWS credentials the shell holds:
+
+```sh
+curl -sS -I -H "Origin: https://example.org" "$(terraform -chdir=infra output -raw bucket_url)/stac/catalog.json" | grep -i -E '^(HTTP/|access-control-allow-origin:)'
+```
+
+After the apply it prints a 200 status line (`HTTP/1.1 200 OK`) and `Access-Control-Allow-Origin: *`. Before the apply it prints a 403 status line and no `Access-Control-Allow-Origin` line. The check reads response headers only, not the object.
+
+After the check, remove the `xfail` marker from `tests/test_live_anonymous_read.py` in the commit that records the apply, so the weekly `verify.yml` run checks anonymous read. Until then that run reports the test as an expected failure.
 
 ## Offline checks
 
@@ -112,6 +145,6 @@ A bucket that is not seeded still converges: each run does at most what fits in 
 ## Notes
 
 - State is local by default. `terraform.tfstate` is gitignored; keep it safe or add a remote backend.
-- The bucket is private and nothing grants anonymous access. Never add a bucket policy that grants public access, or a cross-origin rule, without a new decision record that supersedes ADR 0011.
+- Anonymous access is limited to `s3:GetObject` on objects and `s3:ListBucket` under `observations/`, with CORS for GET and HEAD, and it takes effect at the operator's apply. Never add a public put or delete, an unconditioned list or a wider list prefix without a new decision record that supersedes ADR 0016. Never write private data to the bucket: after the apply every object is readable by key.
 - The role only works from runs on `main`. A `workflow_dispatch` run from another branch cannot assume it.
 - The 3 hour session duration takes effect only after an apply. An existing deployment must be applied again before the next pipeline run, because requesting a duration above the role maximum makes the role assumption fail.

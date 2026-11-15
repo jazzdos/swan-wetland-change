@@ -1,17 +1,31 @@
-"""Helpers for the credentialed live tests that build a DuckDB S3 secret."""
+"""Helpers for the live tests that read the output bucket.
+
+`configured_bucket` names the bucket from `catalogue.base_url`, and
+`create_credential_chain_secret` builds the DuckDB S3 secret for the
+credentialed reads.
+"""
 
 from __future__ import annotations
 
 import os
+import re
 from pathlib import Path
 from typing import Final, Protocol
+from urllib.parse import urlparse
 
 import duckdb
 import pytest
 
+from wetland_change.config import load_config
+
 EXPORT_COMMAND: Final = (
     'eval "$(aws configure export-credentials --profile <profile> --format env)" '
     "&& unset AWS_PROFILE"
+)
+
+CONFIG: Final = Path(__file__).resolve().parents[1] / "config" / "pipeline.toml"
+BUCKET_HOST: Final = re.compile(
+    r"(?P<bucket>[^.]+(?:\.[^.]+)*)\.s3\.(?P<region>[a-z0-9-]+)\.amazonaws\.com"
 )
 
 _CREDENTIAL_ENV_NAMES: Final = (
@@ -23,6 +37,33 @@ _CREDENTIAL_ENV_NAMES: Final = (
 
 class _SupportsExecute(Protocol):
     def execute(self, query: str, /) -> object: ...
+
+
+def bucket_from_base_url(base_url: str) -> tuple[str, str, str] | None:
+    """Host, bucket and region of a virtual-hosted S3 base URL.
+
+    None for the committed `.invalid` placeholder, which names no bucket.
+    """
+    host = urlparse(base_url).hostname or ""
+    if host.endswith(".invalid"):
+        return None
+    match = BUCKET_HOST.fullmatch(host)
+    if match is None:
+        raise ValueError(f"cannot parse bucket and region from {host!r}")
+    return host, match["bucket"], match["region"]
+
+
+def configured_bucket() -> tuple[str, str, str]:
+    """The output bucket that catalogue.base_url in config/pipeline.toml names.
+
+    Skips the calling test while base_url is the `.invalid` placeholder.
+    """
+    parsed = bucket_from_base_url(load_config(CONFIG).catalogue.base_url)
+    if parsed is None:
+        pytest.skip(
+            "catalogue.base_url is the committed placeholder; no bucket is applied"
+        )
+    return parsed
 
 
 def credential_source() -> str | None:
