@@ -17,6 +17,7 @@ import pytest
 from pandas.api.types import is_bool_dtype, is_numeric_dtype
 from shapely.geometry import box
 
+from wetland_change.attribution import dea_attribution
 from wetland_change.config import WaterConfig, WaterSetting
 from wetland_change.mask import CLEAR_BANDS, CLEAR_CLASSES
 from wetland_change.outputs.geoparquet import (
@@ -27,7 +28,7 @@ from wetland_change.outputs.geoparquet import (
     to_geoparquet_bytes,
     write_observations,
 )
-from wetland_change.outputs.provenance import footer_metadata
+from wetland_change.outputs.provenance import FOOTER_KEYS, footer_metadata
 from wetland_change.stats import ObservationRow
 from wetland_change.store import OutputStore
 
@@ -351,3 +352,36 @@ def test_read_observations_mixes_files_with_and_without_footer_keys(
     combined = read_observations(store)
     assert sorted(combined["polygon_id"]) == ["ramsar-52", "ramsar-56", "ramsar-60"]
     assert combined.crs.to_epsg() == 4326
+
+
+def test_footer_carries_the_dea_attribution_for_observations(
+    tmp_path: Path,
+) -> None:
+    frame = rows_to_frame(ROWS)
+    for footer in _footers(_written(tmp_path, ROWS)):
+        parsed = json.loads(footer[b"dea_attribution"])
+        assert parsed == dea_attribution("observation")
+        assert (
+            parsed["copyright"] == "© Commonwealth of Australia (Geoscience Australia)"
+        )
+        assert parsed["licence_uri"] == "https://creativecommons.org/licenses/by/4.0/"
+        waterbodies = [d for d in parsed["datasets"] if "Waterbodies" in d["name"]]
+        assert waterbodies
+        assert any(
+            "https://dx.doi.org/10.26186/148920" in d["citation"] for d in waterbodies
+        )
+        assert any(
+            "https://doi.org/10.3390/rs13081437" in d["paper_citation"]
+            for d in waterbodies
+        )
+        assert any(
+            "https://knowledge.dea.ga.gov.au/data/product/dea-waterbodies-landsat/"
+            in d["sources"]
+            for d in waterbodies
+        )
+        assert all(d["modification"] for d in parsed["datasets"])
+        expected = _footer(frame)
+        for key in FOOTER_KEYS:
+            assert footer[key.encode()] == expected[key].encode()
+        keys = {k.decode() for k in footer} - {"geo", "pandas", "ARROW:schema"}
+        assert keys == {*FOOTER_KEYS, "dea_attribution"}

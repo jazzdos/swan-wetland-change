@@ -10,6 +10,7 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
+from wetland_change.attribution import DEA_ATTRIBUTION_KEY, dea_attribution
 from wetland_change.runtime import Environment, capture_environment
 from wetland_change.store import OutputStore
 
@@ -201,6 +202,10 @@ def write_report(
     (ADR 0012) are kept in `checks` but are left out of every count and of
     `all_passed`; `n_advisory` counts them and `advisory` holds one summary per
     live check and layer.
+
+    The JSON carries `dea_attribution`, the CC BY 4.0 attribution for the
+    Geoscience Australia DEA data its values derive from
+    (src/wetland_change/attribution.py). The Markdown report does not.
     """
     from wetland_change.verify.layers import advisory_summaries  # layers imports Check
     from wetland_change.verify.matrix import matrix_status  # matrix imports Check
@@ -227,6 +232,7 @@ def write_report(
         "uv_lock_sha256": env.uv_lock_sha256,
         "git_commit": env.git_commit,
         "checks": [_finite(asdict(c)) for c in checks],
+        DEA_ATTRIBUTION_KEY: dea_attribution("verification"),
     }
     json_path = store.write_bytes(
         report_path(run_id),

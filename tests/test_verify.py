@@ -8,6 +8,7 @@ from pathlib import Path
 import numpy as np
 
 from tests.conftest import FIXTURE_DIR
+from wetland_change.attribution import dea_attribution
 from wetland_change.catalogue.item import SceneItem
 from wetland_change.manifest import manifest_path
 from wetland_change.runtime import Environment, capture_environment
@@ -203,6 +204,62 @@ def test_write_report_carries_the_injected_runtime(tmp_path: Path) -> None:
     assert "a" * 64 in text
     assert "b" * 40 in text
     assert text.endswith("\n") and not text.endswith("\n\n")
+
+
+def test_write_report_carries_the_dea_attribution_last(tmp_path: Path) -> None:
+    store = OutputStore(str(tmp_path / "out"))
+    json_path, md_path = write_report(
+        [Check("a", True, 1.0, 1.0, "r")],
+        store=store,
+        run_id="attr",
+        docs_dir=tmp_path / "docs",
+        environment=_runtime(),
+    )
+    payload = json.loads(store.read_bytes(json_path))
+    assert payload["dea_attribution"] == dea_attribution("verification")
+    assert list(payload) == [
+        "run_id",
+        "generated_at",
+        "n_scored",
+        "n_skipped",
+        "n_errored",
+        "n_warned",
+        "n_advisory",
+        "all_passed",
+        "matrix",
+        "advisory",
+        "runtime",
+        "uv_lock_sha256",
+        "git_commit",
+        "checks",
+        "dea_attribution",
+    ]
+    block = payload["dea_attribution"]
+    assert block["copyright"] == "© Commonwealth of Australia (Geoscience Australia)"
+    assert block["licence_uri"] == "https://creativecommons.org/licenses/by/4.0/"
+    names = {d["name"] for d in block["datasets"]}
+    assert "DEA Sentinel-2 Water Observations (ga_s2_wo_provisional_3)" in names
+    waterbodies = [d for d in block["datasets"] if "Waterbodies" in d["name"]]
+    assert len(waterbodies) == 2
+    for dataset in waterbodies:
+        assert "https://doi.org/10.3390/rs13081437" in dataset["paper_citation"]
+    assert md_path is not None
+    assert "dea_attribution" not in md_path.read_text()
+
+
+def test_write_report_with_no_checks_still_carries_the_dea_attribution(
+    tmp_path: Path,
+) -> None:
+    store = OutputStore(str(tmp_path / "out"))
+    json_path, _ = write_report(
+        [],
+        store=store,
+        run_id="attr-empty",
+        docs_dir=None,
+        environment=_runtime(),
+    )
+    payload = json.loads(store.read_bytes(json_path))
+    assert payload["dea_attribution"] == dea_attribution("verification")
 
 
 def test_write_report_defaults_to_the_live_environment(tmp_path: Path) -> None:

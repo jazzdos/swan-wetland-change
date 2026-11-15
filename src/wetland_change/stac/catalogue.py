@@ -32,6 +32,11 @@ import pystac
 import stac_geoparquet.arrow
 from shapely.geometry import shape
 
+from wetland_change.attribution import (
+    CC_BY_4_LEGALCODE_URI,
+    DEA_ATTRIBUTION_KEY,
+    dea_attribution,
+)
 from wetland_change.catalogue.item import parse_timestamp
 from wetland_change.ledger import read_ledger
 from wetland_change.outputs.changes import change_path
@@ -41,6 +46,9 @@ from wetland_change.verify.checks import report_path
 CATALOG_ID = "swan-wetland-change-catalog"
 COLLECTION_ID = "swan-wetland-change"
 LICENSE = "CC-BY-SA-4.0"
+DEA_LICENCE_LINK_TITLE = (
+    "CC BY 4.0 licence text for the Geoscience Australia (DEA) data"
+)
 SWAN_COASTAL_PLAIN_BBOX = [114.9, -33.3, 115.9, -31.5]
 PARQUET_MEDIA_TYPE = CONTENT_TYPES[".parquet"]
 ITEM_MEDIA_TYPE = "application/geo+json"
@@ -179,7 +187,13 @@ def _extent(items: list[pystac.Item]) -> pystac.Extent:
 def build_catalogue(
     ledger: pa.Table, *, base_url: str, available: Collection[str] = frozenset()
 ) -> pystac.Catalog:
-    """`available` holds the store-relative paths that exist, gating item assets."""
+    """`available` holds the store-relative paths that exist, gating item assets.
+
+    The collection carries `dea_attribution` and a `license` link for the CC BY
+    4.0 DEA content of its assets (term T1,
+    docs/research/2026-11-14-public-release-licences.md). `license` stays the
+    recorded CC-BY-SA-4.0.
+    """
     base_url = base_url.rstrip("/")
     items = [_item(entry, base_url, available) for entry in processed_entries(ledger)]
     collection = pystac.Collection(
@@ -195,6 +209,7 @@ def build_catalogue(
             pystac.Provider(name=name, roles=roles, url=url)
             for name, roles, url in PROVIDERS
         ],
+        extra_fields={DEA_ATTRIBUTION_KEY: dea_attribution("collection")},
     )
     for item in items:
         collection.add_item(item)
@@ -213,6 +228,14 @@ def build_catalogue(
         description="Sentinel-2 wetland observations for the Swan Coastal Plain.",
         title="Swan wetland change catalogue",
         catalog_type=pystac.CatalogType.ABSOLUTE_PUBLISHED,
+    )
+    collection.add_link(
+        pystac.Link(
+            rel=pystac.RelType.LICENSE,
+            target=CC_BY_4_LEGALCODE_URI,
+            media_type="text/html",
+            title=DEA_LICENCE_LINK_TITLE,
+        )
     )
     catalog.add_child(collection)
     catalog.normalize_hrefs(f"{base_url}/stac")
