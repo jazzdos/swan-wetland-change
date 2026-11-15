@@ -5,6 +5,17 @@ step 2). These tests check its structure and that every data/SOURCES.md row it
 covers has the same licence and redistribute_public value. A note with a later
 date supersedes an earlier one. Writer citations are pinned to the commit the
 note names; a renamed writer file needs the citation updated or a newer note.
+
+A DBCA-010 claim that is not promoted leaves the note parked or answered.
+Parked: DBCA-010 is not true, it is named under Blocking and the question for
+Jarrod is open. Answered: the question section holds an `Answered: <date>;
+licence <licence>; redistribute_public <value>` line, an `## Update <date>`
+section records the answer and the residual SLIP-terms risk, and the
+data/SOURCES.md rows derived from DBCA-010 follow the answer.
+
+Every term under "Unmet terms" has a status. An unmet term is referenced by the
+published-file table and has a story or a deferral, a met term names the story
+that met it, and an n/a term says why no story was filed.
 """
 
 from __future__ import annotations
@@ -19,6 +30,7 @@ SOURCES: Final = REPO / "data" / "SOURCES.md"
 NOTE_NAME: Final = re.compile(r"\d{4}-\d{2}-\d{2}-public-release-licences\.md")
 DATE: Final = re.compile(r"\d{4}-\d{2}-\d{2}")
 DBCA: Final = "DBCA-010 Ramsar Sites"
+DBCA_TAG: Final = "DBCA-010"
 
 # data/SOURCES.md rows whose data reaches an object in the output store.
 REQUIRED_SOURCES: Final = (
@@ -41,9 +53,10 @@ PUBLISHED_KINDS: Final = (
     "ledger",
     "verification JSON",
 )
+SHAREALIKE: Final = "CC BY-SA 4.0 ShareAlike"
 JUDGED_COLUMNS: Final = (
-    "CC BY-SA 4.0 attribution",
-    "CC BY-SA 4.0 ShareAlike",
+    "CC BY-NC 4.0 attribution",
+    SHAREALIKE,
     "CC BY 4.0 attribution",
     "Copernicus notice",
 )
@@ -51,6 +64,12 @@ JUDGEMENT: Final = re.compile(r"met|n/a|unmet \(T\d+(?:, T\d+)*\)")
 TERM_ID: Final = re.compile(r"T\d+")
 STORY_ID: Final = re.compile(r"st-[0-9a-f]{4}")
 DEFERRED: Final = "deferred: question to Jarrod"
+NOT_FILED: Final = "not filed: "
+STATUSES: Final = frozenset({"unmet", "met", "n/a"})
+ANSWERED: Final = re.compile(
+    r"^Answered: (\d{4}-\d{2}-\d{2}); licence (.+?); redistribute_public (\S+)$",
+    re.MULTILINE,
+)
 PROMOTED: Final = re.compile(r"^Promoted: (yes|no) \(([0-3]) of 3\)$", re.MULTILINE)
 CITATION: Final = re.compile(r"(src/wetland_change/[\w/]+\.py):(\d+)")
 
@@ -97,6 +116,17 @@ def unmet_rows() -> list[dict[str, str]]:
     return table(section(note_text(), "Unmet terms"))
 
 
+def sources_rows() -> list[dict[str, str]]:
+    return table(SOURCES.read_text(encoding="utf-8"))
+
+
+def answer() -> tuple[str, str, str] | None:
+    match = ANSWERED.search(section(note_text(), "Question for Jarrod"))
+    if match is None:
+        return None
+    return match.group(1), match.group(2), match.group(3)
+
+
 def promotion() -> tuple[bool, int]:
     match = PROMOTED.search(section(note_text(), "DBCA-010 licence claim"))
     assert match, "no 'Promoted: yes|no (N of 3)' line"
@@ -124,7 +154,7 @@ def test_dataset_rows_name_licence_primary_source_and_fetch_date() -> None:
 
 
 def test_note_licence_and_redistribute_public_match_sources() -> None:
-    sources = {row["source"]: row for row in table(SOURCES.read_text(encoding="utf-8"))}
+    sources = {row["source"]: row for row in sources_rows()}
     for row in dataset_rows():
         name = row["SOURCES.md source"]
         assert name in sources, name
@@ -157,10 +187,30 @@ def test_promotion_outcome_is_reflected_in_sources_and_stories() -> None:
     if promoted:
         assert DEFERRED not in stories
         return
+    text = note_text()
     dbca = next(row for row in dataset_rows() if row["SOURCES.md source"] == DBCA)
-    assert dbca["redistribute_public"] != "true"
-    assert DBCA in section(note_text(), "Blocking")
-    assert section(note_text(), "Question for Jarrod").strip() not in {"", "None."}
+    blocking = section(text, "Blocking")
+    answered = answer()
+    if answered is None:
+        assert dbca["redistribute_public"] != "true"
+        assert DBCA in blocking
+        assert section(text, "Question for Jarrod").strip() not in {"", "None."}
+        return
+    date, licence, flag = answered
+    assert DEFERRED not in stories
+    assert dbca["licence"].startswith(licence)
+    assert dbca["redistribute_public"] == flag
+    assert (DBCA in blocking) == (flag != "true")
+    inheriting = [row for row in sources_rows() if DBCA_TAG in row["source"]]
+    assert len(inheriting) >= 2
+    for row in inheriting:
+        assert row["licence"].startswith(licence), row["source"]
+    if "BY-SA" not in licence:
+        assert {row[SHAREALIKE] for row in published_rows()} == {"n/a"}
+    update = section(text, f"Update {date}")
+    assert licence in update
+    assert "public-services.slip.wa.gov.au" in update
+    assert "written confirmation" in update
 
 
 def test_every_published_file_kind_is_judged_with_a_writer_citation() -> None:
@@ -180,13 +230,22 @@ def test_every_unmet_term_is_referenced_and_has_a_story_or_a_deferral() -> None:
     rows = unmet_rows()
     ids = [row["id"] for row in rows]
     assert len(ids) == len(set(ids))
+    for row in rows:
+        assert TERM_ID.fullmatch(row["id"]), row["id"]
+        assert row["status"] in STATUSES, row["id"]
     referenced = {
         term
         for row in published_rows()
         for column in JUDGED_COLUMNS
         for term in TERM_ID.findall(row[column])
     }
-    assert referenced == set(ids)
+    assert referenced == {row["id"] for row in rows if row["status"] == "unmet"}
     for row in rows:
-        story = row["story"]
-        assert STORY_ID.fullmatch(story) or story == DEFERRED, row["id"]
+        story, status = row["story"], row["status"]
+        if status == "n/a":
+            assert story.startswith(NOT_FILED), row["id"]
+            assert story.removeprefix(NOT_FILED).strip(), row["id"]
+        elif status == "met":
+            assert STORY_ID.fullmatch(story), row["id"]
+        else:
+            assert STORY_ID.fullmatch(story) or story == DEFERRED, row["id"]
