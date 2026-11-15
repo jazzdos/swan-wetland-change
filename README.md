@@ -443,16 +443,34 @@ empty root leaves the first daily run bounded only by
 `catalogue.base_url` was set to the bucket URL in commit 2b8d582, and the
 output root was seeded from the 2026-11-02 backfill copy.
 
-### Attribution backfill (operator only)
+### Attribution backfill
 
 Files written before st-8856 lack the DEA attribution, and files written
-before st-d5c1 lack the Copernicus notice. The operator, never an agent, runs
-the backfill before ADR 0011 step 3
-(`docs/decisions/0011-private-output-bucket.md`). Agents do not run it,
-because the st-b6bf and st-dd0d pre-registrations in `LEARNINGS.md` bar agents
-from reading output-store objects. Run it from a checkout of main that
-includes both st-8856 and st-d5c1, with AWS credentials, when no workflow is
-running, in this order with a dry run before each real run:
+before st-d5c1 lack the Copernicus notice. The backfill runs before ADR 0011
+step 3 (`docs/decisions/0011-private-output-bucket.md`), by one of two routes.
+The operator can run it from a local checkout of main that includes both
+st-8856 and st-d5c1, with AWS credentials, when no workflow is running. Or it
+can run through `.github/workflows/backfill.yml`, dispatched from main, a dry
+run first and then the real run:
+
+```sh
+gh workflow run backfill.yml -f dry_run=true
+gh workflow run backfill.yml -f dry_run=false
+```
+
+The workflow runs the same commands in the same order, one job per command,
+through the pipeline's OIDC role, which trusts runs on main only. It shares the
+`pipeline` concurrency group, so it does not overlap a pipeline run. With
+`dry_run=true` each rewrite command runs with `--dry-run` and
+`build-catalogue` is skipped. Its log shows only each command's summary line
+and stderr, never the list of rewritten paths, so a reader sees counts only.
+
+The st-b6bf and st-dd0d pre-registrations in `LEARNINGS.md` bar agents from
+reading output-store objects. An agent dispatches the workflow only on the
+operator's instruction and reads only those summary lines. Agents do not run
+the commands against `s3://` themselves.
+
+The commands, in this order with a dry run before each real run:
 
 ```sh
 uv run wetland-change add-observation-footers --output-root s3://<bucket>/ --dry-run

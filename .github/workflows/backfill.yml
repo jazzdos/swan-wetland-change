@@ -1,0 +1,259 @@
+# Backfill: the README attribution backfill, run on GitHub Actions through the
+# OIDC role so no local AWS login is needed. It rewrites existing output-store
+# files to carry the observation footers, the DEA CC BY 4.0 attribution and the
+# Copernicus Sentinel data notice, then rebuilds the catalogue.
+#
+# Manual dispatch only, and only from main: the IAM role trusts just
+# refs/heads/main. There is no schedule and no push trigger. The `dry_run`
+# input defaults to true; true runs each add-* command with --dry-run and
+# skips build-catalogue, so nothing is written until a run is dispatched with
+# it unticked.
+#
+# This workflow shares the `pipeline` concurrency group, so it never overlaps a
+# scheduled pipeline run or a verify run, and a run in progress is never
+# cancelled. GitHub keeps one pending run per group and cancels the older
+# pending run when a newer one queues, so dispatch only when no run in the
+# group is pending, or a waiting scheduled pipeline run is lost.
+#
+# The log shows only summary lines. The st-b6bf and st-dd0d pre-registrations
+# in LEARNINGS.md bar reading output-store objects, so each command's stdout
+# (the list of rewritten paths) goes to a file under RUNNER_TEMP and only its
+# last line, the count summary, is printed. Failure lines (path and message)
+# on stderr are printed, because they are needed to act on a failure. The
+# command's exit code is kept.
+#
+# One job per command, chained with `needs`, so each gets a fresh 3 hour role
+# session. The four commands read the config and the store only; none loads the
+# AOI, so there is no fetch_aoi step.
+
+name: backfill
+
+on:
+  workflow_dispatch:
+    inputs:
+      dry_run:
+        description: >-
+          True runs each add-* command with --dry-run and skips
+          build-catalogue; untick to write.
+        type: boolean
+        default: true
+
+permissions:
+  contents: read
+
+concurrency:
+  group: pipeline
+  cancel-in-progress: false
+
+jobs:
+  footers:
+    name: add observation footers
+    runs-on: ubuntu-24.04
+    timeout-minutes: 170
+    permissions:
+      # Check out the repository.
+      contents: read
+      # Mint the OIDC token for the AWS role.
+      id-token: write
+
+    steps:
+      - name: Check out the repository
+        # actions/checkout v7.0.1
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+
+      - name: Install uv and Python
+        # astral-sh/setup-uv v9.0.0
+        uses: astral-sh/setup-uv@c771a70e6277c0a99b617c7a806ffedaca235ff9
+        with:
+          version: "0.9.29"
+          python-version: "3.12"
+          enable-cache: false
+
+      - name: Install the project
+        run: uv sync --locked
+
+      - name: Assume the AWS role through OIDC
+        # aws-actions/configure-aws-credentials v6.3.0
+        uses: aws-actions/configure-aws-credentials@e1253824e5c10ff9df46874f81ed3ec929e19cfd
+        with:
+          role-to-assume: ${{ vars.AWS_ROLE_ARN }}
+          aws-region: ${{ vars.AWS_REGION }}
+          # Must equal max_session_duration on the role in infra/main.tf.
+          role-duration-seconds: 10800
+
+      - name: Run add-observation-footers
+        timeout-minutes: 150
+        env:
+          DRY_RUN: ${{ inputs.dry_run }}
+          OUTPUT_BUCKET: ${{ vars.OUTPUT_BUCKET }}
+        run: |
+          args=(--output-root "s3://${OUTPUT_BUCKET}/")
+          if [ "$DRY_RUN" = "true" ]; then
+            args+=(--dry-run)
+          fi
+          status=0
+          uv run --no-sync wetland-change add-observation-footers "${args[@]}" \
+            > "$RUNNER_TEMP/add-observation-footers.out" \
+            2> "$RUNNER_TEMP/add-observation-footers.err" || status=$?
+          tail -n 1 "$RUNNER_TEMP/add-observation-footers.out"
+          cat "$RUNNER_TEMP/add-observation-footers.err" >&2
+          exit "$status"
+
+  dea:
+    name: add DEA attribution
+    needs: footers
+    runs-on: ubuntu-24.04
+    timeout-minutes: 170
+    permissions:
+      # Check out the repository.
+      contents: read
+      # Mint the OIDC token for the AWS role.
+      id-token: write
+
+    steps:
+      - name: Check out the repository
+        # actions/checkout v7.0.1
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+
+      - name: Install uv and Python
+        # astral-sh/setup-uv v9.0.0
+        uses: astral-sh/setup-uv@c771a70e6277c0a99b617c7a806ffedaca235ff9
+        with:
+          version: "0.9.29"
+          python-version: "3.12"
+          enable-cache: false
+
+      - name: Install the project
+        run: uv sync --locked
+
+      - name: Assume the AWS role through OIDC
+        # aws-actions/configure-aws-credentials v6.3.0
+        uses: aws-actions/configure-aws-credentials@e1253824e5c10ff9df46874f81ed3ec929e19cfd
+        with:
+          role-to-assume: ${{ vars.AWS_ROLE_ARN }}
+          aws-region: ${{ vars.AWS_REGION }}
+          # Must equal max_session_duration on the role in infra/main.tf.
+          role-duration-seconds: 10800
+
+      - name: Run add-dea-attribution
+        timeout-minutes: 150
+        env:
+          DRY_RUN: ${{ inputs.dry_run }}
+          OUTPUT_BUCKET: ${{ vars.OUTPUT_BUCKET }}
+        run: |
+          args=(--output-root "s3://${OUTPUT_BUCKET}/")
+          if [ "$DRY_RUN" = "true" ]; then
+            args+=(--dry-run)
+          fi
+          status=0
+          uv run --no-sync wetland-change add-dea-attribution "${args[@]}" \
+            > "$RUNNER_TEMP/add-dea-attribution.out" \
+            2> "$RUNNER_TEMP/add-dea-attribution.err" || status=$?
+          tail -n 1 "$RUNNER_TEMP/add-dea-attribution.out"
+          cat "$RUNNER_TEMP/add-dea-attribution.err" >&2
+          exit "$status"
+
+  copernicus:
+    name: add Copernicus notice
+    needs: dea
+    runs-on: ubuntu-24.04
+    timeout-minutes: 170
+    permissions:
+      # Check out the repository.
+      contents: read
+      # Mint the OIDC token for the AWS role.
+      id-token: write
+
+    steps:
+      - name: Check out the repository
+        # actions/checkout v7.0.1
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+
+      - name: Install uv and Python
+        # astral-sh/setup-uv v9.0.0
+        uses: astral-sh/setup-uv@c771a70e6277c0a99b617c7a806ffedaca235ff9
+        with:
+          version: "0.9.29"
+          python-version: "3.12"
+          enable-cache: false
+
+      - name: Install the project
+        run: uv sync --locked
+
+      - name: Assume the AWS role through OIDC
+        # aws-actions/configure-aws-credentials v6.3.0
+        uses: aws-actions/configure-aws-credentials@e1253824e5c10ff9df46874f81ed3ec929e19cfd
+        with:
+          role-to-assume: ${{ vars.AWS_ROLE_ARN }}
+          aws-region: ${{ vars.AWS_REGION }}
+          # Must equal max_session_duration on the role in infra/main.tf.
+          role-duration-seconds: 10800
+
+      - name: Run add-copernicus-notice
+        timeout-minutes: 150
+        env:
+          DRY_RUN: ${{ inputs.dry_run }}
+          OUTPUT_BUCKET: ${{ vars.OUTPUT_BUCKET }}
+        run: |
+          args=(--output-root "s3://${OUTPUT_BUCKET}/")
+          if [ "$DRY_RUN" = "true" ]; then
+            args+=(--dry-run)
+          fi
+          status=0
+          uv run --no-sync wetland-change add-copernicus-notice "${args[@]}" \
+            > "$RUNNER_TEMP/add-copernicus-notice.out" \
+            2> "$RUNNER_TEMP/add-copernicus-notice.err" || status=$?
+          tail -n 1 "$RUNNER_TEMP/add-copernicus-notice.out"
+          cat "$RUNNER_TEMP/add-copernicus-notice.err" >&2
+          exit "$status"
+
+  catalogue:
+    name: build catalogue
+    needs: copernicus
+    if: ${{ !inputs.dry_run }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 170
+    permissions:
+      # Check out the repository.
+      contents: read
+      # Mint the OIDC token for the AWS role.
+      id-token: write
+
+    steps:
+      - name: Check out the repository
+        # actions/checkout v7.0.1
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+
+      - name: Install uv and Python
+        # astral-sh/setup-uv v9.0.0
+        uses: astral-sh/setup-uv@c771a70e6277c0a99b617c7a806ffedaca235ff9
+        with:
+          version: "0.9.29"
+          python-version: "3.12"
+          enable-cache: false
+
+      - name: Install the project
+        run: uv sync --locked
+
+      - name: Assume the AWS role through OIDC
+        # aws-actions/configure-aws-credentials v6.3.0
+        uses: aws-actions/configure-aws-credentials@e1253824e5c10ff9df46874f81ed3ec929e19cfd
+        with:
+          role-to-assume: ${{ vars.AWS_ROLE_ARN }}
+          aws-region: ${{ vars.AWS_REGION }}
+          # Must equal max_session_duration on the role in infra/main.tf.
+          role-duration-seconds: 10800
+
+      - name: Run build-catalogue
+        timeout-minutes: 150
+        env:
+          OUTPUT_BUCKET: ${{ vars.OUTPUT_BUCKET }}
+        run: |
+          status=0
+          uv run --no-sync wetland-change build-catalogue \
+            --output-root "s3://${OUTPUT_BUCKET}/" \
+            > "$RUNNER_TEMP/build-catalogue.out" \
+            2> "$RUNNER_TEMP/build-catalogue.err" || status=$?
+          tail -n 1 "$RUNNER_TEMP/build-catalogue.out"
+          cat "$RUNNER_TEMP/build-catalogue.err" >&2
+          exit "$status"
