@@ -582,6 +582,40 @@ def test_main_prints_stable_waterbodies_and_raw_ramsar_checksums(
     assert (out / "dbca_010_ramsar_sites.geojson").read_bytes() == ramsar
 
 
+def _dbca_cells(row: str) -> dict[str, str]:
+    header = "| source | url | licence | fetched | sha256 | crs | redistribute_public |"
+    keys = [c.strip() for c in header.strip("|").split("|")]
+    values = [c.strip() for c in row.strip().strip("|").split("|")]
+    assert len(values) == len(keys)
+    return dict(zip(keys, values, strict=True))
+
+
+def test_main_prints_the_dbca_row_that_sources_md_holds(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    sources = Path(__file__).resolve().parents[1] / "data" / "SOURCES.md"
+    held = next(
+        _dbca_cells(line)
+        for line in sources.read_text(encoding="utf-8").splitlines()
+        if line.startswith("| DBCA-010 Ramsar Sites |")
+    )
+    _setup_main(monkeypatch, tmp_path, _dump(RAMSAR_BODY), _dump(_collection()))
+    assert fetch_aoi.main() == 0
+    printed = _dbca_cells(
+        next(
+            r
+            for r in capsys.readouterr().out.splitlines()
+            if r.startswith("| DBCA-010 Ramsar Sites |")
+        )
+    )
+    for key in ("source", "url", "licence", "crs", "redistribute_public"):
+        assert printed[key] == held[key]
+    assert printed["licence"].startswith("CC BY-NC 4.0")
+    assert fetch_aoi.RAMSAR_LICENCE == held["licence"]
+
+
 def _assert_main_fails_and_writes_nothing(
     out: Path, capsys: pytest.CaptureFixture[str], expected: str
 ) -> None:

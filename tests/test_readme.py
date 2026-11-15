@@ -260,6 +260,7 @@ BACKFILL_LINES = [
         "add-observation-footers",
         "add-dea-attribution",
         "add-copernicus-notice",
+        "add-dbca-attribution",
     )
     for flag in (" --dry-run", "")
 ] + ["uv run wetland-change build-catalogue --output-root s3://<bucket>/"]
@@ -269,6 +270,22 @@ BACKFILL_LINES = [
 def test_backfill_section_lists_every_rewrite_command(line: str) -> None:
     section = _section(_readme(), "Attribution backfill", level=3)
     assert line in section.splitlines()
+
+
+def test_backfill_section_names_the_dbca_licence_command_and_keys() -> None:
+    section = _section(_readme(), "Attribution backfill", level=3)
+    assert "CC BY-NC 4.0" in section
+    assert "add-dbca-attribution" in section
+    assert "`dbca_attribution`" in section
+    assert "dbca_attribution_added_after_the_fact" in section
+    assert "add-dbca-attribution" in _running_locally_subcommands()
+
+
+def test_run_stages_describe_the_dbca_attribution() -> None:
+    section = _section(_readme(), "Run stages", level=3)
+    assert "dbca_attribution" in section
+    assert "CC-BY-NC-4.0" in section
+    assert "src/wetland_change/dbca_attribution.py" in section
 
 
 def test_backfill_section_names_the_workflow_and_both_dispatch_lines() -> None:

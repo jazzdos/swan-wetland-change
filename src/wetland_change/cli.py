@@ -1,6 +1,6 @@
 """Command line: discover, run, backfill, score, requeue, verify, freshness,
 build-catalogue, compact-ledger, add-observation-footers, add-dea-attribution,
-add-copernicus-notice.
+add-copernicus-notice, add-dbca-attribution.
 """
 
 from __future__ import annotations
@@ -34,6 +34,7 @@ from wetland_change.ledger import (
 )
 from wetland_change.manifest import new_run_id
 from wetland_change.outputs.attribution_backfill import add_missing_attribution
+from wetland_change.outputs.dbca_backfill import add_missing_dbca_attribution
 from wetland_change.outputs.footer_backfill import add_missing_footers
 from wetland_change.outputs.notice_backfill import add_missing_notice
 from wetland_change.pipeline import (
@@ -600,6 +601,44 @@ def add_copernicus_notice_command(
     if commit is None:
         raise typer.BadParameter("no git commit found; run from a checkout")
     result = add_missing_notice(
+        _store(cfg, output_root), commit=commit, on=when.date(), dry_run=dry_run
+    )
+    for path in result.rewritten:
+        typer.echo(path)
+    for path, message in result.failed:
+        typer.echo(f"{path}\t{message}", err=True)
+    verb = "would rewrite" if dry_run else "rewritten"
+    typer.echo(
+        f"scanned {result.scanned}, {verb} {len(result.rewritten)}, "
+        f"skipped {len(result.skipped)}, failed {len(result.failed)}"
+    )
+    if result.failed:
+        raise typer.Exit(code=1)
+
+
+@app.command("add-dbca-attribution")
+def add_dbca_attribution_command(
+    config: ConfigOption = Path("config/pipeline.toml"),
+    output_root: OutputRootOption = None,
+    dry_run: Annotated[
+        bool,
+        typer.Option(
+            "--dry-run", help="List the files that would be rewritten; write nothing"
+        ),
+    ] = False,
+    now: Annotated[datetime | None, typer.Option(help=NOW_HELP)] = None,
+) -> None:
+    """Add the DBCA-010 CC BY-NC 4.0 attribution to observation and change files
+    that lack it.
+
+    Only those files are rewritten; --dry-run lists them without writing.
+    """
+    cfg = load_config(config)
+    when = (now or datetime.now(UTC)).astimezone(UTC)
+    commit = capture_environment().git_commit
+    if commit is None:
+        raise typer.BadParameter("no git commit found; run from a checkout")
+    result = add_missing_dbca_attribution(
         _store(cfg, output_root), commit=commit, on=when.date(), dry_run=dry_run
     )
     for path in result.rewritten:

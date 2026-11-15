@@ -28,6 +28,14 @@ from wetland_change.attribution import (
     dea_attribution,
 )
 from wetland_change.catalogue.item import SceneItem, parse_item
+from wetland_change.dbca_attribution import (
+    CC_BY_NC_4_LEGALCODE_URI,
+    CC_BY_NC_4_URI,
+    DBCA_ATTRIBUTION_KEY,
+    DBCA_ATTRIBUTION_TEXT,
+    DBCA_DATASET_URI,
+    dbca_attribution,
+)
 from wetland_change.ledger import (
     LedgerEntry,
     entry_for,
@@ -49,6 +57,8 @@ from wetland_change.stac import (
     write_catalogue,
 )
 from wetland_change.stac.catalogue import (
+    DBCA_DATASET_LINK_TITLE,
+    DBCA_LICENCE_LINK_TITLE,
     DEA_LICENCE_LINK_TITLE,
     PROVIDERS,
     ensure_publishable_base_url,
@@ -308,7 +318,7 @@ def test_all_hrefs_are_absolute_https(store: OutputStore) -> None:
 def test_collection_license_and_providers(store: OutputStore) -> None:
     build_and_write(store, base_url=BASE_URL)
     collection = _json(store, "stac/swan-wetland-change/collection.json")
-    assert collection["license"] == "CC-BY-SA-4.0"
+    assert collection["license"] == "CC-BY-NC-4.0"
     names = " | ".join(p["name"] for p in collection["providers"])
     for needle in ("Element 84", "ESA", "DBCA", "Geoscience Australia"):
         assert needle in names
@@ -336,29 +346,65 @@ def test_collection_carries_dea_attribution(store: OutputStore) -> None:
         assert "https://doi.org/10.3390/rs13081437" in dataset["paper_citation"]
 
 
-def test_collection_has_one_dea_licence_link_and_keeps_core_links(
+def test_collection_has_dea_and_dbca_licence_links_and_keeps_core_links(
     store: OutputStore,
 ) -> None:
     build_and_write(store, base_url=BASE_URL)
     collection = _json(store, COLLECTION_KEY)
-    (link,) = _licence_links(collection)
-    assert link["href"] == "https://creativecommons.org/licenses/by/4.0/legalcode.en"
-    assert link["href"] == CC_BY_4_LEGALCODE_URI
-    assert link["type"] == "text/html"
-    assert link["title"] == DEA_LICENCE_LINK_TITLE
+    links = _licence_links(collection)
+    assert len(links) == 2
+    (dea,) = [link for link in links if link["href"] == CC_BY_4_LEGALCODE_URI]
+    assert dea["href"] == "https://creativecommons.org/licenses/by/4.0/legalcode.en"
+    assert dea["type"] == "text/html"
+    assert dea["title"] == DEA_LICENCE_LINK_TITLE
+    (dbca,) = [link for link in links if link["href"] == CC_BY_NC_4_LEGALCODE_URI]
+    assert dbca["href"] == (
+        "https://creativecommons.org/licenses/by-nc/4.0/legalcode.en"
+    )
+    assert dbca["type"] == "text/html"
+    assert dbca["title"] == DBCA_LICENCE_LINK_TITLE
     rels = {link["rel"] for link in collection["links"]}
     assert {"root", "self", "parent"} <= rels
 
 
-def test_collection_license_and_providers_are_unchanged(store: OutputStore) -> None:
+def test_collection_license_is_cc_by_nc_and_providers_are_unchanged(
+    store: OutputStore,
+) -> None:
     build_and_write(store, base_url=BASE_URL)
     collection = _json(store, COLLECTION_KEY)
-    assert collection["license"] == "CC-BY-SA-4.0"
+    assert collection["license"] == "CC-BY-NC-4.0"
     assert collection["providers"] == [
         {"name": name, "roles": [str(role) for role in roles], "url": url}
         for name, roles, url in PROVIDERS
     ]
     assert len(collection["providers"]) == 4
+
+
+def test_collection_carries_dbca_attribution(store: OutputStore) -> None:
+    build_and_write(store, base_url=BASE_URL)
+    block = _json(store, COLLECTION_KEY)[DBCA_ATTRIBUTION_KEY]
+    assert block == dbca_attribution("collection")
+    assert block["licence_uri"] == CC_BY_NC_4_URI
+    assert block["dataset_uri"] == DBCA_DATASET_URI
+
+
+def test_collection_links_the_dbca_catalogue_entry(store: OutputStore) -> None:
+    build_and_write(store, base_url=BASE_URL)
+    collection = _json(store, COLLECTION_KEY)
+    (link,) = [link for link in collection["links"] if link["rel"] == "via"]
+    assert link["href"] == DBCA_DATASET_URI
+    assert link["type"] == "text/html"
+    assert link["title"] == DBCA_DATASET_LINK_TITLE
+
+
+def test_collection_json_names_no_other_cc_licence_for_dbca(
+    store: OutputStore,
+) -> None:
+    build_and_write(store, base_url=BASE_URL)
+    text = store.read_bytes(COLLECTION_KEY).decode()
+    assert "CC-BY-NC-4.0" in text
+    for banned in ("SA-4.0", "SA 4.0", "ShareAlike"):
+        assert banned not in text
 
 
 def test_catalogue_with_attribution_validates(store: OutputStore) -> None:
@@ -373,15 +419,21 @@ def test_empty_ledger_collection_carries_attribution_and_licence_link(
     build_and_write(store, base_url=BASE_URL)
     collection = _json(store, COLLECTION_KEY)
     assert collection[DEA_ATTRIBUTION_KEY] == dea_attribution("collection")
-    (link,) = _licence_links(collection)
-    assert link["href"] == CC_BY_4_LEGALCODE_URI
+    assert collection[DBCA_ATTRIBUTION_KEY] == dbca_attribution("collection")
+    hrefs = {link["href"] for link in _licence_links(collection)}
+    assert {CC_BY_4_LEGALCODE_URI, CC_BY_NC_4_LEGALCODE_URI} <= hrefs
+    via = [link for link in collection["links"] if link["rel"] == "via"]
+    assert [link["href"] for link in via] == [DBCA_DATASET_URI]
 
 
 def test_existing_collection_is_updated_on_next_build(store: OutputStore) -> None:
     build_and_write(store, base_url=BASE_URL)
     old = _json(store, COLLECTION_KEY)
     del old[DEA_ATTRIBUTION_KEY]
-    old["links"] = [link for link in old["links"] if link["rel"] != "license"]
+    del old[DBCA_ATTRIBUTION_KEY]
+    old["links"] = [
+        link for link in old["links"] if link["rel"] not in ("license", "via")
+    ]
     old_bytes = (json.dumps(old, indent=2, sort_keys=True) + "\n").encode()
     store.write_bytes(COLLECTION_KEY, old_bytes)
     # Model a store last written by the earlier build: the index digest for the
@@ -390,11 +442,14 @@ def test_existing_collection_is_updated_on_next_build(store: OutputStore) -> Non
     index["objects"][COLLECTION_KEY] = hashlib.sha256(old_bytes).hexdigest()
     store.write_bytes(INDEX_KEY, (json.dumps(index, indent=2) + "\n").encode())
     assert DEA_ATTRIBUTION_KEY not in _json(store, COLLECTION_KEY)
+    assert DBCA_ATTRIBUTION_KEY not in _json(store, COLLECTION_KEY)
 
     assert build_and_write(store, base_url=BASE_URL) == [COLLECTION_KEY]
     collection = _json(store, COLLECTION_KEY)
     assert collection[DEA_ATTRIBUTION_KEY] == dea_attribution("collection")
-    assert len(_licence_links(collection)) == 1
+    assert collection[DBCA_ATTRIBUTION_KEY] == dbca_attribution("collection")
+    assert len(_licence_links(collection)) == 2
+    assert len([link for link in collection["links"] if link["rel"] == "via"]) == 1
 
 
 NOTICE_2026 = "Contains modified Copernicus Sentinel data 2026"
@@ -416,8 +471,8 @@ def test_collection_carries_copernicus_notice(store: OutputStore) -> None:
     assert collection[COPERNICUS_NOTICE_KEY] == copernicus_notice("collection", [2026])
     assert collection[COPERNICUS_NOTICE_KEY]["notice"] == NOTICE_2026
     assert collection[DEA_ATTRIBUTION_KEY] == dea_attribution("collection")
-    assert collection["license"] == "CC-BY-SA-4.0"
-    assert len(_licence_links(collection)) == 1
+    assert collection["license"] == "CC-BY-NC-4.0"
+    assert len(_licence_links(collection)) == 2
 
 
 def test_each_item_carries_the_notice_text(store: OutputStore) -> None:
@@ -438,6 +493,31 @@ def test_items_parquet_has_the_notice_column(
     assert table.column(COPERNICUS_NOTICE_KEY).to_pylist() == [NOTICE_2026] * len(
         SUCCEEDED_IDS
     )
+
+
+def test_each_item_carries_the_dbca_attribution_text(store: OutputStore) -> None:
+    build_and_write(store, base_url=BASE_URL)
+    for item_id in SUCCEEDED_IDS:
+        props = _item_json(store, item_id)["properties"]
+        assert props[DBCA_ATTRIBUTION_KEY] == DBCA_ATTRIBUTION_TEXT
+
+
+def test_items_parquet_has_the_dbca_attribution_column(
+    store: OutputStore, tmp_path: Path
+) -> None:
+    build_and_write(store, base_url=BASE_URL)
+    local = tmp_path / "items.parquet"
+    local.write_bytes(store.read_bytes(PARQUET_KEY))
+    table = pq.read_table(local)
+    assert table.column(DBCA_ATTRIBUTION_KEY).to_pylist() == [
+        DBCA_ATTRIBUTION_TEXT
+    ] * len(SUCCEEDED_IDS)
+
+
+def test_catalogue_with_dbca_attribution_validates(store: OutputStore) -> None:
+    build_and_write(store, base_url=BASE_URL)
+    assert DBCA_ATTRIBUTION_KEY in _json(store, COLLECTION_KEY)
+    _load_and_validate(store)
 
 
 def test_notice_years_follow_the_items(
@@ -466,7 +546,7 @@ def test_empty_ledger_collection_has_no_copernicus_notice(tmp_path: Path) -> Non
     collection = _json(store, COLLECTION_KEY)
     assert COPERNICUS_NOTICE_KEY not in collection
     assert collection[DEA_ATTRIBUTION_KEY] == dea_attribution("collection")
-    assert len(_licence_links(collection)) == 1
+    assert len(_licence_links(collection)) == 2
 
 
 def test_catalogue_with_copernicus_notice_validates(store: OutputStore) -> None:

@@ -24,6 +24,11 @@ from wetland_change import cli
 from wetland_change.attribution import dea_attribution
 from wetland_change.change import SCORE_COLUMNS
 from wetland_change.config import WaterConfig, WaterSetting
+from wetland_change.dbca_attribution import (
+    CC_BY_NC_4_URI,
+    DBCA_DATASET_URI,
+    dbca_attribution,
+)
 from wetland_change.ledger import LedgerEntry, entries_to_table
 from wetland_change.outputs.changes import (
     CHANGE_COLUMNS,
@@ -957,7 +962,30 @@ def test_change_footer_carries_the_dea_attribution(tmp_path: Path) -> None:
         for key in FOOTER_KEYS:
             assert footer[key.encode()] == expected[key].encode()
         keys = {k.decode() for k in footer} - {"geo", "pandas", "ARROW:schema"}
-        assert keys == {*FOOTER_KEYS, "dea_attribution", "copernicus_notice"}
+        assert keys == {
+            *FOOTER_KEYS,
+            "dea_attribution",
+            "dbca_attribution",
+            "copernicus_notice",
+        }
+
+
+def test_change_footer_carries_the_dbca_attribution(tmp_path: Path) -> None:
+    store = OutputStore(str(tmp_path))
+    relpath = write_changes(
+        _scores(), GEOMETRIES, store, water=WATER, operation_epsg=OPERATION_EPSG
+    )
+    for footer in _change_footers(tmp_path / relpath):
+        block = json.loads(footer[b"dbca_attribution"])
+        assert block == dbca_attribution("change")
+        assert block["licence_uri"] == CC_BY_NC_4_URI
+        assert block["dataset_uri"] == DBCA_DATASET_URI
+        assert (
+            "Department of Biodiversity, Conservation and Attractions"
+            in block["creator"]
+        )
+        assert block["modified"] is True
+        assert block["modification"]
 
 
 def test_write_changes_notice_years_default_to_the_scored_rows(

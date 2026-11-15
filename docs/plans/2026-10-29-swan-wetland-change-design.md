@@ -17,7 +17,7 @@ and partitioning. Decisions taken during brainstorming:
 | Purpose | Portfolio piece, public repository | The brief lists what the project "shows" to a reviewer |
 | Hosting | GitHub Actions cron, outputs on S3 via OIDC, stac-browser on GitHub Pages | Free compute, object storage for outputs, no long-lived keys |
 | Sensor | Sentinel-2 L2A only, collection `sentinel-2-c1-l2a` | Free and unsigned; Landsat on Earth Search is requester-pays; the older `sentinel-2-l2a` collection has the radiometric offset baked into some items while still advertising it |
-| Area of interest | Ramsar sites on the Swan Coastal Plain from DBCA-010 | CC BY-SA 4.0, no login, about 28 polygons; DBCA-019 has a licence conflict (CC BY-NC on data.wa.gov.au, CC BY-SA on data.gov.au) and needs a SLIP login for bulk download |
+| Area of interest | Ramsar sites on the Swan Coastal Plain from DBCA-010 | CC BY-NC 4.0 (amended 2026-11-15, st-22f1: see docs/research/2026-11-14-public-release-licences.md), no login, about 28 polygons; DBCA-019 has a licence conflict (CC BY-NC on data.wa.gov.au, CC BY-SA on data.gov.au) and needs a SLIP login for bulk download |
 | Architecture | Vector-first zonal statistics per wetland per scene | Kilobytes per scene, minutes per run, strongest incremental story |
 | Verification | Every goal has an independent known-good reference and a tolerance | Requested explicitly; the first oracle already falsified the textbook water threshold |
 
@@ -303,7 +303,7 @@ unless noted:
   DEA Water Observations method as the reference.
 - Anomaly method alternatives to median and MAD, recorded in docs/research.
 - Licence text for DBCA-010 for data/SOURCES.md; derived outputs inherit
-  CC BY-SA 4.0. DEA products are CC BY 4.0.
+  CC BY-NC 4.0 (amended 2026-11-15, st-22f1: see docs/research/2026-11-14-public-release-licences.md). DEA products are CC BY 4.0.
 - Earth Search v2 timeline (`sentinel-2-c1-l2a` becomes `sentinel-2-l2a`
   in v2, CQL2 supported) and the SNS topic
   `arn:aws:sns:us-west-2:608149789419:cirrus-es-prod-publish` as a future
@@ -327,7 +327,7 @@ unless noted:
 | Seasonal drying is not change | Month-of-year baseline |
 | SCL weak over water and shadow | Valid-fraction gate, two water signals, DEA agreement column (null when DEA holds no item at first processing, ADR 0009) |
 | Runner time and memory for Peel-Yalgorup | Spike 3 before code |
-| Licence of derived outputs | BY-SA for Ramsar-derived rows, BY for DEA-derived checks, stated in SOURCES.md and the catalogue |
+| Licence of derived outputs | BY-NC for Ramsar-derived rows (amended 2026-11-15, st-22f1: see docs/research/2026-11-14-public-release-licences.md), BY for DEA-derived checks, stated in SOURCES.md and the catalogue |
 | IAM and OIDC friction | Spike 5 before pipeline code |
 | DEA S2 Water Observations retains three months | Live oracle only; Landsat products for history. The per-row agreement is filled at first processing and never afterwards (ADR 0009) |
 

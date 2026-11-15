@@ -1113,6 +1113,62 @@ def test_verify_run_with_injected_dependencies(
     assert wo.passed is not None and wo.detail["polygon_id"] == "ramsar-52"
 
 
+def _walk_keys(node: Any) -> set[str]:
+    if isinstance(node, dict):
+        keys = {str(k) for k in node}
+        for value in node.values():
+            keys |= _walk_keys(value)
+        return keys
+    if isinstance(node, list):
+        keys = set()
+        for value in node:
+            keys |= _walk_keys(value)
+        return keys
+    return set()
+
+
+def test_verification_report_holds_no_dbca_010_content(
+    fixture_item: dict[str, Any], fixture_polygon: BaseGeometry, tmp_path: Path
+) -> None:
+    """Record the st-22f1 judgement on the verification JSON.
+
+    It holds polygon ids (ramsar-<objectid>) and values computed inside the
+    DBCA-010 polygons, but no DBCA-010 geometry or site name, so the DBCA-010
+    attribution is n/a for it (docs/research/2026-11-14-public-release-licences.md,
+    Published files).
+    """
+    cfg, store, run_id, polygons = _built_run(fixture_item, fixture_polygon, tmp_path)
+    grid = RasterioReader().open_grid(fixture_item["assets"]["green"]["href"])
+
+    def lookup(scene: SceneItem, bbox: Any) -> str | None:
+        return "wo.tif"
+
+    def pixel(scene: SceneItem, reader: Any, window: Window) -> Check:
+        return Check("pixels_vs_planetary_computer", True, 1.0, 1.0, "fake")
+
+    verify_run(
+        cfg,
+        store,
+        run_id,
+        polygons=polygons,
+        wo_lookup=lookup,
+        wo_reader_factory=lambda: FakeReader(
+            grid=grid, data=np.full((48, 48), WO_WET, np.uint8)
+        ),
+        pixel_checker=pixel,
+        docs_dir=None,
+    )
+    text = store.read_bytes(f"verification/{run_id}.json").decode("utf-8")
+    doc = json.loads(text)
+    assert "ramsar-52" in text
+    for polygon in polygons:
+        if polygon.site:
+            assert polygon.site not in text
+    assert '"coordinates"' not in text
+    assert not _walk_keys(doc) & {"site", "geometry", "geometry_4326"}
+    assert "dbca_attribution" not in doc
+
+
 def _ledger_entry(
     item_id: str,
     *,

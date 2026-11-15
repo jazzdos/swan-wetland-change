@@ -15,10 +15,14 @@ never a skip. A missing, unreadable or malformed index counts as empty. The
 index is not linked from the catalogue, so `validate_all` never sees it, and
 its key is never in the returned list.
 
-The collection carries `copernicus_notice` for the UTC years of its items
-(term T2, docs/research/2026-11-14-public-release-licences.md), and each item
-carries the notice text for its own acquisition year, so items.parquet gains a
-`copernicus_notice` string column.
+The collection `license` is CC-BY-NC-4.0 for the DBCA-010 content of its
+assets (term T3, docs/research/2026-11-14-public-release-licences.md). It
+carries `dbca_attribution`, a rel=license link to the CC BY-NC 4.0 legal code
+and a via link to the DBCA-010 catalogue entry. It keeps `dea_attribution` with
+its CC BY 4.0 licence link (T1) and `copernicus_notice` (T2) for the UTC years
+of its items. Each item carries the DBCA-010 attribution text and the notice
+text for its own acquisition year, so items.parquet gains `dbca_attribution`
+and `copernicus_notice` string columns.
 """
 
 from __future__ import annotations
@@ -43,6 +47,14 @@ from wetland_change.attribution import (
     dea_attribution,
 )
 from wetland_change.catalogue.item import parse_timestamp
+from wetland_change.dbca_attribution import (
+    CC_BY_NC_4_LEGALCODE_URI,
+    CC_BY_NC_4_SPDX,
+    DBCA_ATTRIBUTION_KEY,
+    DBCA_ATTRIBUTION_TEXT,
+    DBCA_DATASET_URI,
+    dbca_attribution,
+)
 from wetland_change.ledger import read_ledger
 from wetland_change.outputs.changes import change_path
 from wetland_change.sentinel_notice import (
@@ -56,9 +68,14 @@ from wetland_change.verify.checks import report_path
 
 CATALOG_ID = "swan-wetland-change-catalog"
 COLLECTION_ID = "swan-wetland-change"
-LICENSE = "CC-BY-SA-4.0"
+LICENSE = CC_BY_NC_4_SPDX
 DEA_LICENCE_LINK_TITLE = (
     "CC BY 4.0 licence text for the Geoscience Australia (DEA) data"
+)
+DBCA_LICENCE_LINK_TITLE = "CC BY-NC 4.0 licence text for the DBCA-010 Ramsar Sites data"
+DBCA_DATASET_LINK_TITLE = (
+    "DBCA-010 Ramsar Sites catalogue entry "
+    "(Department of Biodiversity, Conservation and Attractions)"
 )
 SWAN_COASTAL_PLAIN_BBOX = [114.9, -33.3, 115.9, -31.5]
 PARQUET_MEDIA_TYPE = CONTENT_TYPES[".parquet"]
@@ -131,6 +148,7 @@ def _item(
         properties={
             **{k: props[k] for k in KEPT_PROPERTIES if k in props},
             COPERNICUS_NOTICE_KEY: notice_text(utc_years([when])),
+            DBCA_ATTRIBUTION_KEY: DBCA_ATTRIBUTION_TEXT,
         },
     )
     for link in source.get("links", []):
@@ -204,12 +222,14 @@ def build_catalogue(
 ) -> pystac.Catalog:
     """`available` holds the store-relative paths that exist, gating item assets.
 
-    The collection carries `dea_attribution` and a `license` link for the CC BY
-    4.0 DEA content of its assets (term T1,
-    docs/research/2026-11-14-public-release-licences.md). `license` stays the
-    recorded CC-BY-SA-4.0. It also carries `copernicus_notice` for the UTC years
-    of its items (term T2), absent when there are no items, and each item
-    carries the notice text for its year.
+    The collection `license` is CC-BY-NC-4.0 for the DBCA-010 content of its
+    assets (term T3, docs/research/2026-11-14-public-release-licences.md). It
+    carries `dbca_attribution`, a rel=license link to the CC BY-NC 4.0 legal
+    code and a via link to the DBCA-010 catalogue entry. It keeps
+    `dea_attribution` with its CC BY 4.0 licence link (term T1) and
+    `copernicus_notice` for the UTC years of its items (term T2), absent when
+    there are no items. Each item carries the DBCA-010 attribution text and the
+    notice text for its year.
     """
     base_url = base_url.rstrip("/")
     items = [_item(entry, base_url, available) for entry in processed_entries(ledger)]
@@ -229,6 +249,7 @@ def build_catalogue(
         ],
         extra_fields={
             DEA_ATTRIBUTION_KEY: dea_attribution("collection"),
+            DBCA_ATTRIBUTION_KEY: dbca_attribution("collection"),
             **(
                 {COPERNICUS_NOTICE_KEY: copernicus_notice("collection", years)}
                 if years
@@ -260,6 +281,22 @@ def build_catalogue(
             target=CC_BY_4_LEGALCODE_URI,
             media_type="text/html",
             title=DEA_LICENCE_LINK_TITLE,
+        )
+    )
+    collection.add_link(
+        pystac.Link(
+            rel=pystac.RelType.LICENSE,
+            target=CC_BY_NC_4_LEGALCODE_URI,
+            media_type="text/html",
+            title=DBCA_LICENCE_LINK_TITLE,
+        )
+    )
+    collection.add_link(
+        pystac.Link(
+            rel=pystac.RelType.VIA,
+            target=DBCA_DATASET_URI,
+            media_type="text/html",
+            title=DBCA_DATASET_LINK_TITLE,
         )
     )
     catalog.add_child(collection)

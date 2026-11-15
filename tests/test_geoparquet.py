@@ -19,6 +19,11 @@ from shapely.geometry import box
 
 from wetland_change.attribution import dea_attribution
 from wetland_change.config import WaterConfig, WaterSetting
+from wetland_change.dbca_attribution import (
+    CC_BY_NC_4_URI,
+    DBCA_DATASET_URI,
+    dbca_attribution,
+)
 from wetland_change.mask import CLEAR_BANDS, CLEAR_CLASSES
 from wetland_change.outputs.geoparquet import (
     OBSERVATION_COLUMNS,
@@ -385,7 +390,26 @@ def test_footer_carries_the_dea_attribution_for_observations(
         for key in FOOTER_KEYS:
             assert footer[key.encode()] == expected[key].encode()
         keys = {k.decode() for k in footer} - {"geo", "pandas", "ARROW:schema"}
-        assert keys == {*FOOTER_KEYS, "dea_attribution", "copernicus_notice"}
+        assert keys == {
+            *FOOTER_KEYS,
+            "dea_attribution",
+            "dbca_attribution",
+            "copernicus_notice",
+        }
+
+
+def test_observation_footer_carries_the_dbca_attribution(tmp_path: Path) -> None:
+    for footer in _footers(_written(tmp_path, ROWS)):
+        block = json.loads(footer[b"dbca_attribution"])
+        assert block == dbca_attribution("observation")
+        assert block["licence_uri"] == CC_BY_NC_4_URI
+        assert block["dataset_uri"] == DBCA_DATASET_URI
+        assert (
+            "Department of Biodiversity, Conservation and Attractions"
+            in block["creator"]
+        )
+        assert block["modified"] is True
+        assert block["modification"]
 
 
 def test_footer_carries_the_copernicus_notice_for_observations(

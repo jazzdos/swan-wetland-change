@@ -10,8 +10,11 @@ scl_classes_clear, clear_pixel_rule, water_settings and water_units_note.
 source_epsg equals operation_epsg because `process_scene` refuses any scene
 whose EPSG differs from the operation EPSG. The footer also carries
 `dea_attribution`, the CC BY 4.0 attribution for the Geoscience Australia DEA
-data (`wetland_change.attribution`), and `copernicus_notice`, the Copernicus
-Sentinel data notice for the UTC years of the rows
+data (`wetland_change.attribution`), `dbca_attribution`, the CC BY-NC 4.0
+attribution for the DBCA-010 Ramsar Sites data (geometry, site and polygon_id;
+`wetland_change.dbca_attribution`, term T3 of
+docs/research/2026-11-14-public-release-licences.md), and `copernicus_notice`,
+the Copernicus Sentinel data notice for the UTC years of the rows
 (`wetland_change.sentinel_notice`). Files written before these keys existed
 still read, because readers use only the `geo` key.
 """
@@ -27,6 +30,7 @@ import pyarrow.parquet as pq
 
 from wetland_change.attribution import dea_attribution_footer
 from wetland_change.config import WaterConfig
+from wetland_change.dbca_attribution import dbca_attribution_footer
 from wetland_change.outputs.provenance import footer_metadata
 from wetland_change.sentinel_notice import copernicus_notice_footer, utc_years
 from wetland_change.stats import ObservationRow
@@ -98,7 +102,12 @@ def write_observations(
     water: WaterConfig,
     operation_epsg: int,
 ) -> str:
-    """Write one item's rows with provenance footer keys; returns the path."""
+    """Write one item's rows with provenance footer keys; returns the path.
+
+    The footer carries `dea_attribution`, `dbca_attribution` (CC BY-NC 4.0, the
+    DBCA-010 Ramsar Sites data) and `copernicus_notice` beside the provenance
+    keys.
+    """
     if not rows:
         raise ValueError("no rows to write")
     items = {r.item_id for r in rows}
@@ -117,6 +126,7 @@ def write_observations(
             {
                 **footer,
                 **dea_attribution_footer("observation"),
+                **dbca_attribution_footer("observation"),
                 **copernicus_notice_footer("observation", utc_years(frame["datetime"])),
             },
         ),
