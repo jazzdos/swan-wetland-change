@@ -102,3 +102,7 @@ Worktree: `/Users/jarrodbaker/Documents/swan-wetland-change/.worktrees/st-1a5f` 
 - Do not edit `LEARNINGS.md`, `AGENTS.md`, README "Data sources and licences" or README "Attribution backfill".
 - Do not touch the repository's visibility.
 - Do not commit or push.
+
+## Implementation Notes
+
+- 2026-11-15T11:36:27.582Z: 2026-11-15, Jarrod: 'approved tofu plan and park written confirmation from dbca - contineu without it'. Recorded reading: ADR 0016 precondition 4 (operator ran and reviewed the plan) is met by Jarrod; precondition 3 (DBCA written confirmation) is waived and parked as st-4c87. Precondition 1 is met (st-22f1 merged and pushed, cbe0510). Precondition 2 (backfill.yml run with the dbca job) is dispatched by the orchestrator on this instruction. The apply stays the operator's per ADR 0016; no agent runs tofu.
