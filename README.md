@@ -183,9 +183,9 @@ separate terms. Outputs derived from the DBCA-010 Ramsar polygons (the
 observation, change and catalogue files, declared as CC-BY-NC-4.0 in the STAC
 collection) are CC BY-NC 4.0, non-commercial use only. That licence is the
 custodian's catalogue entry, adopted 2026-11-15 and not confirmed in writing by
-DBCA (`docs/research/2026-11-14-public-release-licences.md`). The DEA inputs and references (Waterbodies,
-Water Observations, ARD) are CC BY 4.0. Sentinel-2 data follow the Copernicus
-Sentinel data terms.
+DBCA (`docs/research/2026-11-14-public-release-licences.md`). The DEA inputs and
+references (Waterbodies, Water Observations, ARD) are CC BY 4.0. Sentinel-2 data
+follow the Copernicus Sentinel data terms.
 
 | Source | Use | Licence |
 |---|---|---|
@@ -200,8 +200,12 @@ Sentinel data terms.
 
 The published files carry the DEA attribution described under Run stages,
 term T1 of `docs/research/2026-11-14-public-release-licences.md`. They also
-carry the Copernicus Sentinel data notice, term T2 of the same document. They
-also carry the DBCA-010 attribution, term T3 of the same document.
+carry the Copernicus Sentinel data notice, term T2 of the same document. The
+DBCA-010 attribution, term T3 of the same document, is carried by the
+observation and change files (footer key `dbca_attribution`) and by the STAC
+collection and items. The ledger files, run manifests, verification JSON and
+Markdown reports, the STAC root `catalog.json` and `stac/write-index.json` carry
+none.
 
 URLs, fetch dates, checksums, CRS and redistribution flags are in
 `data/SOURCES.md`. Rows derived from the Ramsar polygons inherit CC BY-NC
@@ -357,8 +361,9 @@ uv run wetland-change freshness
   `dbca_attribution_added_after_the_fact` (the git commit that ran the command
   and the date) to each observation file and change file that lacks
   `dbca_attribution`. Files that already hold `dbca_attribution` are skipped, so
-  a second run rewrites nothing. Verification reports, ledger files and the
-  catalogue hold no DBCA-010 material and are not scanned. Every existing
+  a second run rewrites nothing. It does not scan verification reports, ledger
+  files or run manifests, and it does not scan the catalogue: `build-catalogue`
+  writes `dbca_attribution` to the STAC collection and items. Every existing
   column, row and footer key is unchanged. `--dry-run` lists the files it would
   rewrite and writes nothing. It prints `scanned N, rewritten M, skipped K,
   failed F` and exits 1 if any file fails.
@@ -496,12 +501,14 @@ output root was seeded from the 2026-11-02 backfill copy.
 
 Files written before st-8856 lack the DEA attribution, files written before
 st-d5c1 lack the Copernicus notice, and files written before st-22f1 lack the
-DBCA-010 CC BY-NC 4.0 attribution. The backfill runs before ADR 0011
-step 3 (`docs/decisions/0011-private-output-bucket.md`), by one of two routes.
-The operator can run it from a local checkout of main that includes st-8856,
-st-d5c1 and st-22f1, with AWS credentials, when no workflow is running. Or it
-can run through `.github/workflows/backfill.yml`, dispatched from main, a dry
-run first and then the real run:
+DBCA-010 CC BY-NC 4.0 attribution. The backfill is the gate of the public-read
+apply: step 2 of 'Preconditions of the apply' in ADR 0016
+(`docs/decisions/0016-public-read-output-bucket.md`), which supersedes ADR 0011.
+It was met on 2026-11-15 (ADR 0016, 'Apply'). It runs by one of two routes. The
+operator can run it from a local checkout of main that includes st-8856, st-d5c1
+and st-22f1, with AWS credentials, when no workflow is running. Or it can run
+through `.github/workflows/backfill.yml`, dispatched from main, a dry run first
+and then the real run:
 
 ```sh
 gh workflow run backfill.yml -f dry_run=true
@@ -552,10 +559,11 @@ uv run wetland-change build-catalogue --output-root s3://<bucket>/
   field is unchanged, including `generated_at`. It prints only paths and
   counts, and a second run rewrites nothing.
 - `add-dbca-attribution` adds `dbca_attribution` and
-  `dbca_attribution_added_after_the_fact` (commit and date) to every
-  observation file and change file that lacks `dbca_attribution`. Verification
-  reports, ledger files and the catalogue hold no DBCA-010 material and are not
-  scanned. Every existing column, row and footer key is unchanged, including
+  `dbca_attribution_added_after_the_fact` (commit and date) to every observation
+  file and change file that lacks `dbca_attribution`. It does not scan
+  verification reports, ledger files or run manifests, and it does not scan the
+  catalogue: `build-catalogue` writes `dbca_attribution` to the STAC collection
+  and items. Every existing column, row and footer key is unchanged, including
   `generated_at`. It prints only paths and counts, and a second run rewrites
   nothing.
 - The four rewrite commands are independent: each adds only its own keys,
