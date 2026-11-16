@@ -1,8 +1,8 @@
 # 0016 Public read on the output bucket
 
 Status: accepted, 2026-11-15; public access approved by Jarrod on 2026-11-14.
-Takes effect at the operator's apply of `infra/`; until then the bucket stays
-private.
+Public read has been in effect since 2026-11-16, when the apply recorded under
+Apply was run.
 Supersedes: 0011 (`docs/decisions/0011-private-output-bucket.md`).
 
 ## Context
@@ -83,9 +83,9 @@ Unchanged: the pipeline role (OIDC trust on `main`, `s3:ListBucket` on the
 bucket, Get, Put and Delete on objects), the ownership controls, the lifecycle
 rule and the outputs `role_arn` and `bucket_url`.
 
-Readers: after the apply, DuckDB reads the observations with an anonymous
+Readers: since the apply, DuckDB reads the observations with an anonymous
 secret (README "Querying with DuckDB") and the STAC catalogue is read over
-https. Until the apply, readers use AWS credentials as under 0011.
+https. Readers with AWS credentials can still use the credential chain.
 
 The GitHub repository's visibility is outside this decision.
 
@@ -108,7 +108,42 @@ The commit that records the apply removes the `xfail` marker from
 `tests/test_live_anonymous_read.py` and updates the statements that hold only
 while the bucket is private: the STAC catalogue row of the README verification
 matrix, the `[catalogue]` comment in `config/pipeline.toml` and the header
-comment of `.github/workflows/verify.yml`.
+comment of `.github/workflows/verify.yml`. That commit is st-3d77.
+
+## Apply
+
+- On 2026-11-16 the apply was run by the orchestrator, not the operator: it
+  ran `terraform plan` and `terraform apply`. Jarrod said "just make it
+  public". This is a deviation from the sentence "The apply is run by the operator, never by an agent" under
+  Preconditions of the apply, which stays as the record of the original
+  decision.
+- Tooling: terraform v1.15.8 with profile `accu-tracker`, credentials exported
+  to the environment. The saved plan: 2 to add, 1 to change, 0 to destroy.
+  - Add `aws_s3_bucket_cors_configuration.outputs`, allowing GET and HEAD from
+    any origin.
+  - Add `aws_s3_bucket_policy.public_read`, with statement `PublicReadObjects`
+    (`s3:GetObject` on every object) and statement
+    `PublicListObservationPrefix` (`s3:ListBucket` with `s3:prefix` StringLike
+    `observations/*`).
+  - Change `aws_s3_bucket_public_access_block.outputs`: `block_public_policy`
+    and `restrict_public_buckets` from true to false.
+- Refresh drift, limited to two resources and not changed by the plan:
+  `aws_iam_role.pipeline` (`inline_policy` now shows the module's bucket-access
+  policy; `tags` null to `{}`) and `aws_s3_bucket.outputs` (`lifecycle_rule`
+  now shows the module's abort-incomplete-multipart-uploads rule; `tags` null
+  to `{}`).
+- Result: apply complete, 2 added, 1 changed, 0 destroyed.
+- Header-only check: `stac/catalog.json` returned `HTTP/1.1 200 OK` with
+  `Access-Control-Allow-Origin: *`. Anonymous ListObjectsV2, status codes only
+  with bodies discarded: `observations/` 200, bucket root 403, `ledger/` 403.
+- Preconditions: 1 (st-22f1 merged) and 2 (its backfill, run 43714356660 on
+  2026-11-15, DBCA-010 attribution rewrote 1946 of 1946, 0 failed) were met.
+  Precondition 3 (DBCA written confirmation) was waived by Jarrod on
+  2026-11-15 and is parked as story st-4c87. Precondition 4: Jarrod approved
+  the plan ("approved tofu plan"), then handed the apply to the orchestrator
+  ("just make it public").
+- Agents did not read any observation or output-store object for the check.
+  The blindness rules in `LEARNINGS.md` for st-b6bf and st-dd0d stay in force.
 
 ## Cost
 
@@ -120,27 +155,26 @@ the module caps them.
 
 - Success criteria 2 (the catalogue opens in stac-browser and validates) and
   3 (DuckDB reads the observations from S3 with one query) apply to anonymous
-  readers again from the apply.
-- Spike 6 and the anonymous half of spike 7 can run after the apply. Agents do
-  not read observations until the st-b6bf and st-dd0d decision files are
-  committed (`LEARNINGS.md`).
+  readers again since the apply.
+- Spike 6 and the anonymous half of spike 7 are unblocked by the apply but
+  have not run. Agents still do not read observations until the st-b6bf and
+  st-dd0d decision files are committed (`LEARNINGS.md`).
 
 ## Consequences
 
-- Before the apply nothing changes in AWS: the bucket stays private, and the
-  README says readers need credentials until the operator's apply.
-- After the apply every object in the bucket is readable by anyone who knows
-  its key, including the ledger, run manifests and verification reports.
-  Nothing private may be written to the bucket.
-- `catalogue.base_url` links resolve without credentials after the apply.
+- The apply of 2026-11-16 changed the access block and added the bucket policy
+  and CORS rule; nothing else in AWS changed.
+- Every object in the bucket is readable by anyone who knows its key,
+  including the ledger, run manifests and verification reports. Nothing
+  private may be written to the bucket.
+- `catalogue.base_url` links resolve without credentials.
 - The weekly `verify.yml` run executes `pytest -m live` from GitHub `main`
-  with no AWS credentials. The anonymous test is marked `xfail(strict=True)`
-  until the apply, so that run stays green while the bucket is private. After
-  the apply the test passes, which fails the run as an unexpected pass until
-  the marker is removed.
+  with no AWS credentials. The anonymous test is no longer marked `xfail`, so
+  that run checks anonymous read and fails if the bucket stops being
+  anonymously readable.
 - `tests/test_live_private_outputs.py` is removed. Its credentialed test moves
-  unchanged to `tests/test_live_credentialed_read.py`, because readers need
-  credentials until the apply.
+  unchanged to `tests/test_live_credentialed_read.py`, because it still checks
+  the pipeline and operator route.
 
 ## Evidence
 
@@ -148,7 +182,9 @@ the module caps them.
 statements, the `s3:prefix` condition (and fails on copies of the policy whose
 list statement has lost it), `depends_on` the access block and the CORS rule.
 `tests/test_public_read_decision.py` checks this record and the status line
-of 0011. `tests/test_live_anonymous_read.py` (live, not run by st-1a5f) checks
-an anonymous GET of `stac/catalog.json` with its `Access-Control-Allow-Origin`
-header, an anonymous listing under `observations/`, denied listings of the
-bucket root and of `ledger/`, and an anonymous DuckDB read with one glob.
+of 0011. The output of the 2026-11-16 apply is recorded under Apply.
+`tests/test_live_anonymous_read.py` has been unmarked from `xfail` and has not
+been run by agents. It checks an anonymous GET of `stac/catalog.json` with its
+`Access-Control-Allow-Origin` header, an anonymous listing under
+`observations/`, denied listings of the bucket root and of `ledger/`, and an
+anonymous DuckDB read with one glob.

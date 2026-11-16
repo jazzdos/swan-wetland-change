@@ -242,6 +242,18 @@ def test_infra_readme_records_adr_0016_and_its_limits() -> None:
         "public-read s3 bucket",
     ):
         assert forbidden not in lowered, forbidden
+    assert "2026-11-16" in lowered
+    assert "orchestrator" in lowered
+
+
+def test_infra_readme_says_public_read_took_effect_at_the_apply() -> None:
+    section = " ".join(_readme_section("Applying public read").split())
+    assert "2026-11-16" in section
+    assert "took effect" in section
+    assert "Until it runs, the bucket stays private" not in section
+    assert "Until then that run reports the test as an expected failure" not in section
+    readme = " ".join(_read("README.md").lower().split())
+    assert "until then the applied bucket is private" not in readme
 
 
 def test_oidc_provider_url_and_client_id() -> None:

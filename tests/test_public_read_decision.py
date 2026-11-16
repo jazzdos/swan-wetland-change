@@ -1,7 +1,8 @@
 """ADR 0016 (public read on the output bucket) and the status line of ADR 0011.
 
 st-1a5f writes ADR 0016, which supersedes 0011, and changes only the status
-line of 0011. The apply stays the operator's.
+line of 0011. st-3d77 records the 2026-11-16 apply, which the orchestrator ran
+on Jarrod's instruction.
 """
 
 from __future__ import annotations
@@ -53,6 +54,7 @@ def test_adr_0016_supersedes_0011() -> None:
     text = _adr_0016()
     status, _ = _status_split(text)
     assert _flat(status).startswith("Status: accepted, 2026-11-15")
+    assert "in effect since 2026-11-16" in _flat(status)
     supersedes = next(
         line for line in text.splitlines() if line.startswith("Supersedes:")
     )
@@ -108,6 +110,32 @@ def test_adr_0016_keeps_the_operator_only_apply_and_its_preconditions() -> None:
     ):
         assert needed in text, needed
     assert text.index("st-22f1 is merged") < text.index("backfill job")
+
+
+def test_adr_0016_records_the_2026_11_16_apply() -> None:
+    adr = _adr_0016()
+    text = _flat(_section(adr, "Apply"))
+    for needed in (
+        "run by the orchestrator",
+        "just make it public",
+        "never by an agent",
+        "deviation",
+        "2 to add",
+        "1 to change",
+        "0 to destroy",
+        "aws_iam_role.pipeline",
+        "aws_s3_bucket.outputs",
+        "inline_policy",
+        "lifecycle_rule",
+        "tags",
+        "Access-Control-Allow-Origin: *",
+        "observations/",
+        "403",
+    ):
+        assert needed in text, needed
+    sentence = "The apply is run by the operator, never by an agent"
+    assert sentence in _flat(adr)
+    assert sentence in _flat(_section(adr, "Preconditions of the apply"))
 
 
 def test_adr_0016_keeps_the_cost_note() -> None:
