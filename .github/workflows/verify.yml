@@ -25,11 +25,19 @@
 # pipeline run.
 #
 # Timeouts. Each long step has its own `timeout-minutes`, so a hung step
-# fails with its own name in the log: 5 + 15 + 20 + 5 = 45 minutes of the 60
-# minute job limit. Checkout, install and the credential step have no step
-# timeout; if one of them hangs past the remaining 15 minutes, the job limit
-# ends the run. A job-level timeout is covered by alert.yml, which reads the
-# conclusion of the finished run.
+# fails with its own name in the log: 5 + 15 + 40 + 5 = 65 minutes of the 75
+# minute job limit. The 40 minute verify limit rests on a measured run:
+# verifying pipeline run 43072355326 (2026-11-11, 5 scene-tiles) took 19m34s:
+# 10m17s of per-scene reads (about 2.1 minutes per scene-tile) plus 9m17s of
+# run-level checks. A run with two full passes (up to 12 scene-tiles) needs
+# about 12 x 2.1 + 9.3 = 35 minutes, which the 40 minute limit covers. Verify
+# and freshness together (40 + 5) must stay under 60 minutes: the credential
+# step requests no `role-duration-seconds`, so its session lasts the 1-hour
+# default from minting. Checkout, install and the credential step have no step
+# timeout; if one of them hangs past the remaining 10 minutes, the job limit
+# ends the run.
+# A job-level timeout is covered by alert.yml, which reads the conclusion of
+# the finished run.
 
 name: verify
 
@@ -51,7 +59,7 @@ jobs:
   verify:
     name: live contract, verify, freshness
     runs-on: ubuntu-24.04
-    timeout-minutes: 60
+    timeout-minutes: 75
     # Widened from the workflow default for this job only.
     permissions:
       # Check out the repository.
@@ -103,7 +111,7 @@ jobs:
       # one run. The job still ends red.
       - name: Verify the latest daily run
         if: ${{ !cancelled() }}
-        timeout-minutes: 20
+        timeout-minutes: 40
         run: >-
           uv run --no-sync wetland-change verify
           --output-root s3://${{ vars.OUTPUT_BUCKET }}/
