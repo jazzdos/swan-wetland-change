@@ -98,6 +98,15 @@ code and the CSV record are unchanged.
   a small change and is not made here.
 - S3 read time is unmeasured because AWS calls were out of scope (epic
   st-f849). `verify.yml` gives the verify step a 20 minute timeout.
+  Update 2026-11-16: the verify runtime is now measured, but the S3 read time
+  alone is not. st-1433 raised the verify step limit in `verify.yml` from 20
+  to 40 minutes and the job limit from 60 to 75 minutes. Verifying pipeline
+  run 43072355326 (2026-11-11, 5 scene-tiles) took 19m34s inside the daily
+  pipeline, 10m17s of per-scene raster reads and then 9m17s of run-level
+  checks. The run-level phase covers the read of the stored history and the
+  DEA series fetches, and neither is timed on its own. Weekly verify run
+  43791803460 was killed by the 20 minute step timeout on 2026-11-16
+  (issue #3).
 - DEA Waterbodies is refetched at each verify. A series fetched at a different
   time can shift rho.
 
