@@ -1,10 +1,9 @@
-"""Live check that an anonymous reader can read the output bucket after the
-operator's apply of ADR 0016 (docs/decisions/0016-public-read-output-bucket.md).
+"""Live check that an anonymous reader can read the output bucket, which has
+been publicly readable since the 2026-11-16 apply of ADR 0016
+(docs/decisions/0016-public-read-output-bucket.md).
 
-Public read takes effect only when the operator applies infra/. Until then the
-bucket is private, every anonymous request is denied and this test is an
-expected failure. The xfail marker is removed in the commit that records the
-apply (infra/README.md, "Applying public read").
+The apply is recorded in the ADR's Apply section and in infra/README.md
+("Applying public read").
 
 The test reads observation files. Agents do not run it until the st-b6bf and
 st-dd0d decision files are committed (LEARNINGS.md); the weekly verify.yml run
@@ -49,14 +48,6 @@ def _anonymous_get(
         return err.code, err.headers.get("Access-Control-Allow-Origin"), b""
 
 
-@pytest.mark.xfail(
-    strict=True,
-    raises=AssertionError,
-    reason=(
-        "public read takes effect at the operator's apply (ADR 0016); remove "
-        "this marker in the commit that records the apply"
-    ),
-)
 def test_anonymous_reader_reads_objects_and_globs_observations(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -70,8 +61,7 @@ def test_anonymous_reader_reads_objects_and_globs_observations(
         monkeypatch.delenv(name, raising=False)
     base = f"https://{host}"
 
-    # An object that exists: 403 while the bucket is private, 200 after the
-    # apply, with the CORS header for a browser origin.
+    # An object that exists: 200 with the CORS header for a browser origin.
     status, allow_origin, _ = _anonymous_get(f"{base}/{CATALOG_KEY}", ORIGIN)
     assert status == 200
     assert allow_origin == "*"

@@ -1,9 +1,9 @@
 """Live check that a credentialed DuckDB reader can glob observations/.
 
-Moved unchanged from tests/test_live_private_outputs.py by st-1a5f. Until the
-operator's apply of ADR 0016 (docs/decisions/0016-public-read-output-bucket.md)
-the bucket is private and credentials are the only way to read it; after the
-apply this still checks the pipeline and operator route.
+Moved unchanged from tests/test_live_private_outputs.py by st-1a5f. Since the
+2026-11-16 apply of ADR 0016 (docs/decisions/0016-public-read-output-bucket.md)
+anonymous readers can read the bucket too; this still checks the pipeline and
+operator route, which read with credentials.
 
 Run with: uv run pytest -q -m live tests/test_live_credentialed_read.py
 """

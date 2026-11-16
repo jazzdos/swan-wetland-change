@@ -27,6 +27,8 @@ WORKFLOW: Final = REPO / ".github" / "workflows" / "pipeline.yml"
 VERIFY_WORKFLOW: Final = REPO / ".github" / "workflows" / "verify.yml"
 ALERT_WORKFLOW: Final = REPO / ".github" / "workflows" / "alert.yml"
 BACKFILL_WORKFLOW: Final = REPO / ".github" / "workflows" / "backfill.yml"
+CONFIG: Final = REPO / "config" / "pipeline.toml"
+LIVE_ANONYMOUS: Final = REPO / "tests" / "test_live_anonymous_read.py"
 
 BUCKET_URI: Final = "s3://${{ vars.OUTPUT_BUCKET }}"
 PINNED_USES: Final = re.compile(r"^[\w.-]+/[\w./-]+@[0-9a-f]{40}$")
@@ -1043,3 +1045,45 @@ def test_actionlint_accepts_the_backfill_workflow() -> None:
         check=False,
     )
     assert result.returncode == 0, result.stdout + result.stderr
+
+
+def test_verify_header_comment_does_not_call_the_bucket_private() -> None:
+    header: list[str] = []
+    for line in VERIFY_WORKFLOW.read_text(encoding="utf-8").splitlines():
+        if not line.startswith("#"):
+            break
+        header.append(line)
+    text = "\n".join(header).lower()
+    assert text
+    assert "private" not in text
+    assert "expected failure" not in text
+    assert "xfail" not in text
+
+
+def test_catalogue_comment_does_not_call_the_bucket_private() -> None:
+    lines = CONFIG.read_text(encoding="utf-8").splitlines()
+    in_catalogue = False
+    comment: list[str] = []
+    for line in lines:
+        if line.strip() == "[catalogue]":
+            in_catalogue = True
+            continue
+        if not in_catalogue:
+            continue
+        if line.startswith("#"):
+            comment.append(line)
+        elif line.startswith("base_url ="):
+            break
+        else:
+            comment = []
+    text = "\n".join(comment).lower()
+    assert text
+    assert "is private" not in text
+    assert "signed access" not in text
+    assert "2026-11-16" in text or "adr 0016" in text
+
+
+def test_anonymous_live_test_is_not_marked_xfail() -> None:
+    text = LIVE_ANONYMOUS.read_text(encoding="utf-8")
+    assert "xfail" not in text.lower()
+    assert "publicly readable since the 2026-11-16 apply" in text[:600]

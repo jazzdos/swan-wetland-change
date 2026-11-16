@@ -175,21 +175,26 @@ def test_readme_anonymous_s3_query_names_only_the_region() -> None:
         assert forbidden not in lowered, forbidden
 
 
-def test_readme_ties_anonymous_read_to_the_operator_apply() -> None:
+def test_readme_records_public_read_since_the_2026_11_16_apply() -> None:
     blocks = _query_blocks()
     credentialed = blocks.index(_s3_block("credential_chain"))
     assert credentialed < blocks.index(_s3_block("config"))
     section = _section(_readme(), "Querying with DuckDB")
     prose = re.sub(r"```sql\n.*?```", "", section, flags=re.DOTALL).lower()
-    for needed in ("operator's apply", "credential", "0016-public-read-output-bucket"):
+    for needed in ("2026-11-16", "credential", "0016-public-read-output-bucket"):
         assert needed in prose, needed
+    assert "until that apply" not in prose
     deployment = _section(_readme(), "Deployment").lower()
     assert "0016-public-read-output-bucket" in deployment
-    assert "operator's apply" in deployment
-    assert "operator's apply" in _section(_readme(), "Limitations").lower()
+    assert "2026-11-16" in deployment
+    assert "until then readers need aws credentials" not in deployment
+    assert "has been private since" not in " ".join(deployment.split())
+    limitations = _section(_readme(), "Limitations").lower()
+    assert "2026-11-16" in limitations
+    assert "public read is configured but not applied" not in limitations
 
 
-def test_readme_does_not_call_the_bucket_public_before_the_apply() -> None:
+def test_readme_does_not_use_the_banned_public_phrases() -> None:
     text = _readme().lower()
     for forbidden in (
         "bucket is public",
@@ -199,6 +204,30 @@ def test_readme_does_not_call_the_bucket_public_before_the_apply() -> None:
         "intentionally public",
         "is publicly readable",
         "public_outputs",
+    ):
+        assert forbidden not in text, forbidden
+
+
+def test_readme_stac_row_is_not_private_and_claims_no_live_check() -> None:
+    rows = [
+        line for line in _readme().splitlines() if line.startswith("| STAC catalogue |")
+    ]
+    assert len(rows) == 1
+    row = " ".join(rows[0].split()).lower()
+    for needed in ("readable anonymously over https", "cors", "2026-11-16"):
+        assert needed in row, needed
+    for forbidden in ("bucket is private", "but is private", "is not used"):
+        assert forbidden not in row, forbidden
+    assert "no live stac check is implemented" in row
+
+
+def test_readme_claims_no_spike_ran() -> None:
+    text = _readme().lower()
+    for forbidden in (
+        "spike 6 ran",
+        "spike 6 has run",
+        "spike 7 ran",
+        "spike 7 has run",
     ):
         assert forbidden not in text, forbidden
 
