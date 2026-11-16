@@ -549,22 +549,39 @@ def test_verify_aws_credentials_are_assumed_after_live_tests_and_survive_failure
     assert "continue-on-error" not in aws
 
 
-def test_verify_long_steps_have_timeouts_that_fit_inside_the_job_limit() -> None:
-    doc = _verify_doc()
-    steps = _steps(doc)
-    timeouts = []
-    for pattern in (
-        r"scripts/fetch_aoi\.py",
-        LIVE_PATTERN,
-        VERIFY_PATTERN,
-        FRESHNESS_PATTERN,
+def _verify_step_timeouts() -> dict[str, int]:
+    steps = _steps(_verify_doc())
+    timeouts: dict[str, int] = {}
+    for name, pattern in (
+        ("fetch", r"scripts/fetch_aoi\.py"),
+        ("live", LIVE_PATTERN),
+        ("verify", VERIFY_PATTERN),
+        ("freshness", FRESHNESS_PATTERN),
     ):
         timeout = steps[_index(steps, pattern)].get("timeout-minutes")
-        assert isinstance(timeout, int), pattern
-        timeouts.append(timeout)
-    job_limit = _job(doc)["timeout-minutes"]
-    assert sum(timeouts) <= job_limit - 10
-    assert sum(timeouts) < 60
+        assert isinstance(timeout, int), name
+        timeouts[name] = timeout
+    return timeouts
+
+
+def test_verify_long_steps_have_timeouts_that_fit_inside_the_job_limit() -> None:
+    timeouts = _verify_step_timeouts()
+    job_limit = _job(_verify_doc())["timeout-minutes"]
+    assert sum(timeouts.values()) <= job_limit - 10
+    # The credential step requests no `role-duration-seconds`, so its session
+    # lasts the 1-hour default from minting. Verify and freshness are the
+    # steps that use those credentials (the credential step runs after the
+    # live tests), so together they must finish inside that hour.
+    assert timeouts["verify"] + timeouts["freshness"] < 60
+
+
+def test_verify_step_timeout_covers_the_measured_verify_runtime() -> None:
+    # Pipeline run 43072355326 (2026-11-11, 5 scene-tiles) took 19m34s to
+    # verify: 10m17s of per-scene reads (about 2.1 minutes per scene-tile)
+    # plus 9m17s of run-level checks. A run with two full passes (up to 12
+    # scene-tiles) needs about 12 x 2.1 + 9.3 = 35 minutes, which the 40
+    # minute limit covers.
+    assert _verify_step_timeouts()["verify"] >= 40
 
 
 def test_verify_shares_the_pipeline_concurrency_group() -> None:
