@@ -4,8 +4,8 @@ The criterion reads "No file outside docs/decisions and the dated docs/research
 notes states that DBCA-010 is CC BY-SA 4.0". The check is stricter than the
 criterion: every git-listed live file, minus history (.git/, .venv/, stories/,
 .agents/, docs/decisions/, docs/research/, docs/handoffs/, docs/plans/*milestone*)
-and this file, holds no by-sa text at all except three allowlisted occurrences
-that state no DBCA-010 licence.
+and this file, holds no by-sa or share-alike text at all except eight allowlisted
+occurrences that state no DBCA-010 licence.
 """
 
 from __future__ import annotations
@@ -18,7 +18,10 @@ import pytest
 
 REPO = Path(__file__).resolve().parents[1]
 SELF = Path(__file__).resolve().relative_to(REPO).as_posix()
-NEEDLE = re.compile(r"by[-_]sa", re.IGNORECASE)
+DASHES = "\\-_\u2010-\u2015\u2212"
+NEEDLE = re.compile(
+    rf"by[\s{DASHES}]+sa(?![a-z])|share[\s{DASHES}]*alike", re.IGNORECASE
+)
 EXCLUDED_PREFIXES = (
     ".git/",
     ".venv/",
@@ -38,6 +41,13 @@ ALLOWED: dict[str, tuple[str, ...]] = {
     "tests/test_public_release_licences.py": (
         'SHAREALIKE: Final = "CC BY-SA 4.0 ShareAlike"',
         'if "BY-SA" not in licence:',
+        "    SHAREALIKE,",
+        "{row[SHAREALIKE] for row in published_rows()}",
+    ),
+    "tests/test_catalogue.py": ('for banned in ("SA-4.0", "SA 4.0", "ShareAlike"):',),
+    "tests/test_dbca_attribution.py": (
+        '"forbidden", [chr(0x2014), "ShareAlike", "SA 4.0", "SA-4.0"], ids=repr',
+        "def test_dbca_attribution_has_no_em_dash_or_sharealike_wording(",
     ),
     DESIGN: ("(CC BY-NC on data.wa.gov.au, CC BY-SA on data.gov.au)",),
 }
@@ -111,3 +121,31 @@ def test_design_carries_the_amendment_note_three_times() -> None:
     text = (REPO / DESIGN).read_text(encoding="utf-8")
     assert text.count(AMENDMENT) == 3
     assert "CC BY-NC 4.0" in text
+
+
+@pytest.mark.parametrize(
+    "line",
+    [
+        "CC BY-SA 4.0",
+        "cc_by_sa",
+        "CC BY SA 4.0",
+        "CC BY‐SA 4.0",
+        "CC BY‑SA 4.0",
+        "CC BY–SA 4.0",
+        "CC BY−SA 4.0",
+        "Attribution-ShareAlike 4.0",
+        "Attribution‑ShareAlike 4.0",
+        "share alike terms",
+        "SHARE-ALIKE",
+    ],
+)
+def test_needle_matches_sharealike_variants(line: str) -> None:
+    assert NEEDLE.search(line), line
+
+
+@pytest.mark.parametrize(
+    "line",
+    ["stored by same polygon", "Dubai SA office", "bypass a gate", "CC BY-NC 4.0"],
+)
+def test_needle_ignores_unrelated_text(line: str) -> None:
+    assert not NEEDLE.search(line), line

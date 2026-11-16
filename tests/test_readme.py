@@ -323,3 +323,58 @@ def test_backfill_section_names_the_workflow_and_both_dispatch_lines() -> None:
     lines = section.splitlines()
     assert "gh workflow run backfill.yml -f dry_run=true" in lines
     assert "gh workflow run backfill.yml -f dry_run=false" in lines
+
+
+def _flat(text: str) -> str:
+    return " ".join(text.split())
+
+
+DBCA_CARRIERS = (
+    "observation and change files",
+    "STAC collection and items",
+)
+DBCA_NON_CARRIERS = (
+    "ledger files",
+    "run manifests",
+    "verification JSON",
+    "Markdown reports",
+    "`catalog.json`",
+    "`stac/write-index.json`",
+)
+
+
+def test_dbca_attribution_scope_is_stated_in_the_data_sources_section() -> None:
+    section = _flat(_section(_readme(), "Data sources and licences"))
+    marker = "The DBCA-010 attribution, term T3 of the same document, is carried by"
+    assert marker in section
+    scope = section[section.index(marker) :]
+    carriers_sentence, _, rest = scope.partition(". ")
+    non_carriers_sentence, found, _ = rest.partition("carry none.")
+    assert found, scope
+    for carrier in DBCA_CARRIERS:
+        assert carrier in carriers_sentence, carrier
+        assert carrier not in non_carriers_sentence, carrier
+    for other in DBCA_NON_CARRIERS:
+        assert other in non_carriers_sentence, other
+        assert other not in carriers_sentence, other
+    assert "They also carry the DBCA-010 attribution" not in section
+
+
+def test_dbca_attribution_scope_does_not_contradict_across_sections() -> None:
+    text = _flat(_readme())
+    assert "hold no DBCA-010 material" not in text
+    for heading, level in (("Running locally", 2), ("Attribution backfill", 3)):
+        section = _flat(_section(_readme(), heading, level=level))
+        assert (
+            "`build-catalogue` writes `dbca_attribution` to the STAC collection"
+            " and items"
+        ) in section, heading
+        assert "does not scan the catalogue" in section, heading
+
+
+def test_attribution_backfill_names_the_adr_0016_gate() -> None:
+    section = _flat(_section(_readme(), "Attribution backfill", level=3))
+    assert "step 2 of 'Preconditions of the apply' in ADR 0016" in section
+    assert "docs/decisions/0016-public-read-output-bucket.md" in section
+    assert "ADR 0011 step 3" not in section
+    assert "0011-private-output-bucket" not in section
