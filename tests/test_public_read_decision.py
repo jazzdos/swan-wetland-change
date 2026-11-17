@@ -1,14 +1,13 @@
-"""ADR 0016 (public read on the output bucket) and the status line of ADR 0011.
+"""ADR 0017 (private output bucket again) and the status lines of ADRs 0016 and 0011.
 
-st-1a5f writes ADR 0016, which supersedes 0011, and changes only the status
-line of 0011. st-3d77 records the 2026-11-16 apply, which the orchestrator ran
-on Jarrod's instruction.
+ADR 0017 supersedes 0016 on Jarrod's 2026-11-17 direction and records that its
+apply is pending. It changes only the status paragraph of 0016, as 0016 did to
+0011.
 """
 
 from __future__ import annotations
 
 import hashlib
-import re
 from pathlib import Path
 from typing import Final
 
@@ -16,12 +15,24 @@ REPO: Final = Path(__file__).resolve().parents[1]
 DECISIONS: Final = REPO / "docs" / "decisions"
 ADR_0011: Final = DECISIONS / "0011-private-output-bucket.md"
 ADR_0016_NAME: Final = "0016-public-read-output-bucket.md"
-LICENCE_NOTE: Final = "docs/research/2026-11-14-public-release-licences.md"
-NOTE_LINK: Final = "../research/2026-11-14-public-release-licences.md"
+ADR_0017_NAME: Final = "0017-private-output-bucket-again.md"
 # sha256 of ADR 0011 without its Status paragraph, as committed at 743793c.
 ADR_0011_REST_SHA256: Final = (
     "a838a2dcf37348e4e5716dfb3ff61bfaf924ca1d32949d949f988201c45c5f03"
 )
+# sha256 of ADR 0016 without its Status paragraph.
+ADR_0016_REST_SHA256: Final = (
+    "f927c6309f7782cb0b9d853206e5c3f1ec5d036e5d64b48960de2eea5eb4c3ed"
+)
+QUOTE: Final = (
+    "just make it password protected so its not public - im not contacting dbca"
+)
+
+
+def _adr_0017() -> str:
+    matches = sorted(DECISIONS.glob("0017-*.md"))
+    assert [p.name for p in matches] == [ADR_0017_NAME]
+    return matches[0].read_text(encoding="utf-8")
 
 
 def _adr_0016() -> str:
@@ -50,96 +61,76 @@ def _section(text: str, heading: str) -> str:
     return text[start:] if end == -1 else text[start:end]
 
 
-def test_adr_0016_supersedes_0011() -> None:
-    text = _adr_0016()
+def test_adr_0017_supersedes_0016() -> None:
+    text = _adr_0017()
     status, _ = _status_split(text)
-    assert _flat(status).startswith("Status: accepted, 2026-11-15")
-    assert "in effect since 2026-11-16" in _flat(status)
+    assert _flat(status).startswith("Status: accepted, 2026-11-17")
     supersedes = next(
         line for line in text.splitlines() if line.startswith("Supersedes:")
     )
-    assert "docs/decisions/0011-private-output-bucket.md" in supersedes
+    assert "docs/decisions/0016-public-read-output-bucket.md" in supersedes
 
 
-def test_adr_0016_records_jarrods_approval_of_2026_11_14() -> None:
-    text = _flat(_section(_adr_0016(), "Decision-making"))
-    for needed in (
-        "On 2026-11-14",
-        "spike 6",
-        "the anonymous read test",
-        'Jarrod replied "approved"',
-        "he has reviewed the outputs and approves public access",
-        "the apply and the DBCA-010 licence confirmation stay his",
-        "Jarrod approved that set",
-    ):
+def test_adr_0017_records_jarrods_direction_verbatim() -> None:
+    text = _flat(_section(_adr_0017(), "Decision-making"))
+    for needed in (QUOTE, "2026-11-17", "Jarrod"):
         assert needed in text, needed
 
 
-def test_adr_0016_records_the_licence_result_and_links_the_note() -> None:
-    adr = _adr_0016()
-    text = _flat(_section(adr, "Licences"))
-    for needed in (
-        "st-1a9c",
-        "0 of 3",
-        "CC BY-NC 4.0",
-        "non-commercial use only",
-        "not a confirmation from DBCA",
-        '"stories work. approved recommended that unblock stories"',
-        "redistribute_public",
-        "T1",
-        "T2",
-        "T3",
-        "T4",
-        "st-22f1",
-    ):
+def test_adr_0017_drops_the_dbca_confirmation() -> None:
+    text = _flat(_section(_adr_0017(), "DBCA confirmation"))
+    for needed in ("st-4c87", "no longer sought", "precondition 3"):
         assert needed in text, needed
-    assert NOTE_LINK in re.findall(r"\]\(([^)]+)\)", adr)
-    assert (DECISIONS / NOTE_LINK).resolve().is_file()
-    assert LICENCE_NOTE in adr
 
 
-def test_adr_0016_keeps_the_operator_only_apply_and_its_preconditions() -> None:
-    text = _flat(_section(_adr_0016(), "Preconditions of the apply"))
-    for needed in (
-        "run by the operator, never by an agent",
-        "after the plan is reviewed",
-        "st-22f1 is merged",
-        "backfill job",
-        "written confirmation",
-        "Jarrod's decision",
-    ):
+def test_adr_0017_records_the_exposure_window() -> None:
+    text = _flat(_section(_adr_0017(), "Exposure window"))
+    for needed in ("anonymously readable by key", "2026-11-16", "cannot be withdrawn"):
         assert needed in text, needed
-    assert text.index("st-22f1 is merged") < text.index("backfill job")
 
 
-def test_adr_0016_records_the_2026_11_16_apply() -> None:
-    adr = _adr_0016()
-    text = _flat(_section(adr, "Apply"))
+def test_adr_0017_states_the_effect_on_the_design() -> None:
+    text = _flat(_section(_adr_0017(), "Effect on the design"))
+    for needed in ("success criteria 2 and 3", "credentialed", "spike 6", "st-9f02"):
+        assert needed in text, needed
+
+
+def test_adr_0017_describes_reader_access() -> None:
+    text = _flat(_section(_adr_0017(), "Reader access"))
+    assert "credential_chain" in text
+    assert "presigned" in text
+
+
+def test_adr_0017_states_the_expected_plan() -> None:
+    text = _flat(_section(_adr_0017(), "Expected plan"))
     for needed in (
-        "run by the orchestrator",
-        "just make it public",
-        "never by an agent",
-        "deviation",
-        "2 to add",
+        "0 to add",
         "1 to change",
-        "0 to destroy",
-        "aws_iam_role.pipeline",
-        "aws_s3_bucket.outputs",
-        "inline_policy",
-        "lifecycle_rule",
-        "tags",
-        "Access-Control-Allow-Origin: *",
-        "observations/",
-        "403",
+        "2 to destroy",
+        "aws_s3_bucket_public_access_block.outputs",
+        "aws_s3_bucket_policy.public_read",
+        "aws_s3_bucket_cors_configuration.outputs",
     ):
         assert needed in text, needed
-    sentence = "The apply is run by the operator, never by an agent"
-    assert sentence in _flat(adr)
-    assert sentence in _flat(_section(adr, "Preconditions of the apply"))
 
 
-def test_adr_0016_keeps_the_cost_note() -> None:
-    assert "billed to the bucket owner" in _flat(_section(_adr_0016(), "Cost"))
+def test_adr_0017_says_the_apply_is_pending() -> None:
+    text = _flat(_section(_adr_0017(), "Apply")).lower()
+    assert "pending" in text
+    assert "apply complete" not in text
+    assert "was run by" not in text
+
+
+def test_adr_0016_status_names_0017() -> None:
+    status, _ = _status_split(_adr_0016())
+    flat = _flat(status)
+    assert "superseded by 0017" in flat.lower()
+    assert f"docs/decisions/{ADR_0017_NAME}" in flat
+
+
+def test_adr_0016_is_unchanged_outside_its_status_paragraph() -> None:
+    _, rest = _status_split(_adr_0016())
+    assert hashlib.sha256(rest.encode("utf-8")).hexdigest() == ADR_0016_REST_SHA256
 
 
 def test_adr_0011_status_line_names_0016() -> None:

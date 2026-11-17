@@ -47,8 +47,10 @@ root = "outputs"
 [catalogue]
 # The `bucket_url` output of infra (no trailing slash), set at the 2026-11-06
 # apply. `run` and `build-catalogue` refuse an s3:// output root while this is
-# a `.invalid` host. The bucket has been readable anonymously since the
-# 2026-11-16 apply (ADR 0016), so these links resolve without credentials.
+# a `.invalid` host. ADR 0017 (docs/decisions/0017-private-output-bucket-again.md)
+# makes the bucket private again: once its apply is done these links need AWS
+# credentials or a presigned URL. Until then the deployed bucket keeps the ADR
+# 0016 read grants.
 base_url = "https://swan-wetland-change-outputs-263051716913.s3.ap-southeast-2.amazonaws.com"
 
 [verify]

@@ -160,38 +160,77 @@ def test_readme_credentialed_s3_query_uses_credential_chain() -> None:
         assert forbidden not in lowered, forbidden
 
 
-def test_readme_anonymous_s3_query_names_only_the_region() -> None:
-    block = _s3_block("config")
-    _assert_observations_query(block)
-    lowered = block.lower()
-    assert "region '<aws_region>'" in lowered
-    for forbidden in (
-        "key_id",
-        "secret_key",
-        "session_token",
-        "credential_chain",
-        "load aws",
-    ):
-        assert forbidden not in lowered, forbidden
+def test_readme_has_no_anonymous_duckdb_secret() -> None:
+    lowered = _readme().lower()
+    assert "provider config" not in lowered
+    assert "anonymous_outputs" not in lowered
+    _s3_block("credential_chain")
 
 
-def test_readme_records_public_read_since_the_2026_11_16_apply() -> None:
-    blocks = _query_blocks()
-    credentialed = blocks.index(_s3_block("credential_chain"))
-    assert credentialed < blocks.index(_s3_block("config"))
+def test_readme_records_adr_0017() -> None:
     section = _section(_readme(), "Querying with DuckDB")
     prose = re.sub(r"```sql\n.*?```", "", section, flags=re.DOTALL).lower()
-    for needed in ("2026-11-16", "credential", "0016-public-read-output-bucket"):
+    for needed in ("0017", "credential", "presigned", "aws s3 presign"):
         assert needed in prose, needed
-    assert "until that apply" not in prose
     deployment = _section(_readme(), "Deployment").lower()
-    assert "0016-public-read-output-bucket" in deployment
-    assert "2026-11-16" in deployment
-    assert "until then readers need aws credentials" not in deployment
-    assert "has been private since" not in " ".join(deployment.split())
+    for needed in (
+        "0017-private-output-bucket-again",
+        "2026-11-17",
+        "0016",
+        "pending",
+    ):
+        assert needed in deployment, needed
     limitations = _section(_readme(), "Limitations").lower()
-    assert "2026-11-16" in limitations
-    assert "public read is configured but not applied" not in limitations
+    for needed in ("0017", "pending", "cannot be withdrawn"):
+        assert needed in limitations, needed
+    for forbidden in (
+        "public read has been in effect",
+        "public read is configured but not applied",
+    ):
+        assert forbidden not in limitations, forbidden
+    assert "Applying public read" not in _readme()
+
+
+PUBLIC_READ_CLAIMS = (
+    r"\b(publicly|anonymously)\s+readable\b",
+    r"\breadable\s+(publicly|anonymously)\b",
+    r"\bpublic[- ]read\s+bucket\b",
+    r"\bpublicly\s+accessible\b",
+)
+
+
+def _claims_public_read(sentence: str) -> bool:
+    lowered = sentence.lower()
+    return any(re.search(pattern, lowered) for pattern in PUBLIC_READ_CLAIMS)
+
+
+@pytest.mark.parametrize(
+    "sentence",
+    [
+        "The bucket is publicly readable.",
+        "The catalogue is readable anonymously over https.",
+        "The observations are anonymously readable.",
+    ],
+)
+def test_claims_public_read_detector_flags(sentence: str) -> None:
+    assert _claims_public_read(sentence)
+
+
+@pytest.mark.parametrize(
+    "sentence",
+    [
+        "Every object was readable by key without credentials until the 0017 apply.",
+        "The bucket is readable only with AWS credentials.",
+    ],
+)
+def test_claims_public_read_detector_passes(sentence: str) -> None:
+    assert not _claims_public_read(sentence)
+
+
+def test_readme_has_no_public_read_claim() -> None:
+    sentences = re.split(r"(?<=[.!?])\s+", _flat(_readme()))
+    for sentence in sentences:
+        assert not _claims_public_read(sentence), sentence
 
 
 def test_readme_does_not_use_the_banned_public_phrases() -> None:
@@ -208,17 +247,21 @@ def test_readme_does_not_use_the_banned_public_phrases() -> None:
         assert forbidden not in text, forbidden
 
 
-def test_readme_stac_row_is_not_private_and_claims_no_live_check() -> None:
+def test_readme_stac_row_names_adr_0017_and_claims_no_live_check() -> None:
     rows = [
         line for line in _readme().splitlines() if line.startswith("| STAC catalogue |")
     ]
     assert len(rows) == 1
     row = " ".join(rows[0].split()).lower()
-    for needed in ("readable anonymously over https", "cors", "2026-11-16"):
+    for needed in (
+        "adr 0017",
+        "credentials",
+        "no live stac check is implemented",
+        "spike 6",
+    ):
         assert needed in row, needed
-    for forbidden in ("bucket is private", "but is private", "is not used"):
+    for forbidden in ("readable anonymously", "cors", "bucket is private"):
         assert forbidden not in row, forbidden
-    assert "no live stac check is implemented" in row
 
 
 def test_readme_claims_no_spike_ran() -> None:
@@ -268,11 +311,13 @@ def test_readme_gives_standalone_credentialed_live_command() -> None:
 
 def test_readme_limitations_dates_anonymous_live_pass() -> None:
     section = " ".join(_section(_readme(), "Limitations").split())
-    assert "no agent has run it (the weekly" in section
     for needle in (
+        "no agent has run it (the weekly",
         "Update 2026-11-16",
         "ebea401",
-        "test_live_anonymous_read.py` passed",
+        "xfail",
+        "0017",
+        "403",
     ):
         assert needle in section, needle
 

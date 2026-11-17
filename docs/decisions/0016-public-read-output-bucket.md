@@ -2,7 +2,9 @@
 
 Status: accepted, 2026-11-15; public access approved by Jarrod on 2026-11-14.
 Public read has been in effect since 2026-11-16, when the apply recorded under
-Apply was run.
+Apply was run. Superseded by 0017
+(`docs/decisions/0017-private-output-bucket-again.md`) on 2026-11-17; 0017's
+apply is pending.
 Supersedes: 0011 (`docs/decisions/0011-private-output-bucket.md`).
 
 ## Context

@@ -17,6 +17,11 @@
 # long-lived credentials are stored anywhere. The credentials are assumed
 # after the live tests, which read public COGs unsigned and need none.
 #
+# The live tests also send unsigned requests to the output bucket and expect
+# 403 (tests/test_live_anonymous_read.py, ADR 0017: the bucket is private).
+# That test is an expected failure (xfail) until the 0017 apply is recorded,
+# because the deployed bucket still has the ADR 0016 read grants.
+#
 # Access to the bucket is not read-only. The role can write, and `verify`
 # writes `verification/<run_id>.json` for the run it checks, overwriting the
 # pipeline's copy in the unversioned bucket. The design accepts that
