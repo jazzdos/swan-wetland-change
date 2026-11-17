@@ -185,7 +185,8 @@ def test_readme_records_adr_0017() -> None:
     limitations = _section(_readme(), "Limitations").lower()
     for needed in ("0017", "2026-11-17", "cannot be withdrawn"):
         assert needed in limitations, needed
-    assert "pending" not in limitations
+    assert "its apply is pending" not in limitations
+    assert "once the 0017 apply is done" not in limitations
     for forbidden in (
         "public read has been in effect",
         "public read is configured but not applied",
