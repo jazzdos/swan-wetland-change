@@ -27,3 +27,7 @@ Children, in dependency order: ADR 0018 and the overlap pre-registration; CDSE d
 ## Acceptance Criteria
 
 - [ ] Every child story of this epic is done.
+
+## Implementation Notes
+
+- 2026-11-17T13:04:13.691Z: 2026-11-17: the design doc is now committed on main at docs/plans/2026-11-17-cdse-2022-gap-design.md (Jarrod asked to commit and push), so story worktrees have it; the body's 'stays uncommitted' sentence is superseded.
