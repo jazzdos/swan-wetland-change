@@ -8,7 +8,7 @@ discovered_from: st-22f1
 touches: [docs/research]
 exclusive: false
 created: 2026-11-15
-updated: 2026-11-15
+updated: 2026-11-17
 parked_complexity: routine
 ---
 
@@ -28,6 +28,8 @@ DBCA-010 Ramsar Sites is published under CC BY-NC 4.0, the licence on the custod
 ## Implementation Plan
 
 ## Implementation Notes
+
+- 2026-11-17T11:19:24.558Z: 2026-11-17: Shelved to backlog. Jarrod: "just make it password protected so its not public - im not contacting dbca". The output bucket returns to private under st-90b4 (ADR 0017), so DBCA's written confirmation for public redistribution is no longer sought.
 
 ## Questions
 

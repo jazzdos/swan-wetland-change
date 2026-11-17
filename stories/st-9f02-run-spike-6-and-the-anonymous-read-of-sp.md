@@ -8,7 +8,7 @@ touches: [LEARNINGS.md, README.md, docs/research/**]
 exclusive: false
 gates: [test]
 created: 2026-11-14
-updated: 2026-11-14
+updated: 2026-11-17
 ---
 ## Description
 
@@ -33,3 +33,7 @@ Constraints:
 - [ ] A response from the bucket to a request with an Origin header carries `Access-Control-Allow-Origin`, and stac-browser opens the catalogue root and one item; the header output and a screenshot are saved under `docs/research/`
 - [ ] `LEARNINGS.md` has dated S6 and S7 entries with the measured results, and the README status paragraph no longer says either spike is blocked
 - [ ] `uv run pytest -q` passes
+
+## Implementation Notes
+
+- 2026-11-17T11:19:24.779Z: 2026-11-17: Shelved to backlog. Jarrod directed the output bucket private again (st-90b4, ADR 0017). Spike 6 (stac-browser over CORS) and the anonymous half of spike 7 need anonymous read, which the private bucket denies. Reopen only if public read returns.
