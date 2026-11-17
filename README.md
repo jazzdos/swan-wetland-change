@@ -230,7 +230,7 @@ recorded in `LEARNINGS.md`, and the Collection 1 backfill
 | Water extent, history | DEA Waterbodies v3 CSV per lake; DEA `ga_ls_wo_3` per scene | `src/wetland_change/verify/waterbodies.py` (`water_vs_dea_waterbodies`, `water_spearman_vs_dea_waterbodies`); `tests/test_verify_waterbodies.py` | Implemented against the Waterbodies CSV with a 10 pp per-pass tolerance (spike S9). The `ga_ls_wo_3` per-scene comparison is not implemented as a standing check: S9 found Waterbodies v3 within 0.2 pp of `ga_ls_wo_3` on all 129 passes, consistent with Waterbodies being derived from it, and used it once to set the tolerance (`LEARNINGS.md`, "S9 historical tolerance"). The per-lake Spearman is scored over every stored observation up to the newest scene of the verified run, so it reaches its 10 pair minimum on a daily run; per-pass checks cover the verified run only. `spearman_min` is 0.83, calibrated on the whole backfill (ADR 0007, `docs/decisions/0007-spearman-threshold-from-whole-history.md`). The backfill rho is 0.855 to 0.893 on four lakes, below the design's 0.9, so H4 is not supported. |
 | NDVI | DEA NBART, same acquisition | `src/wetland_change/verify/ndvi.py` (`ndvi_vs_dea_nbart`, `ndvi_correlation_vs_dea_nbart`), `src/wetland_change/verify/layers.py`; `tests/test_verify_ndvi.py` | Implemented. One live check on 2026-10-30 passed with an absolute difference of about 0.003 against a 0.05 tolerance (`LEARNINGS.md`, "DEA NBART scale"). The check skips a polygon below `[verify] min_clear_pixels` (default 100) compared pixels, and the skip is a reason skip, not an error. Rows on DEA Waterbodies polygons are advisory and reported as one summary with their median absolute difference, and the correlation uses ramsar rows only (ADR 0012, `docs/decisions/0012-live-check-limits-apply-to-their-calibrated-layer.md`). |
 | GeoParquet output | geoparquet-validator; DuckDB and GDAL as readers | `src/wetland_change/outputs/geoparquet.py`; `tests/test_geoparquet.py`, `tests/test_pipeline.py`, `tests/test_readme.py` | Implemented. The validator, DuckDB, pyarrow and geopandas readers run in the default suite and agree on row counts and bounds (`tests/test_geoparquet.py`). Footer keys `source_epsg`, `operation_epsg`, `geometry_epsg`, `units`, `scl_classes_dropped` and `water_settings` record CRSs, units, the SCL classes the clear mask drops and each polygon's water rule. GDAL is not exercised because the pinned pyogrio wheel has no Parquet driver. |
-| STAC catalogue | stac-validator (through stac-check 1.14), stac-check, pystac validate, stac-browser | `src/wetland_change/stac/catalogue.py`; `tests/test_catalogue.py`, `tests/test_run_catalogue.py` | Implemented offline: pystac `validate_all` and stac-check pass, and all hrefs are absolute https. Since the 2026-11-16 apply of ADR 0016 (`docs/decisions/0016-public-read-output-bucket.md`) the catalogue is readable anonymously over https, with CORS for GET and HEAD. No live STAC check is implemented, and stac-browser has not been run against it. |
+| STAC catalogue | stac-validator (through stac-check 1.14), stac-check, pystac validate, stac-browser | `src/wetland_change/stac/catalogue.py`; `tests/test_catalogue.py`, `tests/test_run_catalogue.py` | Implemented offline: pystac `validate_all` and stac-check pass, and all hrefs are absolute https. ADR 0017 (`docs/decisions/0017-private-output-bucket-again.md`) makes the bucket private again, so the catalogue is read with AWS credentials (signed requests, a presigned URL or a local copy) once the 0017 apply is done, and its links need credentials. No live STAC check is implemented, and stac-browser has not been run against it (spike 6 is shelved). |
 | Incremental and idempotent | pytest-regressions golden run; watermark replay | `tests/test_golden_run.py`, `tests/test_pipeline.py`, `tests/test_ledger.py`, `tests/test_catalogue.py` | Implemented: byte-identical outputs on rerun, no duplicates after watermark replay, golden observation rows. The ledger-against-Copernicus count is covered per tile over 30 days by the freshness row; the backfill reached coverage 1.0 against a fresh Earth Search reference. |
 | Change detection | DEA Waterbodies Forrestdale record | `src/wetland_change/change.py`, `src/wetland_change/outputs/changes.py`; `tests/test_change.py`, `tests/test_change_outputs.py` | Implemented. Backfill 2022-12-01 to 2026-11-02 (1147 items): H1 supported, H2 untestable, H3 not supported, H4 not supported. See below. |
 | Scheduled job alive | Earth Search and Copernicus counts per tile per 30 days | `src/wetland_change/verify/freshness.py` (`freshness_*`); `tests/test_verify_freshness.py`; alert workflow `.github/workflows/alert.yml`, `tests/test_workflows.py` | Implemented. Runs in the weekly `verify.yml` job; its one run (2026-11-09) failed before st-9812 and no weekly run has passed yet (see Limitations). |
@@ -400,15 +400,15 @@ WHERE valid_fraction > 0.8
 ORDER BY polygon_id, datetime
 ```
 
-The S3 bucket holds the same layout. Public read of the bucket is decided in
-`docs/decisions/0016-public-read-output-bucket.md`, which supersedes ADR 0011,
-and has been in effect since the 2026-11-16 apply of `infra/`
-(`infra/README.md`, "Applying public read"). The anonymous query below needs
-no AWS credentials. The `credential_chain` secret below still works for a
-reader that holds AWS credentials and uses the standard AWS chain: environment
-variables, a shared profile that holds keys, SSO, or an assumed role. The
-identity needs `s3:ListBucket` on the bucket and `s3:GetObject` on its
-objects, granted in IAM outside this repository's module.
+The S3 bucket holds the same layout. Under ADR 0017
+(`docs/decisions/0017-private-output-bucket-again.md`) the bucket is private,
+and a reader needs AWS credentials, supplied through the `credential_chain`
+secret below, which uses the standard AWS chain: environment variables, a
+shared profile that holds keys, SSO, or an assumed role. The identity needs
+`s3:ListBucket` on the bucket and `s3:GetObject` on its objects, granted in IAM
+outside this repository's module. The 0017 apply is pending, so until it is run
+the deployed bucket still has the grants of ADR 0016
+(`docs/decisions/0016-public-read-output-bucket.md`).
 
 A profile created by `aws login` (it holds `login_session` in `~/.aws/config`,
 and `aws configure list` shows its key type as `login`) is not read by the
@@ -454,41 +454,32 @@ WHERE valid_fraction > 0.8
 ORDER BY polygon_id, datetime
 ```
 
-Since the 2026-11-16 apply, a reader with no AWS credentials can run the same
-query with an anonymous secret, which names the region and nothing else. The
-bucket policy allows anonymous listing only under `observations/`, so an
-anonymous glob rooted anywhere else is denied.
+Change rows use the same layout under `changes/` and are read the same way
+with credentials and a `changes/` glob.
 
-```sql
-INSTALL httpfs;
-LOAD httpfs;
-CREATE OR REPLACE SECRET anonymous_outputs (TYPE s3, PROVIDER config, REGION '<aws_region>');
+For one-off sharing, a holder of credentials can sign a URL for a single
+object:
 
-SELECT year, tile, site, polygon_id, datetime, water_ha_index, water_ha_scl, ndvi_median
-FROM read_parquet('s3://<bucket>/observations/*/*/*.parquet', hive_partitioning = true)
-WHERE valid_fraction > 0.8
-ORDER BY polygon_id, datetime
+```sh
+aws s3 presign s3://<bucket>/<key> --region <region> --expires-in 3600
 ```
 
-Change rows use the same layout under `changes/`. With credentials they are
-read the same way with a `changes/` glob. Since the 2026-11-16 apply an
-anonymous reader can read a change file by its exact object key but cannot
-glob `changes/`.
+The URL stops working when the signing credentials expire. Presigned URLs are
+documented here and not built into the pipeline.
 
 ## Deployment
 
 The AWS resources (an S3 bucket, the GitHub OIDC provider and a pipeline
 role) are an OpenTofu/Terraform module in `infra/`. The bucket was private
-from its 2026-11-06 apply until 2026-11-16
-(`docs/decisions/0011-private-output-bucket.md`). Jarrod approved public
-access on 2026-11-14, recorded in
-`docs/decisions/0016-public-read-output-bucket.md`, which supersedes 0011:
-the module grants anonymous `s3:GetObject` on objects, anonymous
-`s3:ListBucket` under `observations/` only, and CORS for GET and HEAD.
-The orchestrator ran the apply on 2026-11-16 on Jarrod's instruction, after
-the preconditions that ADR 0016 lists (the DBCA written confirmation was
-waived and is parked as st-4c87); since then public read is in effect and the
-ADR's Apply section records the plan and the checks.
+from its 2026-11-06 apply (`docs/decisions/0011-private-output-bucket.md`).
+Public read was granted by ADR 0016
+(`docs/decisions/0016-public-read-output-bucket.md`) and applied on
+2026-11-16. On 2026-11-17 Jarrod directed the bucket private again, recorded in
+`docs/decisions/0017-private-output-bucket-again.md`, which supersedes 0016.
+The module in code is private: all four public access block settings are true,
+and it has no bucket policy and no CORS. The apply is pending, run by the
+operator or the orchestrator on Jarrod's go-ahead; `infra/README.md`
+("Applying the private configuration") gives the steps.
 `infra/README.md` gives the apply steps and the role's trust conditions.
 
 After applying, set these repository variables (Settings, Secrets and
@@ -636,27 +627,26 @@ As of this commit:
   runner. The weekly run's live contract tests also passed on the runner.
 - No live STAC check is implemented: `verify` reports the STAC row as not-run
   with the standing test `tests/test_catalogue.py` (`src/wetland_change/verify/matrix.py`).
-  The pipeline builds the catalogue each run and that step succeeded.
-  Anonymous read and CORS for GET and HEAD have been in effect since the
-  2026-11-16 apply (ADR 0016), and a header-only check of the catalogue root
-  returned 200 with `Access-Control-Allow-Origin: *`. The design's
-  stac-browser has not been run, so spike 6 stays unrun.
-- Public read has been in effect since the 2026-11-16 apply (ADR 0016,
-  "Apply"). Every object is readable by key, anonymous listing is limited to
-  `observations/`, and anonymous requests are billed to the bucket owner.
+  The pipeline builds the catalogue each run and that step succeeded. The
+  catalogue links need credentials once the 0017 apply is done. The design's
+  stac-browser has not been run, and spike 6 is shelved under ADR 0017.
+- ADR 0017 (2026-11-17) directs the bucket private again, and its apply is
+  pending. Every object was readable by key without credentials from the
+  2026-11-16 apply (ADR 0016) until the 0017 apply, anonymous listing was
+  limited to `observations/`, and copies taken then cannot be withdrawn.
 - The credentialed S3 query in "Querying with DuckDB" was run against the
   project bucket on 2026-11-14 on merged `main` (a0693ba): both tests in
   `tests/test_live_private_outputs.py` passed with credentials exported to the
   environment. st-1a5f replaced that module: its credentialed test is now
-  `tests/test_live_credentialed_read.py`, unchanged, and the anonymous checks
-  are `tests/test_live_anonymous_read.py`, which is no longer
-  marked `xfail` since the 2026-11-16 apply, and no agent has run it (the
-  weekly `verify.yml` run executes it). Update 2026-11-16:
+  `tests/test_live_credentialed_read.py`, unchanged, and `tests/test_live_anonymous_read.py`
+  now sends unsigned requests and asserts 403 for `stac/catalog.json` and for a
+  listing under `observations/`. It is marked `xfail(strict=True)` until the
+  0017 apply, and no agent has run it (the weekly `verify.yml` run executes
+  it). Update 2026-11-16: the earlier public-read form of
   `tests/test_live_anonymous_read.py` passed in the live run on main ebea401
   (started 11:35:52Z, 27m39s); the one failure in that run was the
   credentialed test, from expired exported credentials (see "Querying with
-  DuckDB"). A
-  profile created by `aws login` is not read by DuckDB's credential chain;
+  DuckDB"). A profile created by `aws login` is not read by DuckDB's credential chain;
   the route (export the credentials to the environment) is given under
   "Querying with DuckDB", and the credentialed live test names the
   credential source and that route when DuckDB cannot build the secret
@@ -701,8 +691,8 @@ As of this commit:
   failed verify. The local figure was 139 to 152 s per scene
   (`docs/research/2026-11-03-backfill-hypotheses.md`). Spike 6 (catalogue in
   stac-browser) and the anonymous half of spike 7 (DuckDB over S3 with no
-  credentials) are unblocked by the 2026-11-16 apply (ADR 0016) but have not
-  run, and agents do not read observations until the st-b6bf and st-dd0d
+  credentials) are shelved by ADR 0017 (st-9f02) and have not run; the
+  credentialed half of spike 7 is the credentialed live test. Agents do not read observations until the st-b6bf and st-dd0d
   decision files are committed (`LEARNINGS.md`). Not measured: per-request S3
   latency and peak memory on the runner.
 - Not exercised on the applied bucket or in the logs read: the OIDC session

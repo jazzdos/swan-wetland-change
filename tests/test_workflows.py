@@ -12,6 +12,7 @@ against a fake `gh` to prove it opens one issue or comments on the open one.
 
 from __future__ import annotations
 
+import ast
 import os
 import re
 import shutil
@@ -1064,7 +1065,7 @@ def test_actionlint_accepts_the_backfill_workflow() -> None:
     assert result.returncode == 0, result.stdout + result.stderr
 
 
-def test_verify_header_comment_does_not_call_the_bucket_private() -> None:
+def test_verify_header_comment_names_adr_0017_and_no_public_read() -> None:
     header: list[str] = []
     for line in VERIFY_WORKFLOW.read_text(encoding="utf-8").splitlines():
         if not line.startswith("#"):
@@ -1072,12 +1073,19 @@ def test_verify_header_comment_does_not_call_the_bucket_private() -> None:
         header.append(line)
     text = "\n".join(header).lower()
     assert text
-    assert "private" not in text
-    assert "expected failure" not in text
-    assert "xfail" not in text
+    assert "adr 0017" in text
+    assert "xfail" in text
+    for phrase in (
+        "publicly readable",
+        "anonymously readable",
+        "readable anonymously",
+        "public read",
+        "public-read",
+    ):
+        assert phrase not in text
 
 
-def test_catalogue_comment_does_not_call_the_bucket_private() -> None:
+def test_catalogue_comment_names_adr_0017_and_credentials() -> None:
     lines = CONFIG.read_text(encoding="utf-8").splitlines()
     in_catalogue = False
     comment: list[str] = []
@@ -1094,13 +1102,56 @@ def test_catalogue_comment_does_not_call_the_bucket_private() -> None:
         else:
             comment = []
     text = "\n".join(comment).lower()
-    assert text
-    assert "is private" not in text
-    assert "signed access" not in text
-    assert "2026-11-16" in text or "adr 0016" in text
+    assert "adr 0017" in text
+    assert "credentials" in text
+    for phrase in (
+        "publicly readable",
+        "anonymously readable",
+        "readable anonymously",
+        "without credentials",
+        "is private",
+    ):
+        assert phrase not in text
 
 
-def test_anonymous_live_test_is_not_marked_xfail() -> None:
-    text = LIVE_ANONYMOUS.read_text(encoding="utf-8")
-    assert "xfail" not in text.lower()
-    assert "publicly readable since the 2026-11-16 apply" in text[:600]
+def _is_attr(node: ast.expr, *names: str) -> bool:
+    parts: list[str] = []
+    while isinstance(node, ast.Attribute):
+        parts.append(node.attr)
+        node = node.value
+    if isinstance(node, ast.Name):
+        parts.append(node.id)
+    return list(reversed(parts)) == list(names)
+
+
+def test_anonymous_live_test_is_a_strict_xfail_naming_the_0017_apply() -> None:
+    source = LIVE_ANONYMOUS.read_text(encoding="utf-8")
+    tree = ast.parse(source)
+    marks: list[ast.expr] = []
+    for node in tree.body:
+        if isinstance(node, ast.Assign) and any(
+            isinstance(t, ast.Name) and t.id == "pytestmark" for t in node.targets
+        ):
+            assert isinstance(node.value, ast.List)
+            marks = list(node.value.elts)
+    assert marks, "no pytestmark list"
+    assert any(_is_attr(m, "pytest", "mark", "live") for m in marks)
+    xfails = [
+        m
+        for m in marks
+        if isinstance(m, ast.Call) and _is_attr(m.func, "pytest", "mark", "xfail")
+    ]
+    assert len(xfails) == 1
+    keywords = {k.arg: k.value for k in xfails[0].keywords}
+    strict = keywords.get("strict")
+    assert isinstance(strict, ast.Constant) and strict.value is True
+    raises = keywords.get("raises")
+    assert isinstance(raises, ast.Name) and raises.id == "AssertionError"
+    reason = keywords.get("reason")
+    assert isinstance(reason, ast.Constant) and isinstance(reason.value, str)
+    assert "0017" in reason.value
+    assert "apply" in reason.value
+    assert source.count("== 403") >= 2
+    assert "stac/catalog.json" in source
+    assert "prefix=observations/" in source
+    assert ".read(" not in source
