@@ -1,5 +1,5 @@
 variable "bucket_name" {
-  description = "Globally unique name of the S3 bucket that holds pipeline outputs and the STAC catalogue. The bucket is private: reads need AWS credentials (ADR 0017); until the 0017 apply is run, the deployed bucket still has the ADR 0016 read grants."
+  description = "Globally unique name of the S3 bucket that holds pipeline outputs and the STAC catalogue. The bucket is private: reads need AWS credentials (ADR 0017)."
   type        = string
 }
 

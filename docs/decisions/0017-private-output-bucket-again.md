@@ -1,7 +1,7 @@
 # 0017 Private output bucket again
 
-Status: accepted, 2026-11-17, on Jarrod's direction; the apply is pending (see
-Apply).
+Status: accepted, 2026-11-17, on Jarrod's direction. In effect since the
+2026-11-17 apply (see Apply).
 Supersedes: 0016 (`docs/decisions/0016-public-read-output-bucket.md`).
 
 ## Context
@@ -35,7 +35,7 @@ appears in the module.
 Unchanged: the pipeline role with OIDC trust on main, `s3:ListBucket` on the
 bucket, Get, Put and Delete on objects, the ownership controls, the lifecycle
 rule, and the outputs `role_arn` and `bucket_url`. `catalogue.base_url` is
-unchanged; its links need credentials once the apply has run.
+unchanged; its links need credentials since the apply.
 
 Out of scope: licence and attribution text inside published files, the
 `redistribute_public` column of `data/SOURCES.md`, the GitHub repository's
@@ -89,21 +89,45 @@ policies, the ownership controls, the lifecycle rule or the OIDC provider.
 
 - `tests/test_infra.py` asserts the private configuration and fails on a
   public grant, a `*` principal, a bucket policy or CORS.
-- `tests/test_live_anonymous_read.py` is live and `xfail(strict=True)` until
-  the apply. After the apply it asserts that an unsigned GET of
-  `stac/catalog.json` and an unsigned ListObjectsV2 under `observations/` both
-  return 403.
+- `tests/test_live_anonymous_read.py` is live and asserts that an unsigned GET
+  of `stac/catalog.json` and an unsigned ListObjectsV2 under `observations/`
+  both return 403. It no longer carries an xfail marker; it was removed after
+  the apply (story st-5c05). The weekly verify.yml run executes it and fails if
+  the bucket becomes anonymously readable again.
 - `tests/test_public_read_decision.py` checks this record and the 0016 status
   paragraph.
 
 ## Apply
 
-The apply is pending. It has not been run. The operator runs it, or the
-orchestrator runs it on Jarrod's go-ahead, never an agent on its own. No agent
-runs tofu, terraform or aws against the bucket.
+The apply was run by the orchestrator on Jarrod's go-ahead. On 2026-11-17
+Jarrod chose "Approve, do it all (Recommended)" for a plan that read: merge
+st-90b4, run terraform plan with the accu-tracker profile, apply only if the
+plan is exactly 1 change and 2 destroys, check that an anonymous request gets
+403, record the apply in a follow-up story, push.
 
-A follow-up story records the apply: the plan, the result, and the unsigned
-header check expecting 403. It also removes the `xfail` marker from
-`tests/test_live_anonymous_read.py` and updates the statements that hold only
-until then. The st-b6bf and st-dd0d blindness rules in `LEARNINGS.md` stay in
-force.
+- Tooling: Terraform v1.15.8, profile `accu-tracker` after `aws login`,
+  credentials exported to the environment. Run from main at 313aba8 with
+  `-var bucket_name=swan-wetland-change-outputs-263051716913 -var
+  github_repository=jazzdos@33918812/swan-wetland-change@1438569874 -var
+  create_oidc_provider=false -var aws_region=ap-southeast-2`, as a saved plan.
+- Plan: 0 to add, 1 to change, 2 to destroy.
+  `aws_s3_bucket_public_access_block.outputs` was updated in place
+  (`block_public_policy` and `restrict_public_buckets` false to true, 3
+  attributes unchanged). `aws_s3_bucket_policy.public_read` and
+  `aws_s3_bucket_cors_configuration.outputs` were destroyed because they are
+  no longer in configuration. No refresh drift was reported and nothing else
+  changed.
+- Apply: "Apply complete! Resources: 0 added, 1 changed, 2 destroyed."
+  Finished by 2026-11-17T12:19:58Z.
+- Unsigned check about 5 seconds later, status codes only, bodies discarded,
+  AWS credential variables unset: GET `stac/catalog.json` returned 403;
+  ListObjectsV2 with prefix `observations/` returned 403.
+- Exposure window: every object was readable by key without credentials from
+  the 2026-11-16 apply until 2026-11-17 about 12:20 UTC.
+
+No output-store object was read. The st-b6bf and st-dd0d blindness rules in
+`LEARNINGS.md` stay in force. No agent runs tofu, terraform or aws against the
+bucket.
+
+The follow-up story st-5c05 recorded this apply, removed the xfail marker and
+updated the statements that held only until the apply.

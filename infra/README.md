@@ -4,7 +4,7 @@ OpenTofu/Terraform module for the AWS resources the swan-wetland-change pipeline
 
 ## What the module creates
 
-- A private S3 bucket for the outputs and the STAC catalogue, decided in `docs/decisions/0017-private-output-bucket-again.md` (ADR 0017), which supersedes ADR 0016 and keeps the configuration of ADR 0011. All four public access block settings are on, there is no bucket policy and no CORS rule, so objects are readable only with AWS credentials. A reader uses a DuckDB `credential_chain` secret (see README.md "Querying with DuckDB"). Until the 0017 apply is run (see "Applying the private configuration"), the deployed bucket still has the ADR 0016 grants; the apply is pending. A lifecycle rule aborts incomplete multipart uploads one day after initiation, and the pipeline role needs no `s3:AbortMultipartUpload` because S3 applies the rule itself.
+- A private S3 bucket for the outputs and the STAC catalogue, decided in `docs/decisions/0017-private-output-bucket-again.md` (ADR 0017), which supersedes ADR 0016 and keeps the configuration of ADR 0011. All four public access block settings are on, there is no bucket policy and no CORS rule, so objects are readable only with AWS credentials. A reader uses a DuckDB `credential_chain` secret (see README.md "Querying with DuckDB"). The 0017 apply was run on 2026-11-17 (see "Applying the private configuration"), so the deployed bucket is private. A lifecycle rule aborts incomplete multipart uploads one day after initiation, and the pipeline role needs no `s3:AbortMultipartUpload` because S3 applies the rule itself.
 - The GitHub OIDC provider `token.actions.githubusercontent.com` with audience `sts.amazonaws.com`, when `create_oidc_provider` is true (the default). An AWS account can hold only one such provider, and other repositories usually share it. If the account already has one, pass `-var create_oidc_provider=false`, as the commands below do. The module then looks the provider up with a data source and leaves it unmanaged. Do not import an existing provider into this state: a later `destroy` would delete it and break GitHub-to-AWS authentication for every other repository in the account.
 - An IAM role `swan-wetland-change-pipeline`, assumable only from the repository's `main` branch. The trust policy requires `token.actions.githubusercontent.com:aud` = `sts.amazonaws.com` and `token.actions.githubusercontent.com:sub` = `repo:<owner>@<owner_id>/<name>@<repo_id>:ref:refs/heads/main`. The role has `s3:ListBucket` on the bucket and `s3:GetObject`, `s3:PutObject` and `s3:DeleteObject` on its objects, and nothing else. The role's maximum session duration is 3 hours (10800 s), and the workflow requests all of it so credentials outlast the 120 minute job.
 
@@ -46,7 +46,7 @@ Review the plan output before applying. The story that created this module only 
 
 ## Applying the private configuration
 
-ADR 0017 reverses the changes ADR 0016 made to the module of the existing deployment: the access block's two policy settings go back from false to true, and the bucket policy and the CORS rule are removed. The apply is run by the operator (or by the orchestrator on Jarrod's go-ahead) after the plan is reviewed, never by an agent on its own. Until it runs, the deployed bucket still has the ADR 0016 grants. The decision is in `docs/decisions/0017-private-output-bucket-again.md`.
+ADR 0017 reverses the changes ADR 0016 made to the module of the existing deployment: the access block's two policy settings go back from false to true, and the bucket policy and the CORS rule are removed. The apply is run by the operator (or by the orchestrator on Jarrod's go-ahead) after the plan is reviewed, never by an agent on its own. It was run on 2026-11-17 by the orchestrator on Jarrod's go-ahead with Terraform v1.15.8: the plan was 0 to add, 1 to change, 2 to destroy, the apply printed "Apply complete! Resources: 0 added, 1 changed, 2 destroyed.", and the check below printed 403. The result is recorded in the ADR. The decision is in `docs/decisions/0017-private-output-bucket-again.md`.
 
 Plan with the same variables as the deployment and review the output:
 
@@ -67,9 +67,9 @@ Then check with headers only. curl sends the request unsigned, so it is an anony
 curl -sS -I "$(terraform -chdir=infra output -raw bucket_url)/stac/catalog.json" | grep -i -E '^HTTP/'
 ```
 
-After the apply the check must print a 403 status line. Before the apply it prints 200, because ADR 0016 is still applied. The check reads response headers only, not the object.
+After the apply the check must print a 403 status line; on 2026-11-17 it printed 403. Before the apply it printed 200, because ADR 0016 was still applied. The check reads response headers only, not the object.
 
-The follow-up story that records the apply removes the `xfail` marker from `tests/test_live_anonymous_read.py`. Until then, once the apply has run, that strict xfail test XPASSes and fails the weekly run.
+The `xfail` marker on `tests/test_live_anonymous_read.py` was removed after the apply (story st-5c05). That test is no longer an expected failure, and the weekly run now fails if an unsigned request to the bucket stops getting 403.
 
 ### Sharing one object
 
@@ -149,6 +149,6 @@ A bucket that is not seeded still converges: each run does at most what fits in 
 ## Notes
 
 - State is local by default. `terraform.tfstate` is gitignored; keep it safe or add a remote backend.
-- The bucket is private under ADR 0017 once the 0017 apply is run. Never add a bucket policy, a `*` principal or CORS without a new decision record that supersedes ADR 0017. Objects are readable only with AWS credentials or a presigned URL.
+- The bucket is private under ADR 0017, applied on 2026-11-17. Never add a bucket policy, a `*` principal or CORS without a new decision record that supersedes ADR 0017. Objects are readable only with AWS credentials or a presigned URL.
 - The role only works from runs on `main`. A `workflow_dispatch` run from another branch cannot assume it.
 - The 3 hour session duration takes effect only after an apply. An existing deployment must be applied again before the next pipeline run, because requesting a duration above the role maximum makes the role assumption fail.

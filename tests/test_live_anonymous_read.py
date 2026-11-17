@@ -1,9 +1,9 @@
 """Live check that an unsigned reader is denied by the output bucket under
-ADR 0017 (docs/decisions/0017-private-output-bucket-again.md).
+ADR 0017 (docs/decisions/0017-private-output-bucket-again.md), applied on
+2026-11-17.
 
-This test is an expected failure (strict xfail) until the 0017 apply, because
-the deployed bucket still has the ADR 0016 read grants. The follow-up story
-that records the apply removes the marker.
+This test is no longer an expected failure. The weekly verify.yml run fails
+if the bucket becomes anonymously readable again.
 
 It sends unsigned requests, reads status codes only and discards bodies.
 Agents do not run it: the weekly verify.yml run does, before it assumes AWS
@@ -22,17 +22,7 @@ import pytest
 
 from tests.aws_support import configured_bucket
 
-pytestmark = [
-    pytest.mark.live,
-    pytest.mark.xfail(
-        strict=True,
-        raises=AssertionError,
-        reason=(
-            "ADR 0017 apply pending: the deployed bucket still has the ADR 0016 "
-            "public read grants, so these unsigned requests still succeed"
-        ),
-    ),
-]
+pytestmark = [pytest.mark.live]
 
 
 def _unsigned_status(url: str) -> int:
