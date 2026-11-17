@@ -187,16 +187,13 @@ def _description(name: str, header: str) -> str:
         ("outputs.tf", 'output "bucket_url"'),
     ],
 )
-def test_bucket_descriptions_say_private_and_name_the_pending_apply(
-    name: str, header: str
-) -> None:
+def test_bucket_descriptions_say_private_under_adr_0017(name: str, header: str) -> None:
     text = _description(name, header)
     assert "ADR 0017" in text
     assert "AWS credentials" in text
-    assert "until the 0017 apply" in text
     assert "anonymous read" not in text.lower()
-    if "ADR 0016" in text:
-        assert re.search(r"until the 0017 apply.*ADR 0016", text), text
+    for stale in ("pending", "until the 0017 apply", "ADR 0016"):
+        assert stale not in text, stale
 
 
 def test_oidc_provider_url_and_client_id() -> None:
@@ -301,9 +298,28 @@ def test_infra_readme_gives_plan_review_apply_and_header_check() -> None:
         "403",
         "docs/decisions/0017-private-output-bucket-again.md",
         "never by an agent",
-        "xfail",
+        "Apply complete",
+        "2026-11-17",
+        "Terraform v1.15.8",
+        "no longer an expected failure",
     ):
         assert needed in section, needed
+    assert "until then" not in section
+    assert "pending" not in section.lower()
+
+
+def test_infra_readme_and_tf_do_not_call_the_apply_pending() -> None:
+    names = ["README.md", *sorted(p.name for p in INFRA.glob("*.tf"))]
+    for name in names:
+        text = _read(name).lower()
+        for stale in (
+            "apply is pending",
+            "apply pending",
+            "until the 0017 apply",
+            "once the 0017 apply",
+            "still has the adr 0016",
+        ):
+            assert stale not in text, (name, stale)
 
 
 def test_infra_readme_documents_presigned_urls_and_stays_private() -> None:

@@ -1074,7 +1074,9 @@ def test_verify_header_comment_names_adr_0017_and_no_public_read() -> None:
     text = "\n".join(header).lower()
     assert text
     assert "adr 0017" in text
-    assert "xfail" in text
+    assert "no longer an expected failure" in text
+    assert "xfail" not in text
+    assert "2026-11-17" in text
     for phrase in (
         "publicly readable",
         "anonymously readable",
@@ -1124,7 +1126,7 @@ def _is_attr(node: ast.expr, *names: str) -> bool:
     return list(reversed(parts)) == list(names)
 
 
-def test_anonymous_live_test_is_a_strict_xfail_naming_the_0017_apply() -> None:
+def test_anonymous_live_test_is_live_and_has_no_xfail_marker() -> None:
     source = LIVE_ANONYMOUS.read_text(encoding="utf-8")
     tree = ast.parse(source)
     marks: list[ast.expr] = []
@@ -1136,21 +1138,12 @@ def test_anonymous_live_test_is_a_strict_xfail_naming_the_0017_apply() -> None:
             marks = list(node.value.elts)
     assert marks, "no pytestmark list"
     assert any(_is_attr(m, "pytest", "mark", "live") for m in marks)
-    xfails = [
-        m
-        for m in marks
-        if isinstance(m, ast.Call) and _is_attr(m.func, "pytest", "mark", "xfail")
-    ]
-    assert len(xfails) == 1
-    keywords = {k.arg: k.value for k in xfails[0].keywords}
-    strict = keywords.get("strict")
-    assert isinstance(strict, ast.Constant) and strict.value is True
-    raises = keywords.get("raises")
-    assert isinstance(raises, ast.Name) and raises.id == "AssertionError"
-    reason = keywords.get("reason")
-    assert isinstance(reason, ast.Constant) and isinstance(reason.value, str)
-    assert "0017" in reason.value
-    assert "apply" in reason.value
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Call):
+            assert not _is_attr(node.func, "pytest", "mark", "xfail")
+        elif isinstance(node, ast.Attribute):
+            assert not _is_attr(node, "pytest", "mark", "xfail")
+    assert "xfail" not in source.lower()
     assert source.count("== 403") >= 2
     assert "stac/catalog.json" in source
     assert "prefix=observations/" in source

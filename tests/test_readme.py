@@ -177,12 +177,18 @@ def test_readme_records_adr_0017() -> None:
         "0017-private-output-bucket-again",
         "2026-11-17",
         "0016",
-        "pending",
+        "applied",
     ):
         assert needed in deployment, needed
+    assert "pending" not in deployment
+    assert "pending" not in prose
     limitations = _section(_readme(), "Limitations").lower()
-    for needed in ("0017", "pending", "cannot be withdrawn"):
+    for needed in ("0017", "2026-11-17", "cannot be withdrawn"):
         assert needed in limitations, needed
+    # Limitations also holds an unrelated decision "pending Jarrod's review"
+    # (pinned by tests/test_config.py), so only the 0017 apply wording is barred.
+    assert "its apply is pending" not in limitations
+    assert "once the 0017 apply is done" not in limitations
     for forbidden in (
         "public read has been in effect",
         "public read is configured but not applied",
@@ -312,14 +318,28 @@ def test_readme_gives_standalone_credentialed_live_command() -> None:
 def test_readme_limitations_dates_anonymous_live_pass() -> None:
     section = " ".join(_section(_readme(), "Limitations").split())
     for needle in (
-        "no agent has run it (the weekly",
+        "no agent has run the test (the weekly",
         "Update 2026-11-16",
         "ebea401",
         "xfail",
         "0017",
         "403",
+        "marker was removed",
+        "unsigned",
     ):
         assert needle in section, needle
+    assert "xfail(strict=True)" not in section
+
+
+def test_readme_does_not_call_the_0017_apply_pending() -> None:
+    flat = " ".join(_readme().split()).lower()
+    for phrase in (
+        "apply is pending",
+        "apply pending",
+        "until the 0017 apply is run",
+        "once the 0017 apply is done",
+    ):
+        assert phrase not in flat, phrase
 
 
 def _running_locally_subcommands() -> list[str]:

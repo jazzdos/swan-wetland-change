@@ -1,8 +1,8 @@
 """ADR 0017 (private output bucket again) and the status lines of ADRs 0016 and 0011.
 
 ADR 0017 supersedes 0016 on Jarrod's 2026-11-17 direction and records that its
-apply is pending. It changes only the status paragraph of 0016, as 0016 did to
-0011.
+apply was run on 2026-11-17. It changes only the status paragraph of 0016, as
+0016 did to 0011.
 """
 
 from __future__ import annotations
@@ -114,11 +114,28 @@ def test_adr_0017_states_the_expected_plan() -> None:
         assert needed in text, needed
 
 
-def test_adr_0017_says_the_apply_is_pending() -> None:
-    text = _flat(_section(_adr_0017(), "Apply")).lower()
-    assert "pending" in text
-    assert "apply complete" not in text
-    assert "was run by" not in text
+def test_adr_0017_records_the_apply() -> None:
+    text = _flat(_section(_adr_0017(), "Apply"))
+    for needed in (
+        "0 to add, 1 to change, 2 to destroy",
+        "Apply complete",
+        "2026-11-17",
+        "403",
+        "Terraform v1.15.8",
+        "313aba8",
+        "accu-tracker",
+        "2026-11-17T12:19:58Z",
+        "Approve, do it all (Recommended)",
+    ):
+        assert needed in text, needed
+    assert "pending" not in _adr_0017().lower()
+
+
+def test_adr_0017_status_says_in_effect_since_the_apply() -> None:
+    status, _ = _status_split(_adr_0017())
+    flat = _flat(status)
+    assert "since the 2026-11-17 apply" in flat
+    assert "pending" not in flat.lower()
 
 
 def test_adr_0016_status_names_0017() -> None:
@@ -126,6 +143,8 @@ def test_adr_0016_status_names_0017() -> None:
     flat = _flat(status)
     assert "superseded by 0017" in flat.lower()
     assert f"docs/decisions/{ADR_0017_NAME}" in flat
+    assert "applied on 2026-11-17" in flat
+    assert "pending" not in flat.lower()
 
 
 def test_adr_0016_is_unchanged_outside_its_status_paragraph() -> None:
