@@ -422,8 +422,24 @@ eval "$(aws configure export-credentials --profile <profile> --format env)"
 unset AWS_PROFILE
 ```
 
-The exported variables are short-lived secrets. Do not print, log or commit
-them.
+The exported variables are secrets. Do not print, log or commit them.
+
+Credentials exported from an `aws login` profile expire 15 minutes after they
+are minted (`AWS_CREDENTIAL_EXPIRATION` in the export gives the time) and are
+not refreshed once they are environment variables. An expired export makes
+DuckDB fail with `HTTP 400 Bad Request ... ExpiredToken`, followed by a hint
+about the S3 region. The region is not the cause when it is correct. To
+recover, run the export again and rerun the query or test within 15 minutes.
+
+```sh
+eval "$(aws configure export-credentials --profile <profile> --format env)"
+unset AWS_PROFILE
+uv run pytest -q -m live tests/test_live_credentialed_read.py
+```
+
+Run the credentialed live test on its own, directly after a fresh export. A
+full `-m live` run took 27m39s on 2026-11-16, longer than the 15 minute
+lifetime, so a single export does not cover the whole live suite.
 
 ```sql
 INSTALL httpfs;
@@ -635,12 +651,17 @@ As of this commit:
   `tests/test_live_credentialed_read.py`, unchanged, and the anonymous checks
   are `tests/test_live_anonymous_read.py`, which is no longer
   marked `xfail` since the 2026-11-16 apply, and no agent has run it (the
-  weekly `verify.yml` run executes it). A
+  weekly `verify.yml` run executes it). Update 2026-11-16:
+  `tests/test_live_anonymous_read.py` passed in the live run on main ebea401
+  (started 11:35:52Z, 27m39s); the one failure in that run was the
+  credentialed test, from expired exported credentials (see "Querying with
+  DuckDB"). A
   profile created by `aws login` is not read by DuckDB's credential chain;
   the route (export the credentials to the environment) is given under
   "Querying with DuckDB", and the credentialed live test names the
   credential source and that route when DuckDB cannot build the secret
-  (st-b49e).
+  (st-b49e), and names expired environment credentials on ExpiredToken
+  (st-1381).
 - Water thresholds are calibrated against DEA Sentinel-2 Water Observations
   over August to October 2026 only, and DEA's product is itself unvalidated,
   so agreement measures consistency with DEA, not accuracy (ADR 0005).

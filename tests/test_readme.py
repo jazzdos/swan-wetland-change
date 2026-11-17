@@ -248,6 +248,35 @@ def test_readme_documents_aws_login_profile_route(needle: str) -> None:
     assert needle in prose
 
 
+def test_readme_documents_credential_expiry() -> None:
+    section = _section(_readme(), "Querying with DuckDB")
+    prose = re.sub(r"```sql\n.*?```", "", section, flags=re.DOTALL)
+    for needle in ("15 minutes", "aws login", "not refreshed", "ExpiredToken"):
+        assert needle in prose, needle
+
+
+def test_readme_gives_standalone_credentialed_live_command() -> None:
+    section = _section(_readme(), "Querying with DuckDB")
+    command = "uv run pytest -q -m live tests/test_live_credentialed_read.py"
+    blocks = re.findall(r"```sh\n(.*?)```", section, flags=re.DOTALL)
+    holding = [block for block in blocks if command in block]
+    assert holding
+    block = holding[0]
+    assert "aws configure export-credentials" in block
+    assert block.index(command) > block.index("aws configure export-credentials")
+
+
+def test_readme_limitations_dates_anonymous_live_pass() -> None:
+    section = " ".join(_section(_readme(), "Limitations").split())
+    assert "no agent has run it (the weekly" in section
+    for needle in (
+        "Update 2026-11-16",
+        "ebea401",
+        "test_live_anonymous_read.py` passed",
+    ):
+        assert needle in section, needle
+
+
 def _running_locally_subcommands() -> list[str]:
     section = _section(_readme(), "Running locally")
     blocks = re.findall(r"```\w*\n(.*?)```", section, flags=re.DOTALL)

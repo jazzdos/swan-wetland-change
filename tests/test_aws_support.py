@@ -14,6 +14,7 @@ from tests.aws_support import (
     configured_bucket,
     create_credential_chain_secret,
     credential_source,
+    fail_on_expired_credentials,
 )
 from wetland_change.config import DEFAULT_CATALOGUE_BASE_URL
 
@@ -211,3 +212,95 @@ def test_configured_bucket_skips_on_the_placeholder(
     monkeypatch.setattr(aws_support, "load_config", lambda path: config)
     with pytest.raises(pytest.skip.Exception):
         configured_bucket()
+
+
+EXPIRED_TEXT = (
+    "HTTP 400 Bad Request ... ExpiredToken: The provided token has expired. "
+    "... Provided region is: ap-southeast-2"
+)
+
+
+def test_expired_token_fails_with_actionable_message() -> None:
+    with pytest.raises(pytest.fail.Exception) as exc:
+        with fail_on_expired_credentials():
+            raise duckdb.Error(EXPIRED_TEXT)
+
+    message = str(exc.value)
+    for fragment in (
+        "expired",
+        "15 minutes",
+        "aws login",
+        "aws configure export-credentials",
+        "--format env",
+        "unset AWS_PROFILE",
+    ):
+        assert fragment in message
+
+
+def test_expired_token_failure_never_prints_credentials(
+    clean_env: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setenv("AWS_ACCESS_KEY_ID", SENTINEL_KEY)
+    monkeypatch.setenv("AWS_SECRET_ACCESS_KEY", SENTINEL_SECRET)
+    monkeypatch.setenv("AWS_SESSION_TOKEN", SENTINEL_TOKEN)
+
+    with pytest.raises(pytest.fail.Exception) as exc:
+        with fail_on_expired_credentials():
+            raise duckdb.Error(
+                f"{EXPIRED_TEXT} key={SENTINEL_KEY} "
+                f"secret={SENTINEL_SECRET} token={SENTINEL_TOKEN}"
+            )
+
+    message = str(exc.value)
+    for sentinel in (SENTINEL_KEY, SENTINEL_SECRET, SENTINEL_TOKEN):
+        assert sentinel not in message
+    assert "<redacted>" in message
+    assert exc.value.__cause__ is None
+    assert exc.value.__context__ is None or exc.value.__suppress_context__ is True
+
+
+def test_other_errors_propagate_unchanged() -> None:
+    with pytest.raises(duckdb.Error, match="Secret Validation Failure"):
+        with fail_on_expired_credentials():
+            raise duckdb.Error("Secret Validation Failure")
+
+    with pytest.raises(ValueError, match="boom"):
+        with fail_on_expired_credentials():
+            raise ValueError("boom")
+
+    with fail_on_expired_credentials():
+        pass
+
+
+class _ExpiringConnection:
+    """Accepts INSTALL and LOAD, raises ExpiredToken on a parquet read."""
+
+    def execute(self, query: str, /) -> _ExpiringConnection:
+        if "read_parquet" in query:
+            raise duckdb.Error(EXPIRED_TEXT)
+        return self
+
+
+def test_live_test_fails_readably_on_expired_token(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import tests.test_live_credentialed_read as live_mod
+
+    monkeypatch.setattr(
+        live_mod,
+        "configured_bucket",
+        lambda: ("h.s3.ap-southeast-2.amazonaws.com", "b", "ap-southeast-2"),
+    )
+    monkeypatch.setattr(
+        live_mod, "credential_source", lambda: "AWS_ACCESS_KEY_ID (environment keys)"
+    )
+    monkeypatch.setattr(live_mod, "create_credential_chain_secret", lambda *a: None)
+    monkeypatch.setattr(live_mod.duckdb, "connect", lambda: _ExpiringConnection())
+
+    with pytest.raises(pytest.fail.Exception) as exc:
+        live_mod.test_credentialed_reader_globs_observations()
+
+    message = str(exc.value)
+    assert "expired" in message
+    assert "15 minutes" in message
+    assert "aws configure export-credentials" in message
