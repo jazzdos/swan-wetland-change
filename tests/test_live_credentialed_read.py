@@ -17,6 +17,7 @@ from tests.aws_support import (
     configured_bucket,
     create_credential_chain_secret,
     credential_source,
+    fail_on_expired_credentials,
 )
 
 pytestmark = pytest.mark.live
@@ -38,15 +39,17 @@ def test_credentialed_reader_globs_observations() -> None:
     con.execute("INSTALL aws")
     con.execute("LOAD aws")
     create_credential_chain_secret(con, "outputs_s3", region)
-    row_count = con.execute(
-        "SELECT count(*) FROM read_parquet("
-        f"'s3://{bucket}/{OBSERVATIONS_GLOB}', hive_partitioning=true)"
-    ).fetchone()
+    with fail_on_expired_credentials():
+        row_count = con.execute(
+            "SELECT count(*) FROM read_parquet("
+            f"'s3://{bucket}/{OBSERVATIONS_GLOB}', hive_partitioning=true)"
+        ).fetchone()
     assert row_count is not None
     assert row_count[0] > 0
 
-    file_count = con.execute(
-        f"SELECT count(*) FROM glob('s3://{bucket}/{OBSERVATIONS_GLOB}')"
-    ).fetchone()
+    with fail_on_expired_credentials():
+        file_count = con.execute(
+            f"SELECT count(*) FROM glob('s3://{bucket}/{OBSERVATIONS_GLOB}')"
+        ).fetchone()
     assert file_count is not None
     assert file_count[0] > 0

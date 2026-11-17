@@ -2,13 +2,16 @@
 
 `configured_bucket` names the bucket from `catalogue.base_url`, and
 `create_credential_chain_secret` builds the DuckDB S3 secret for the
-credentialed reads.
+credentialed reads, and `fail_on_expired_credentials` turns a DuckDB
+ExpiredToken error from an S3 read into a readable test failure.
 """
 
 from __future__ import annotations
 
 import os
 import re
+from collections.abc import Iterator
+from contextlib import contextmanager
 from pathlib import Path
 from typing import Final, Protocol
 from urllib.parse import urlparse
@@ -22,6 +25,8 @@ EXPORT_COMMAND: Final = (
     'eval "$(aws configure export-credentials --profile <profile> --format env)" '
     "&& unset AWS_PROFILE"
 )
+
+EXPIRED_TOKEN_MARKER: Final = "ExpiredToken"
 
 CONFIG: Final = Path(__file__).resolve().parents[1] / "config" / "pipeline.toml"
 BUCKET_HOST: Final = re.compile(
@@ -122,3 +127,37 @@ def create_credential_chain_secret(
     # Raised outside the except block so pytest does not chain the unredacted
     # DuckDB error as __context__ and print it above the redacted message.
     pytest.fail(message, pytrace=False)
+
+
+@contextmanager
+def fail_on_expired_credentials() -> Iterator[None]:
+    """Fail the test readably when an S3 read raises a DuckDB ExpiredToken error.
+
+    Other errors propagate unchanged. Any credential value in the error text is
+    replaced by a placeholder.
+    """
+    try:
+        yield
+    except duckdb.Error as err:
+        if EXPIRED_TOKEN_MARKER not in str(err):
+            raise
+        message = (
+            "The AWS credentials in the environment have expired (DuckDB reported "
+            f"{EXPIRED_TOKEN_MARKER}). Credentials exported from an `aws login` "
+            "profile expire 15 minutes after they are minted and are not "
+            "refreshed once they are environment variables. Export fresh "
+            f"credentials and rerun this test on its own: {EXPORT_COMMAND}. "
+            "The S3 region hint in the DuckDB error is not the cause when the "
+            f"region is correct. DuckDB error: {_redact(str(err))}"
+        )
+    else:
+        return
+    # Raised outside the except block, and with the context suppressed: the
+    # with statement calls this generator while the body's DuckDB error is
+    # still being handled, so Python would otherwise set that unredacted error
+    # as __context__ and pytest would print it above the redacted message.
+    try:
+        pytest.fail(message, pytrace=False)
+    except pytest.fail.Exception as failure:
+        failure.__suppress_context__ = True
+        raise
