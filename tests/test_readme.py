@@ -185,16 +185,19 @@ def test_readme_records_adr_0017() -> None:
     limitations = _section(_readme(), "Limitations").lower()
     for needed in ("0017", "2026-11-17", "cannot be withdrawn"):
         assert needed in limitations, needed
-    # Limitations also holds an unrelated decision "pending Jarrod's review"
-    # (pinned by tests/test_config.py), so only the 0017 apply wording is barred.
-    assert "its apply is pending" not in limitations
-    assert "once the 0017 apply is done" not in limitations
+    assert "pending" not in limitations
     for forbidden in (
         "public read has been in effect",
         "public read is configured but not applied",
     ):
         assert forbidden not in limitations, forbidden
     assert "Applying public read" not in _readme()
+
+
+def test_readme_ramsar_12_bullet_records_jarrods_approval() -> None:
+    limitations = " ".join(_section(_readme(), "Limitations").split())
+    assert "approved by Jarrod on 2026-11-06 (ADR 0010" in limitations
+    assert "pending Jarrod's review" not in limitations
 
 
 PUBLIC_READ_CLAIMS = (

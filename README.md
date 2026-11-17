@@ -714,7 +714,7 @@ As of this commit:
   right is unknown. A confirmatory test on 7 further scene-tiles on 4 dates
   (2026-08-23 to 2026-09-07) did not support an override, so ramsar-12 keeps
   the global setting; on those rows the pipeline is drier than WO, not wetter.
-  The decision was made under delegation and is pending Jarrod's review
+  The decision was made under delegation and approved by Jarrod on 2026-11-06
   (ADR 0010; `LEARNINGS.md`, "ramsar-12 setting confirmation").
 - Observation and change files written since st-2bfd carry a provenance footer:
   `source_epsg`, `operation_epsg` (EPSG:32750), `geometry_epsg`, `units`,
